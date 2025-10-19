@@ -42,7 +42,47 @@ namespace LUSharpTranspiler.AST.SourceConstructor
 
             public ClassBuilder WithField(string key, object value)
             {
-                _staticFields.AddField(key, value);
+                // handle different value types here
+                switch (value)
+                {
+                    // handle list types as lua tables
+                    case IEnumerable<Object> list:
+                        var tableBuilder = new LuaTableBuilder();
+                        int index = 1;
+                        foreach (var item in list)
+                        {
+                            switch (item)
+                            {
+                                case string s:
+                                    tableBuilder.AddField(index, $"\"{s}\"");
+                                    break;
+                                case bool b:
+                                    tableBuilder.AddField(index, b ? "true" : "false");
+                                    break;
+                                case null:
+                                    tableBuilder.AddField(index, "nil");
+                                    break;
+                                default:
+                                    tableBuilder.AddField(index, item);
+                                    break;
+                            }
+                            index++;
+                        }
+                        _staticFields.AddField(key, tableBuilder.Build());
+                        break;
+                    case string s:
+                        _staticFields.AddField(key, $"\"{s}\"");
+                        break;
+                    case bool b:
+                        _staticFields.AddField(key, b ? "true" : "false");
+                        break;
+                    case null:
+                        _staticFields.AddField(key, "nil");
+                        break;
+                    default:
+                        _staticFields.AddField(key, value);
+                        break;
+                }
                 return this;
             }
 

@@ -19,7 +19,12 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
         /// <summary>Add a key-value pair. Value can be string, number, bool, LuaTableBuilder, or arbitrary Lua expression.</summary>
         public LuaTableBuilder AddField(string key, object value)
         {
-            _fields.Add((key, value));
+            _fields.Add(($"[\"{key}\"]", value));
+            return this;
+        }
+        public LuaTableBuilder AddField(int key, object value)
+        {
+            _fields.Add(($"[{key}]", value));
             return this;
         }
 
