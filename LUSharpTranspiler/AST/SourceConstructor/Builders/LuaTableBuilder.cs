@@ -64,9 +64,10 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
         // Helper for rendering a nested table without variable name
         private void RenderFields(LuaWriter writer)
         {
-            writer.IndentMore();
             foreach (var (key, value) in _fields)
             {
+                writer.IndentMore();
+
                 if (value is LuaTableBuilder nested)
                 {
                     writer.WriteLine($"{key} = {{");
@@ -85,8 +86,8 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
                 {
                     writer.WriteLine($"{key} = {value},");
                 }
+                writer.IndentLess();
             }
-            writer.IndentLess();
         }
 
         public string Build()

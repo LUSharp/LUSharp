@@ -4,11 +4,19 @@ namespace LUSharpTranspiler.TestInput
 {
     public class Player
     {
-        private static List<string> s_Instances = new()
+        private static Dictionary<string, object> dictionary = new()
         {
-            "First",
-            "Second",
-            "Third"
+            {"Key1", "Value1" },
+            { "Key2", 42 },
+            { "Key3", true } 
+        };
+
+        private static List<string> balls = new()
+        {
+            "asdf",
+            "afsdf",
+            "asdfasdfasdf",
+            "what"
         };
 
         public string Name { get; set; }
@@ -21,7 +29,7 @@ namespace LUSharpTranspiler.TestInput
             this.Name = name;
             this.Health = health;
 
-            s_Instances.Add(this.Name);
+            dictionary.Add(this.Name, this.Health);
         }
     }
     public class Main
