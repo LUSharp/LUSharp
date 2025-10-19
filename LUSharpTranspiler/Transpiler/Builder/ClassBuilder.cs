@@ -140,9 +140,61 @@ namespace LUSharpTranspiler.Transpiler.Builder
             // Static members for classes
             foreach(var s_member in cs.StaticMembers)
             {
+                // static type name {get;set;} = value
                 if (s_member is PropertyDeclarationSyntax prop)
                 {
                     builder.WithField(prop.Identifier.Text, (prop.Initializer.Value as LiteralExpressionSyntax).Token.Value);
+                }
+                // static type name = new();
+                else if(s_member is FieldDeclarationSyntax prop2)
+                {
+                    // for now only support simple initializers
+                    if(prop2.Declaration.Variables.First().Initializer != null)
+                    {
+                        // handle different value types here
+                        switch (prop2.Declaration.Variables.First().Initializer.Value)
+                        {
+                            // literal expressions example: static type name = "value";
+                            case LiteralExpressionSyntax les:
+                                {
+                                    builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, les.Token.Value);
+                                    break;
+                                }
+                            // new() expressions example: static type name = new List<string>() {}; can contain data
+                            case ImplicitObjectCreationExpressionSyntax:
+                                {
+                                    // if we have constructor data, add it 
+                                    if(prop2.Declaration.Variables.First().Initializer.Value is ImplicitObjectCreationExpressionSyntax ioce && ioce.Initializer != null)
+                                    {
+                                        var list = new List<object>();
+                                        foreach(var expr in ioce.Initializer.Expressions)
+                                        {
+                                            switch(expr)
+                                            {
+                                                case LiteralExpressionSyntax lit:
+                                                    {
+                                                        list.Add(lit.Token.Value);
+                                                        break;
+                                                    }
+                                                default:
+                                                    {
+                                                        Logger.Log(LogSeverity.Warning, $"Unsupported list initializer expression for {prop2.Declaration.Variables.First().Identifier.Text}, adding null.");
+                                                        list.Add(null);
+                                                        break;
+                                                    }
+                                            }
+                                        }
+                                        builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, list);
+                                    }
+                                    else
+                                        builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, new List<object>());
+                                    break;
+                                }
+                            default:
+                                Logger.Log(LogSeverity.Warning, $"Unsupported static field initializer for {prop2.Declaration.Variables.First().Identifier.Text}, skipping.");
+                                break;
+                        }
+                    }
                 }
             }
 

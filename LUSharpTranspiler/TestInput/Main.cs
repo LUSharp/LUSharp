@@ -4,7 +4,13 @@ namespace LUSharpTranspiler.TestInput
 {
     public class Player
     {
-        private static int InstanceCount { get; set; } = 5;
+        private static List<string> s_Instances = new()
+        {
+            "First",
+            "Second",
+            "Third"
+        };
+
         public string Name { get; set; }
         public string Health { get; set; }
 
@@ -15,7 +21,7 @@ namespace LUSharpTranspiler.TestInput
             this.Name = name;
             this.Health = health;
 
-            InstanceCount++;
+            s_Instances.Add(this.Name);
         }
     }
     public class Main
