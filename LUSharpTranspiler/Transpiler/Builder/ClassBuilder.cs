@@ -154,40 +154,79 @@ namespace LUSharpTranspiler.Transpiler.Builder
                         // handle different value types here
                         switch (prop2.Declaration.Variables.First().Initializer.Value)
                         {
-                            // literal expressions example: static type name = "value";
+                            //// literal expressions example: static type name = "value";
                             case LiteralExpressionSyntax les:
                                 {
                                     builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, les.Token.Value);
                                     break;
                                 }
-                            // new() expressions example: static type name = new List<string>() {}; can contain data
-                            case ImplicitObjectCreationExpressionSyntax:
+
+                            //// new() expressions example: static type name = new List<string>() {}; can contain data
+                            case ImplicitObjectCreationExpressionSyntax implicitObjectCreation:
                                 {
-                                    // if we have constructor data, add it 
-                                    if(prop2.Declaration.Variables.First().Initializer.Value is ImplicitObjectCreationExpressionSyntax ioce && ioce.Initializer != null)
+                                    // convert to lua table
+                                    List<object> items = new();
+                                    switch (implicitObjectCreation.Initializer)
                                     {
-                                        var list = new List<object>();
-                                        foreach(var expr in ioce.Initializer.Expressions)
-                                        {
-                                            switch(expr)
+                                        case InitializerExpressionSyntax ies:
                                             {
-                                                case LiteralExpressionSyntax lit:
+                                                foreach(var expression in ies.Expressions)
+                                                {
+                                                    // here we will determine if we are a dictionary or list
+                                                    switch(expression.RawKind)
                                                     {
-                                                        list.Add(lit.Token.Value);
-                                                        break;
+                                                        // dictionary entry
+                                                        case (int)SyntaxKind.ComplexElementInitializerExpression:
+                                                            {
+                                                                var cei = (expression as InitializerExpressionSyntax);
+                                                                var key = (cei.Expressions[0] as LiteralExpressionSyntax).Token.ValueText;
+                                                                var valueExpr = cei.Expressions[1];
+                                                                object value = valueExpr switch
+                                                                {
+                                                                    LiteralExpressionSyntax les2 => les2.Token.Value,
+                                                                    _ => null
+                                                                };
+                                                                items.Add(new KeyValuePair<string, object>(key, value));
+                                                                break;
+                                                            }
+                                                        // list entry
+                                                        case (int)SyntaxKind.StringLiteralExpression:
+                                                        case (int)SyntaxKind.NumericLiteralExpression:
+                                                        case (int)SyntaxKind.TrueLiteralExpression:
+                                                        case (int)SyntaxKind.FalseLiteralExpression:
+                                                            {
+                                                                var les3 = (expression as LiteralExpressionSyntax);
+                                                                items.Add(les3.Token.Value);
+                                                                break;
+                                                            }
+                                                        default:
+                                                            Logger.Log(LogSeverity.Warning, $"Unsupported collection entry type {expression.Kind()} in static field initializer for {prop2.Declaration.Variables.First().Identifier.Text}, skipping.");
+                                                            break;
                                                     }
-                                                default:
-                                                    {
-                                                        Logger.Log(LogSeverity.Warning, $"Unsupported list initializer expression for {prop2.Declaration.Variables.First().Identifier.Text}, adding null.");
-                                                        list.Add(null);
-                                                        break;
-                                                    }
+                                                }
+
+
+                                                break;
                                             }
+                                    }
+
+                                    // add into builder
+                                    if (items.All(x => x is KeyValuePair<string, object>))
+                                    {
+                                        // dictionary
+                                        var dict = new Dictionary<string, object>();
+                                        foreach (KeyValuePair<string, object> kvp in items)
+                                        {
+                                            dict[kvp.Key] = kvp.Value;
                                         }
-                                        builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, list);
+                                        builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, dict);
                                     }
                                     else
-                                        builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, new List<object>());
+                                    {
+                                        // list
+                                        builder.WithField(prop2.Declaration.Variables.First().Identifier.Text, items);
+                                    }
+
                                     break;
                                 }
                             default:
@@ -215,7 +254,7 @@ namespace LUSharpTranspiler.Transpiler.Builder
             }
 
 
-            Logger.Log(builder.Build());
+            Logger.Log("\n" + builder.Build());
 
             return cs;
         }
