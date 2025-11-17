@@ -10,7 +10,7 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
     {
         private readonly string _className;
         private readonly List<string> _parameters = new();
-        private readonly List<(string key, string value)> _privateFields = new();
+        private readonly List<(string key, object value, object defaul)> _privateFields = new();
 
         public ConstructorBuilder(string className)
         {
@@ -23,9 +23,9 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
             return this;
         }
 
-        public ConstructorBuilder WithPrivateField(string key, string value)
+        public ConstructorBuilder WithPrivateField(string key, object value, object defaul = null)
         {
-            _privateFields.Add((key, value));
+            _privateFields.Add((key, value, defaul));
             return this;
         }
 
@@ -35,9 +35,9 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
             func.Parameters.AddRange(_parameters);
 
             func.Body.Add(new LuaAssignment("local members", "{"));
-            foreach (var (key, value) in _privateFields)
+            foreach (var (key, value, defaul) in _privateFields)
             {
-                func.Body.Add(new InlineLuaLine($"    {key} = {value},"));
+                func.Body.Add(new InlineLuaLine($"    {key} = {(defaul == null ? value : ($"{value} or \"{defaul}\""))},"));
             }
             func.Body.Add(new InlineLuaLine("}"));
             func.Body.Add(new LuaReturn("members"));

@@ -43,70 +43,11 @@ namespace LUSharpTranspiler.AST.SourceConstructor
             public ClassBuilder WithField(string key, object value)
             {
                 // handle different value types here
-                switch (value)
-                {
-                    case Dictionary<string, object> dict:
-                        var nestedTable = new LuaTableBuilder();
-                        foreach (var kvp in dict)
-                        {
-                            switch (kvp.Value)
-                            {
-                                case string s:
-                                    nestedTable.AddField(kvp.Key, $"\"{s}\"");
-                                    break;
-                                case bool b:
-                                    nestedTable.AddField(kvp.Key, b ? "true" : "false");
-                                    break;
-                                case null:
-                                    nestedTable.AddField(kvp.Key, "nil");
-                                    break;
-                                default:
-                                    nestedTable.AddField(kvp.Key, kvp.Value);
-                                    break;
-                            }
-                        }
-                        _staticFields.AddField(key, nestedTable);
-                        break;
-                    // handle list types as lua tables
-                    case IEnumerable<Object> list:
-                        var tableBuilder = new LuaTableBuilder();
-                        int index = 1;
-                        foreach (var item in list)
-                        {
-                            switch (item)
-                            {
-                                case string s:
-                                    tableBuilder.AddField(index, $"\"{s}\"");
-                                    break;
-                                case bool b:
-                                    tableBuilder.AddField(index, b ? "true" : "false");
-                                    break;
-                                case null:
-                                    tableBuilder.AddField(index, "nil");
-                                    break;
-                                default:
-                                    tableBuilder.AddField(index, item);
-                                    break;
-                            }
-                            index++;
-                        }
-                        _staticFields.AddField(key, tableBuilder);
-                        break;
-                    case string s:
-                        _staticFields.AddField(key, $"\"{s}\"");
-                        break;
-                    case bool b:
-                        _staticFields.AddField(key, b ? "true" : "false");
-                        break;
-                    case null:
-                        _staticFields.AddField(key, "nil");
-                        break;
-                    default:
-                        _staticFields.AddField(key, value);
-                        break;
-                }
+                _staticFields.AddField(key, value);
                 return this;
             }
+
+            
 
             public string Build()
             {
