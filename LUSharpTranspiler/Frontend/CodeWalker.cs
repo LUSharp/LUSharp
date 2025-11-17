@@ -9,15 +9,13 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-namespace LUSharpTranspiler.Transpiler
+namespace LUSharpTranspiler.Frontend
 {
     /// <summary>
     /// Walks through c# code and parses classes and methods.
     /// </summary>
     internal class CodeWalker : CSharpSyntaxWalker
     {
-        public List<ClassBuilder> classDeclarations = new();
-
         /// <summary>
         /// Generic C# to lua type mapping
         /// </summary>

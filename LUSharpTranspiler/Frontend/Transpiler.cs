@@ -7,7 +7,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-namespace LUSharpTranspiler.Transpiler
+namespace LUSharpTranspiler.Frontend
 {
     /// <summary>
     /// Heart class for transpiling C# projects.
@@ -21,9 +21,14 @@ namespace LUSharpTranspiler.Transpiler
         /// <param name="outputPath">Output project directory.</param>
         public static void TranspileProject(string projectPath, string outputPath)
         {
-            // Get all .cs files in the project directory and its subdirectories
-            var csFiles = Directory.GetFiles(projectPath, "*.cs", SearchOption.AllDirectories);
-            foreach (var file in csFiles)
+            // Get all .cs files, sort them by client, server and shared
+
+            var clientFiles = Directory.GetFiles(projectPath, "Client/*.cs", SearchOption.AllDirectories);
+            var serverFiles = Directory.GetFiles(projectPath, "Server/*.cs", SearchOption.AllDirectories);
+            var sharedFiles = Directory.GetFiles(projectPath, "Shared/*.cs", SearchOption.AllDirectories);
+
+            // Process client scripts
+            foreach (var file in clientFiles)
             {
                 // Read the content of the file
                 var code = File.ReadAllText(file);
@@ -38,7 +43,7 @@ namespace LUSharpTranspiler.Transpiler
                     var diagnostics = syntaxTree.GetDiagnostics();
                     foreach(var diag in diagnostics)
                     {
-                        Logger.Log((LogSeverity)(diag.Severity), $"{diag.ToString()} in file /{file.Substring(file.LastIndexOf("\\") + 1)}");
+                        Logger.Log(diag.Severity, $"{diag} in file /{file[(file.LastIndexOf('\\') + 1)..]}");
                     }
 
                     continue;
@@ -46,6 +51,8 @@ namespace LUSharpTranspiler.Transpiler
 
                 ParseSyntaxTree(syntaxTree);
             }
+
+
             Logger.Log(LogSeverity.Info, "Transpilation completed.");
         }
         /// <summary>
@@ -58,18 +65,21 @@ namespace LUSharpTranspiler.Transpiler
             var root = syntaxTree.GetRoot();
 
             // validate the root node is a compilation unit
-            if(root.Kind() != SyntaxKind.CompilationUnit)
+            if (root.Kind() != SyntaxKind.CompilationUnit)
             {
                 Logger.Log(LogSeverity.Error, "The syntax tree root is not a compilation unit.");
                 return;
             }
 
+            // ensure the entry structure is valid
             if (!VerifyEntryStructure(root))
                 return;
 
-            CodeWalker roCodeBuilder = new CodeWalker();
+            CodeWalker roCodeBuilder = new();
             roCodeBuilder.Visit(root);
+
             var luauCode = roCodeBuilder.GetFinalizedCode();
+            
             Console.WriteLine("Generated Luau Code:");
             Console.WriteLine(luauCode);
         }

@@ -19,12 +19,12 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
         /// <summary>Add a key-value pair. Value can be string, number, bool, LuaTableBuilder, or arbitrary Lua expression.</summary>
         public LuaTableBuilder AddField(string key, object value)
         {
-            _fields.Add(($"[\"{key}\"]", value));
+            _fields.Add(($"[\"{key}\"]", ToFieldValue(value)));
             return this;
         }
         public LuaTableBuilder AddField(int key, object value)
         {
-            _fields.Add(($"[{key}]", value));
+            _fields.Add(($"[{key}]", ToFieldValue(value)));
             return this;
         }
 
@@ -45,7 +45,7 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
                 }
                 else if (value is string s)
                 {
-                    writer.WriteLine($"{key} = {s},");
+                    writer.WriteLine($"{key} = \"{s}\",");
                 }
                 else if (value is bool b)
                 {
@@ -76,7 +76,7 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
                 }
                 else if (value is string s)
                 {
-                    writer.WriteLine($"{key} = {s},");
+                    writer.WriteLine($"{key} = \"{s}\",");
                 }
                 else if (value is bool b)
                 {
@@ -89,7 +89,44 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
                 writer.IndentLess();
             }
         }
-
+        private static object ToFieldValue(object value)
+        {
+            // convert value to lua representation, including infinite recusion on lists
+            switch (value)
+            {
+                case string s:
+                    return s;
+                case int i:
+                    return i;
+                case bool b:
+                    return b;
+                case null:
+                    return null;
+                case IEnumerable<object> list:
+                    var tableBuilder = new LuaTableBuilder();
+                    int index = 1;
+                    foreach (var item in list)
+                    {
+                        tableBuilder.AddField(index, ToFieldValue(item));
+                        index++;
+                    }
+                    return tableBuilder;
+                case Dictionary<string, object> dict:
+                    var dictTableBuilder = new LuaTableBuilder();
+                    foreach (var kvp in dict)
+                    {
+                        dictTableBuilder.AddField(kvp.Key, ToFieldValue(kvp.Value));
+                    }
+                    return dictTableBuilder;
+                case LuaTableBuilder luaTable:
+                    return luaTable;
+                default:
+                    {
+                        Logger.Log("ToFieldValue default: " + value.ToString());
+                        return value.ToString() ?? "nil";
+                    }
+            }
+        }
         public string Build()
         {
             var writer = new LuaWriter();

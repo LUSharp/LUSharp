@@ -1,10 +1,8 @@
-﻿global using LUSharp;
-global using Logger = LUSharp.Logger;
-global using LogSeverity = LUSharp.Logger.LogSeverity;
+﻿global using LogSeverity = LUSharp.Logger.LogSeverity;
 using System;
 using System.IO;
 using Microsoft.CodeAnalysis.CSharp;
-
+using LUSharpTranspiler.Frontend;
 namespace LUSharpTranspiler
 {
     internal class Program
@@ -44,7 +42,7 @@ namespace LUSharpTranspiler
             DirectoryInfo outputDir = Directory.CreateDirectory($"{projectPath}-transpiled");
             Logger.Log(LogSeverity.Info, $"Transpiling project at {projectPath} »» ./{outputDir.Name}");
 
-            Transpiler.Transpiler.TranspileProject(projectPath, outputDir.FullName);
+            Frontend.Transpiler.TranspileProject(projectPath, outputDir.FullName);
         }
     }
 }
