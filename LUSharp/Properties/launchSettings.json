@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "LUSharp": {
+      "commandName": "Project",
+      "commandLineArgs": "new projectName"
+    }
+  }
+}
