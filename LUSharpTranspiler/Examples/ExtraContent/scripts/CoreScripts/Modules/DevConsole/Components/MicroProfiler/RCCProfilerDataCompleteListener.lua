@@ -1,0 +1,58 @@
+local CorePackages = game:GetService("CorePackages")
+local getClientReplicator = require(script.Parent.Parent.Parent.Util.getClientReplicator)
+
+local Roact = require(CorePackages.Packages.Roact)
+local RoactRodux = require(CorePackages.Packages.RoactRodux)
+
+local Actions = script.Parent.Parent.Parent.Actions
+local AppendRecentDumpPath = require(Actions.AppendRecentDumpPath)
+local SetRCCProfilerState = require(Actions.SetRCCProfilerState)
+
+local RCCProfilerDataCompleteListener = Roact.Component:extend("RCCProfilerDataCompleteListener")
+
+function RCCProfilerDataCompleteListener:didMount()
+	local clientReplicator = getClientReplicator()
+	if clientReplicator then
+		self.completeSignal = clientReplicator.RCCProfilerDataComplete:Connect(function(success, message)
+			if self.props.waitingForRecording then
+				if not success then
+					warn(message)
+					self.props.dispatchSetRCCProfilerState(false)
+				else
+					self.props.dispatchSetRCCProfilerState(false, message)
+					self.props.dispatchAppendRecentDumpPath(message)
+				end
+			end
+		end)
+	end
+end
+
+function RCCProfilerDataCompleteListener:willUnmount()
+	if self.completeSignal then
+		self.completeSignal:Disconnect()
+		self.completeSignal = nil
+	end
+end
+
+function RCCProfilerDataCompleteListener:render()
+	return nil
+end
+
+local function mapStateToProps(state, props)
+	return {
+		waitingForRecording = state.MicroProfiler.waitingForRecording,
+	}
+end
+
+local function mapDispatchToProps(dispatch)
+	return {
+		dispatchAppendRecentDumpPath = function(dumpPath: string)
+			dispatch(AppendRecentDumpPath(dumpPath))
+		end,
+		dispatchSetRCCProfilerState = function(waitingForRecording, fileLocation)
+			dispatch(SetRCCProfilerState(waitingForRecording, fileLocation))
+		end,
+	}
+end
+
+return RoactRodux.UNSTABLE_connect2(mapStateToProps, mapDispatchToProps)(RCCProfilerDataCompleteListener)
