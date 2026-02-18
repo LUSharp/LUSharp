@@ -363,3 +363,8 @@ MigrationBackup/
 FodyWeavers.xsd
 
 C:\Users\table\source\repos\LUSharp\LUSharpTranspiler\Examples/*
+
+# Claude design docs
+docs/
+/.claude
+/CLAUDE.md
