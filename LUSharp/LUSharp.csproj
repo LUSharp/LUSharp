@@ -8,13 +8,30 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <Compile Remove="Example\ClientMain.cs" />
+    <Compile Remove="Example\ServerMain.cs" />
+    <Compile Remove="Example\SharedMain.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.5-beta1" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="Client\" />
     <Folder Include="Shared\" />
     <Folder Include="Server\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Example\ClientMain.cs" />
+    <None Include="Example\ServerMain.cs" />
+    <None Include="Example\SharedMain.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LUSharpAPI\LUSharpAPI.csproj" />
   </ItemGroup>
 
 </Project>

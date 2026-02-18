@@ -1,0 +1,464 @@
+local CorePackages = game:GetService("CorePackages")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local GuiService = game:GetService("GuiService")
+local RobloxGui = CoreGui:WaitForChild("RobloxGui")
+
+local isTenFootInterface = require(RobloxGui.Modules.TenFootInterface):IsEnabled()
+local AppFonts = require(CorePackages.Workspace.Packages.Style).AppFonts
+local DarkTheme = require(CorePackages.Workspace.Packages.Style).Themes.DarkTheme
+local UIBlox = require(CorePackages.Packages.UIBlox)
+local UIBloxImages = UIBlox.App.ImageSet.Images
+local getIconSize = UIBlox.App.ImageSet.getIconSize
+local IconSize = UIBlox.App.ImageSet.Enum.IconSize
+
+local Display = require(CorePackages.Workspace.Packages.Display)
+local getUIScale = Display.GetDisplayStore(false).getUIScale
+
+local FFlagIncreaseUtilityRowTextSizeConsole = game:DefineFastFlag("IncreaseUtilityRowTextSizeConsole", false)
+local isInExperienceUIVREnabled =
+	require(CorePackages.Workspace.Packages.SharedExperimentDefinition).isInExperienceUIVREnabled
+local FFlagRelocateMobileMenuButtons = require(RobloxGui.Modules.Settings.Flags.FFlagRelocateMobileMenuButtons)
+local FIntRelocateMobileMenuButtonsVariant = require(RobloxGui.Modules.Settings.Flags.FIntRelocateMobileMenuButtonsVariant)
+
+local AppFontBaseSize = 16 * 1.2
+
+local UseBiggerText = false
+local UseStickyBarEnabled = false
+local UseBottomButtonBarOnMobile = false
+
+-- Roblox -> Nominal scaling factor depending on font
+local nominalSizeFactor = 0.794
+local topCornerInset, _ = GuiService:GetGuiInset()
+
+-- roughly maps SourceSans font size to Gotham/Builder using nominalSizeFactor, rounding down
+local fontSizeMap = {
+	[Enum.FontSize.Size14] = Enum.FontSize.Size11,
+	[Enum.FontSize.Size18] = Enum.FontSize.Size14,
+	[Enum.FontSize.Size24] = Enum.FontSize.Size18,
+	[Enum.FontSize.Size36] = Enum.FontSize.Size28,
+	[Enum.FontSize.Size48] = Enum.FontSize.Size36,
+}
+
+local nullColor = Color3.fromRGB(0, 0, 0)
+local nullFont: any? = AppFonts.default:getDefault()
+local nullFontSize: any? = fontSizeMap[Enum.FontSize.Size24]
+-- TODO: remove this along with FFlagSettingsPageScaleTextSize
+local nullTextSize: any? = 19
+
+local AppTheme = {
+	MenuContainer = {
+		Color = Color3.new(0, 0, 0),
+		Transparency = 0.2,
+	},
+	IGM_TabSelection = {
+		Color = Color3.new(1, 1, 1),
+		Transparency = 0,
+	},
+	White = {
+		Color = Color3.new(1, 1, 1),
+		Transparency = 0,
+	},
+	IGM_Background = {
+		Color = Color3.fromRGB(0, 0, 0),
+		Transparency = 1,
+	},
+	IGM_Button = {
+		Color = Color3.fromRGB(0, 0, 0),
+		Transparency = 1.0,
+	},
+	IGM_ButtonNonInteractable = {
+		Color = Color3.fromRGB(100, 100, 100),
+		Transparency = 0.0,
+	},
+	IGM_ButtonHover = {
+		Color = Color3.fromRGB(56, 57, 59),
+		Transparency = 0.0,
+	},
+	IGM_Stroke = {
+		Color = Color3.new(0.776, 0.776, 0.776),
+		Transparency = 0.0,
+	},
+	IGM_Selected = {
+		Color = Color3.fromRGB(217, 217, 217),
+		Transparency = 0.0,
+	},
+	Player_RowSelection = {
+		Color = Color3.new(0.396, 0.4, 0.408),
+		Transparency = 0.9,
+	},
+}
+
+local AppFont = {
+	Confirmation_Font = {
+		Font = AppFonts.default:getBold(),
+		RelativeSize = fontSizeMap[Enum.FontSize.Size36],
+		TextSize = 36 * nominalSizeFactor,
+	},
+	Button_Font = {
+		Font = AppFonts.default:getMedium(),
+		RelativeSize = fontSizeMap[Enum.FontSize.Size24],
+		TextSize = 22 * nominalSizeFactor,
+	},
+	Username = {
+		RelativeSize = if UseBiggerText or isTenFootInterface
+			then fontSizeMap[Enum.FontSize.Size24]
+			else fontSizeMap[Enum.FontSize.Size18],
+	},
+	DisplayName = {
+		RelativeSize = if isTenFootInterface then Enum.FontSize.Size24 else Enum.FontSize.Size18,
+		Font = AppFonts.default:getMedium(),
+	},
+	Settings_Font = {
+		Font = AppFonts.default:getDefault(),
+	},
+	Help_Title_Font = {
+		Font = AppFonts.default:getMedium(),
+		RelativeSize = fontSizeMap[Enum.FontSize.Size18],
+	},
+	Help_Text_Font = {
+		Font = AppFonts.default:getDefault(),
+		RelativeSize = fontSizeMap[Enum.FontSize.Size18],
+		TextSize = 18 * nominalSizeFactor,
+	},
+	Help_Gamepad_Font = {
+		Font = AppFonts.default:getMedium(),
+	},
+	Help_Touch_Font = {
+		Font = AppFonts.default:getBold(),
+		RelativeSize = fontSizeMap[Enum.FontSize.Size14],
+	},
+	Game_Settings_Font = {
+		Font = AppFonts.default:getDefault(),
+		RelativeSize = fontSizeMap[Enum.FontSize.Size24],
+	},
+	Conversation_Details_Font = {
+		Font = AppFonts.default:getDefault(),
+		TextSize = 16 * nominalSizeFactor,
+	},
+	Utility_Text_Font = {
+		Font = AppFonts.default:getDefault(),
+		TextSize = 22 * nominalSizeFactor,
+	},
+	Utility_Text_Small_Font = {
+		Font = AppFonts.default:getDefault(),
+		TextSize = 16 * nominalSizeFactor,
+	},
+	Utility_Row_Small_Font = {
+		Font = AppFonts.default:getDefault(),
+		TextSize = 16 * nominalSizeFactor,
+	},
+	Utility_Row_Font = {
+		Font = AppFonts.default:getMedium(),
+		TextSize = if (FFlagIncreaseUtilityRowTextSizeConsole and isTenFootInterface)
+			then 24 * nominalSizeFactor
+			else 16 * nominalSizeFactor,
+	},
+	Back_Button_Font = {
+		Font = AppFonts.default:getSemibold(),
+		TextSize = 24 * nominalSizeFactor,
+	},
+	Semibold_Font = {
+		Font = AppFonts.default:getSemibold(),
+	},
+	Bold_Font = {
+		Font = AppFonts.default:getMedium(),
+	},
+}
+
+setmetatable(AppTheme, {
+	__index = function(self, key)
+		return DarkTheme[key]
+	end,
+})
+
+local ComponentThemeKeys = {
+	SETTINGS_SHIELD = "IGM_Background",
+	SETTINGS_SHIELD_TRANSPARENCY = "IGM_Background",
+
+	SELECTION_TEXT_COLOR_NORMAL = "White",
+	SELECTION_TEXT_COLOR_HIGHLIGHTED = "White",
+
+	HubBarContainer = "IGM_Background",
+	HubBarContainerTransparency = "IGM_Background",
+	HubBarContainerHover = "IGM_Background",
+	HubBarHomeButton = "IGM_Background",
+	HubBarHomeButtonHover = "IGM_Background",
+	HubBarHomeButtonTransparency = "IGM_Background",
+	HubBarHomeButtonTransparencyHover = "IGM_Background",
+
+	DarkenBackground = "Overlay",
+
+	PlayerRowFrame = "BackgroundDefault",
+	PlayerRowSelection = "Player_RowSelection",
+	TabSelection = "IGM_TabSelection",
+
+	DefaultButton = "IGM_Button",
+	DefaultButtonHover = "IGM_ButtonHover",
+	DefaultButtonStroke = "SecondaryDefault",
+	WhiteButtonText = "SecondaryContent",
+
+	MenuContainer = "BackgroundUIContrast",
+
+	ControlInputText = "SystemPrimaryDefault",
+	ControlInputStroke = "Divider",
+	ControlInputBackground = "BackgroundDefault",
+	ControlInputFocusedStroke = "IGM_TabSelection",
+
+	InputActionBackground = "BackgroundUIDefault",
+
+	IconButton = "UIDefault",
+	IconButtonHover = "BackgroundOnHover",
+
+	ImageButton = "Divider",
+
+	RowFrameBackground = "BackgroundDefault",
+
+	DropdownListBg = "BackgroundUIDefault",
+	DropdownListFocusBg = "UIDefault",
+
+	-- settings slider
+	SELECTED_COLOR = "IGM_Selected",
+	NON_SELECTED_COLOR = "BackgroundUIDefault",
+
+	NotInteractableSelection = "UIEmphasis",
+
+	Confirmation = "Confirmation_Font",
+	Button = "Button_Font",
+	SettingsHub = "Settings_Font",
+	HelpTitle = "Help_Title_Font",
+	HelpText = "Help_Text_Font",
+	HelpGamepad = "Help_Gamepad_Font",
+	HelpTouch = "Help_Touch_Font",
+	GameSettings = "Game_Settings_Font",
+	ConversationDetails = "Conversation_Details_Font",
+	UtilityText = "Utility_Text_Font",
+	UtilityRow = "Utility_Row_Font",
+	UtilityRowSmall = "Utility_Row_Small_Font",
+	UtilityTextSmall = "Utility_Text_Small_Font",
+	BackButton = "Back_Button_Font",
+	Semibold = "Semibold_Font",
+	Bold = "Bold_Font",
+	ShareLinkTitle = "Utility_Text_Font",
+
+	ButtonNonInteractable = "IGM_ButtonNonInteractable",
+}
+
+local function getViewportSize(): any
+	if _G.__TESTEZ_RUNNING_TEST__ then
+		--Return fake value here for unit tests
+		return Vector2.new(1024, 1024)
+	end
+
+	if not workspace.CurrentCamera then
+		return nil
+	end
+
+	if
+		(workspace.CurrentCamera :: Camera).ViewportSize == Vector2.new(0, 0)
+		or (workspace.CurrentCamera :: Camera).ViewportSize == Vector2.new(1, 1)
+	then
+		return nil
+	end
+
+	return (workspace.CurrentCamera :: Camera).ViewportSize
+end
+
+local function isPortrait()
+	local viewport = getViewportSize()
+	return viewport and viewport.Y > viewport.X
+end
+
+local viewportSize = getViewportSize()
+local IsSmallTouchScreen = viewportSize
+	and UserInputService.TouchEnabled
+	and (viewportSize.Y < 500 or viewportSize.X < 700)
+local UseStickyBar = function()
+	local currentViewportSize = getViewportSize()
+	local isSmallScreen = currentViewportSize and (currentViewportSize.Y < 500 or currentViewportSize.X < 700)
+	return UseStickyBarEnabled and isSmallScreen
+end
+
+local HubPadding = {
+	PaddingTop = UDim.new(0, 0),
+	PaddingLeft = UDim.new(0, 20),
+	PaddingRight = UDim.new(0, 20),
+	PaddingBottom = UDim.new(0, 14),
+}
+local extraHubBottomPaddingMobile = 12
+local HubPaddingMobile = {
+	PaddingTop = UDim.new(0, 0),
+	PaddingLeft = UDim.new(0, 12),
+	PaddingRight = UDim.new(0, 12),
+	PaddingBottom = if FFlagRelocateMobileMenuButtons and (FIntRelocateMobileMenuButtonsVariant == 1 or FIntRelocateMobileMenuButtonsVariant == 3) then UDim.new(0, 12 + extraHubBottomPaddingMobile) else UDim.new(0, 12),
+}
+
+local MenuContainerPosition = {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 10),
+	Size = UDim2.new(0.0, 0, 0.0, 0),
+	AutomaticSize = Enum.AutomaticSize.XY,
+}
+
+local MenuContainerPositionMobile = {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, 8),
+	Size = UDim2.new(0.0, 0, 0.0, 0),
+	AutomaticSize = Enum.AutomaticSize.XY,
+}
+
+local MenuContainerPositionMobileWithStickyBar = {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, topCornerInset.Y),
+	Size = UDim2.new(1, -24, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+}
+
+return {
+	DefaultScrollBarThickness = 1,
+	DefaultCornerRadius = UDim.new(0, 8),
+	MenuContainerCornerRadius = UDim.new(0, 10),
+	DefaultStokeThickness = 1,
+	AlwaysShowBottomBar = function()
+		if UseStickyBar() then
+			return true
+		end
+		if IsSmallTouchScreen then
+			if not UseBottomButtonBarOnMobile then
+				return false
+			elseif isPortrait() then
+				return UseBottomButtonBarOnMobile
+			else
+				return not UseBottomButtonBarOnMobile
+			end
+		else
+			return true
+		end
+	end,
+	UIBloxThemeEnabled = true,
+	ShowHomeButton = false,
+	EnableVerticalBottomBar = UseBottomButtonBarOnMobile,
+	UseBiggerText = UseBiggerText,
+	UseStickyBar = UseStickyBar,
+	EnableDarkenBackground = true,
+	TabHeaderIconPadding = 5,
+	UseInspectAndBuyPanel = function()
+		return IsSmallTouchScreen
+	end,
+	ExtraHubBottomPaddingMobile = extraHubBottomPaddingMobile,
+	HubPadding = function()
+		if FFlagRelocateMobileMenuButtons and FIntRelocateMobileMenuButtonsVariant ~= 0 then
+			-- IsSmallTouchScreen does not return the correct value on initial render, call a function to get the value instead
+			local isSmallTouchScreen = function()
+				local viewportSize = getViewportSize()
+				return viewportSize
+						and UserInputService.TouchEnabled
+						and (viewportSize.Y < 500 or viewportSize.X < 700)
+			end
+
+			if isSmallTouchScreen() then
+				return HubPaddingMobile
+			else
+				return HubPadding
+			end
+		else
+			if IsSmallTouchScreen then
+				return HubPaddingMobile
+			else
+				return HubPadding
+			end
+		end
+	end,
+	MenuContainerPosition = function(settingsUIDelegate: any?)
+		if isInExperienceUIVREnabled and settingsUIDelegate then
+			local positionOverride = settingsUIDelegate:getMenuContainerPositionOverride()
+			if positionOverride then
+				return positionOverride
+			end
+		end
+		if IsSmallTouchScreen then
+			if UseStickyBar() then
+				return MenuContainerPositionMobileWithStickyBar
+			else
+				return MenuContainerPositionMobile
+			end
+		else
+			return MenuContainerPosition
+		end
+	end,
+	ExtraPageBottomPaddingMobile = 48,
+	ButtonHeight = 36,
+	LargeButtonHeight = 48,
+	SelectorArrowButtonWidth = 32,
+	VerticalMenuWidth = 92,
+	Images = UIBloxImages,
+	getIconSize = getIconSize,
+	IconSize = IconSize,
+	SHIELD_INACTIVE_POSITION = UDim2.new(0, 0, 1, 36),
+	viewportResized = function()
+		viewportSize = getViewportSize()
+		IsSmallTouchScreen = viewportSize
+			and UserInputService.TouchEnabled
+			and (viewportSize.Y < 500 or viewportSize.X < 700)
+	end,
+	color = function(key: string, nonThemeColor: Color3?)
+		key = ComponentThemeKeys[key] or key
+		return if AppTheme[key] then AppTheme[key].Color else nonThemeColor or nullColor
+	end,
+	transparency = function(key: string, nonThemeTransparency: number?)
+		key = ComponentThemeKeys[key] or key
+		return if AppTheme[key] then AppTheme[key].Transparency else nonThemeTransparency or 0
+	end,
+	font = function(nonThemeFont: any?, key: string?)
+		if not key then
+			return nullFont
+		end
+		key = ComponentThemeKeys[key] or key
+		return if AppFont[key] then AppFont[key].Font else nonThemeFont or nullFont
+	end,
+	fontSize = function(nonThemeFontSize: Enum.FontSize, key: string?)
+		if not key then
+			return fontSizeMap[nonThemeFontSize]
+		end
+		key = ComponentThemeKeys[key] or key
+		return if AppFont[key] then AppFont[key].RelativeSize else nonThemeFontSize or nullFontSize
+	end,
+	textSize = function(nonThemeTextSize: number, key: string?)
+		local scaleFactor = getUIScale(false)
+		if not key then
+				return nonThemeTextSize * nominalSizeFactor * scaleFactor
+		end
+		if IsSmallTouchScreen and key == "UtilityRow" then
+			key = "UtilityRowSmall"
+		elseif IsSmallTouchScreen and key == "UtilityText" then
+			key = "UtilityTextSmall"
+		end
+		key = ComponentThemeKeys[key] or key
+		if nonThemeTextSize ~= nil then
+			return if AppFont[key] and AppFont[key].TextSize
+				then AppFont[key].TextSize * scaleFactor
+				else nonThemeTextSize * nominalSizeFactor * scaleFactor
+		else
+			return if AppFont[key] and AppFont[key].TextSize
+				then AppFont[key].TextSize
+				else nonThemeTextSize * nominalSizeFactor or nullTextSize
+		end
+	end,
+	hydrateLabel = function(instance: any, colorStyle: string, fontStyle: string)
+		colorStyle = ComponentThemeKeys[colorStyle] or colorStyle
+		if AppTheme[colorStyle] then
+			local color = AppTheme[colorStyle]
+			instance.TextColor3 = color.Color
+			instance.TextTransparency = color.Transparency
+		end
+
+		if AppFont[fontStyle] then
+			local font = AppFont[colorStyle]
+			instance.Font = font.RelativeSize * AppFontBaseSize
+			instance.TextSize = font.TextSize
+		end
+	end,
+	platformNameTextSize = 18,
+	platformNameIconSize = UDim2.fromOffset(36, 36),
+	selectionCursor = AppTheme.SelectionCursor,
+}

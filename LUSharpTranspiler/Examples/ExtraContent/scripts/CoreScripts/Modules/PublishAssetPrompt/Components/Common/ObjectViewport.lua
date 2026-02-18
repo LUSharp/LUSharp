@@ -1,0 +1,269 @@
+--[[
+    Viewport to mimic a thumbnail view of the passed in model.
+    Mostly likely to be used with another viewport such as PreviewViewport when clicking the expand icon
+]]
+local CorePackages = game:GetService("CorePackages")
+local RunService = game:GetService("RunService")
+
+local Roact = require(CorePackages.Packages.Roact)
+
+local UIBlox = require(CorePackages.Packages.UIBlox)
+local withStyle = UIBlox.Style.withStyle
+local ImageSetLabel = UIBlox.Core.ImageSet.ImageSetLabel
+local t = require(CorePackages.Packages.t)
+local UIBloxImages = UIBlox.App.ImageSet.Images
+local ShimmerPanel = UIBlox.App.Loading.ShimmerPanel
+local Constants = require(script.Parent.Parent.Parent.Constants)
+local CharacterUtility = require(CorePackages.Packages.Thumbnailing).CharacterUtility
+local CameraUtility = require(CorePackages.Packages.Thumbnailing).CameraUtility
+local CFrameUtility = require(CorePackages.Packages.Thumbnailing).CFrameUtility
+local EmoteUtility = require(CorePackages.Packages.Thumbnailing).EmoteUtility
+
+local IconButton = UIBlox.App.Button.IconButton
+local IconSize = UIBlox.App.ImageSet.Enum.IconSize
+local PreviewExpandIcon = UIBloxImages["icons/actions/previewExpand"]
+local DropShadow = UIBloxImages["component_assets/dropshadow_25"]
+
+local VIEWPORT_HEIGHT = 240
+local DEFAULT_CAMERA_FOV = 30
+local DEFAULT_CAMERA_Y_ROT = 25
+local DROP_SHADOW_SIZE = UDim2.new(0.4, 50, 0.15, 10)
+local DROP_SHADOW_POSITION = UDim2.new(0.5, 0, 1, 0)
+
+local ObjectViewport = Roact.PureComponent:extend("ObjectViewport")
+
+ObjectViewport.validateProps = t.strictInterface({
+	model = t.optional(t.instanceOf("Model")),
+	fieldOfView = t.optional(t.number),
+	isLoading = t.optional(t.boolean),
+	-- Consider changing how we determine the camera view if other assets need different behavior
+	useFullBodyCameraSettings = t.optional(t.boolean),
+	openPreviewView = t.optional(t.callback),
+	LayoutOrder = t.optional(t.number),
+	isHumanoidModel = t.optional(t.boolean),
+})
+
+function ObjectViewport:createCamera()
+	local camera = Instance.new("Camera")
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.Parent = self.worldModelRef:getValue()
+	camera.HeadLocked = true
+	camera.VRTiltAndRollEnabled = true
+
+	return camera
+end
+
+function ObjectViewport:init()
+	self.worldModelRef = Roact.createRef()
+	self.camera, self.updateCamera = Roact.createBinding(nil)
+	self.isMounted = false
+end
+
+local function getCameraDistance(fov, extentsSize)
+	local xSize, ySize, zSize = extentsSize.X, extentsSize.Y, extentsSize.Z
+	local maxSize = math.max(xSize, ySize, zSize)
+	local fovMultiplier = 1 / math.tan(math.rad(fov) / 2)
+	local halfSize = maxSize / 2
+	return (halfSize * fovMultiplier) + (zSize / 2)
+end
+
+function ObjectViewport:setupViewportForAsset()
+	if not self.props.model then
+		return
+	end
+
+	local input = self.props.model:Clone()
+	input.Parent = self.worldModelRef:getValue()
+
+	local inputCFrame
+	local inputSize
+	if input:IsA("Model") then
+		-- Move model to origin for consistent positioning
+		input:MoveTo(Vector3.new(0, 0, 0))
+		inputCFrame = input:GetModelCFrame()
+		inputSize = input:GetExtentsSize()
+	else
+		-- Accessory: move first MeshPart
+		local meshPart: MeshPart? = input:FindFirstChildWhichIsA("MeshPart", true)
+		if not meshPart then
+			return
+		end
+
+		meshPart.CFrame = CFrame.new(0, 0, 0)
+		inputCFrame = meshPart.CFrame
+		inputSize = meshPart.Size
+	end
+
+	local initialLookVector = inputCFrame.lookVector
+
+	-- Create and setup camera
+	local camera = self:createCamera()
+
+	-- Calculate camera distance based on model size
+	local fov = if self.props.fieldOfView then self.props.fieldOfView else DEFAULT_CAMERA_FOV
+	local cameraDistance = getCameraDistance(fov, inputSize)
+	local cameraDegreesAngle = Vector2.new(5, 20)
+
+	local WORLD_Y_AXIS = Vector3.new(0, 1, 0)
+	local WORLD_X_AXIS = Vector3.new(1, 0, 0)
+
+	local newLookVector = initialLookVector
+	local angleX = math.rad(cameraDegreesAngle.X)
+	local angleY = math.rad(cameraDegreesAngle.Y)
+
+	newLookVector = CFrame.fromAxisAngle(WORLD_X_AXIS, angleX):VectorToWorldSpace(newLookVector)
+	newLookVector = CFrame.fromAxisAngle(WORLD_Y_AXIS, angleY):VectorToWorldSpace(newLookVector)
+
+	-- Position camera using the rotated look vector
+	local cameraPosition = inputCFrame.Position + (newLookVector * cameraDistance)
+	local cameraCFrame = CFrame.new(cameraPosition, inputCFrame.Position)
+
+	camera.CFrame = cameraCFrame
+	camera.FieldOfView = fov
+
+	self.updateCamera(camera)
+end
+
+-- Clone model prop to add to Viewport and setup camera
+function ObjectViewport:setupViewport()
+	local model = self.props.model:Clone()
+	assert(model.PrimaryPart, "The Model should have a PrimaryPart for setting up Camera")
+	model.Parent = self.worldModelRef:getValue()
+	model:MoveTo(Vector3.new(0, 0, 0))
+
+	local useFullBodyCameraSettings = self.props.useFullBodyCameraSettings
+	-- if doing a view of a body, pose it with the head turned to the side
+	if useFullBodyCameraSettings then
+		EmoteUtility.SetPlayerCharacterPoseWithMoodFallback(model)
+		-- wait for pose to apply
+		RunService.PostSimulation:Wait()
+		if not self.isMounted then
+			return
+		end
+	end
+	local camera = self:createCamera()
+	local targetCFrame
+	if useFullBodyCameraSettings then
+		local headCFrame = CFrameUtility.CalculateTargetCFrame(model.Head.CFrame)
+		targetCFrame = headCFrame - headCFrame.Position + model.PrimaryPart.CFrame.Position
+	else
+		targetCFrame = model.PrimaryPart.CFrame
+	end
+
+	local minPartsExtent, maxPartsExtent = CharacterUtility.CalculateModelExtents(model, targetCFrame)
+	local cameraOptions = {
+		optFieldOfView = if self.props.fieldOfView then self.props.fieldOfView else DEFAULT_CAMERA_FOV,
+		targetCFrame = targetCFrame,
+		minExtent = minPartsExtent,
+		maxExtent = maxPartsExtent,
+		extentScale = 1.0,
+	}
+	if useFullBodyCameraSettings then
+		cameraOptions.optCameraXRot = CameraUtility.XRotForFullBody
+		cameraOptions.optCameraDistanceScale = CameraUtility.DistanceScaleForFullBody
+		cameraOptions.extentScale = CameraUtility.DefaultBodyMarginScale
+	else
+		cameraOptions.optCameraYRot = DEFAULT_CAMERA_Y_ROT
+	end
+	CameraUtility.SetupCamera(camera, cameraOptions)
+	self.updateCamera(camera)
+end
+
+function ObjectViewport:didMount()
+	self.isMounted = true
+	task.spawn(function()
+		if not self.props.isLoading then
+			if self.props.isHumanoidModel then
+				self:setupViewport()
+			else
+				self:setupViewportForAsset()
+			end
+		end
+	end)
+end
+
+function ObjectViewport:didUpdate(prevProps)
+	local shouldSetupViewport = prevProps.isLoading and not self.props.isLoading
+	if shouldSetupViewport then
+		task.spawn(function()
+			if self.props.isHumanoidModel then
+				self:setupViewport()
+			else
+				self:setupViewportForAsset()
+			end
+		end)
+	end
+end
+
+function ObjectViewport:render()
+	return withStyle(function(style)
+		local theme = style.Theme
+		if not self.props.isLoading then
+			return Roact.createElement("Frame", {
+				BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+				BackgroundTransparency = 0,
+				-- Extend X width due to padding in BasePublishPrompt to make the gradient take the whole prompt width
+				Size = UDim2.new(1, Constants.PromptSidePadding * 2, 0, VIEWPORT_HEIGHT),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				LayoutOrder = self.props.LayoutOrder,
+			}, {
+				ViewportFrame = Roact.createElement("ViewportFrame", {
+					BackgroundTransparency = 1,
+					Size = UDim2.fromScale(1, 1),
+					Position = UDim2.fromScale(0.5, 0.5),
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					LightColor = Constants.ViewportLightColor,
+					Ambient = Constants.ViewportLightAmbient,
+					LightDirection = Constants.ViewportLightDirection,
+					CurrentCamera = self.camera,
+				}, {
+					WorldModel = Roact.createElement("WorldModel", {
+						[Roact.Ref] = self.worldModelRef,
+					}),
+				}),
+				ExpandPreviewButton = self.props.openPreviewView and Roact.createElement(IconButton, {
+					position = UDim2.new(1, -Constants.PromptSidePadding, 1, 0),
+					anchorPoint = Vector2.new(1, 1),
+					icon = PreviewExpandIcon,
+					iconSize = IconSize.Medium,
+					onActivated = self.props.openPreviewView,
+				}),
+				Gradient = Roact.createElement("UIGradient", {
+					Rotation = 90,
+					Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, theme.BackgroundMuted.Color),
+						ColorSequenceKeypoint.new(1, theme.BackgroundMuted.Color),
+					}),
+					Transparency = NumberSequence.new({
+						NumberSequenceKeypoint.new(0, 1),
+						NumberSequenceKeypoint.new(0.7, 0.75),
+						NumberSequenceKeypoint.new(1, 1),
+					}),
+				}),
+				DropShadow = Roact.createElement(ImageSetLabel, {
+					Position = DROP_SHADOW_POSITION,
+					AnchorPoint = Vector2.new(0.5, 1),
+					Image = DropShadow,
+					BackgroundTransparency = 1,
+					ImageTransparency = 0.5,
+					Size = DROP_SHADOW_SIZE,
+					ZIndex = 0,
+				}),
+			})
+		else
+			return Roact.createElement(ShimmerPanel, {
+				Size = UDim2.new(1, Constants.PromptSidePadding * 2, 0, VIEWPORT_HEIGHT),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				LayoutOrder = self.props.LayoutOrder,
+			})
+		end
+	end)
+end
+
+function ObjectViewport:willUnmount()
+	self.isMounted = false
+end
+
+return ObjectViewport
