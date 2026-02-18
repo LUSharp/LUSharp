@@ -1,7 +1,7 @@
 
-using LUSharpTranspiler.Runtime.STL.Classes;
+using LUSharpAPI.Runtime.STL.Classes;
 
-namespace LUSharpTranspiler.Runtime.Internal
+namespace LUSharpAPI.Runtime.Internal
 {
     public abstract class ModuleScript
     {
