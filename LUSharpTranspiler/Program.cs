@@ -18,7 +18,7 @@ namespace LUSharpTranspiler
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(
-                @"               _ _                                            
+                @"                 _ _                                            
                  __    _____ _| | |_    _____                     _ _         
                 |  |  |  |  |_     _|  |_   _|___ ___ ___ ___ ___|_| |___ ___ 
                 |  |__|  |  |_     _|    | | |  _| .'|   |_ -| . | | | -_|  _|
