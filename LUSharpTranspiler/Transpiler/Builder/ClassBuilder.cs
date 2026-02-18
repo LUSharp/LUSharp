@@ -14,10 +14,14 @@ namespace LUSharpTranspiler.Transpiler.Builder
 {
     public class ClassBuilder
     {
+        public static Dictionary<string, ClassBuilder> RegisteredClasses = new();
+
         /// <summary>
         /// Name of the class
         /// </summary>
         public string ClassName { get; set; }
+
+        public ClassDeclarationSyntax ClassDeclaration { get; set; }
 
         /// <summary>
         /// Public global class members (Player.Damage(self,plr))
@@ -49,9 +53,12 @@ namespace LUSharpTranspiler.Transpiler.Builder
         {
             // Initialize the class builder with metadata from C# syntax tree
             ClassBuilder cs = new();
+            if (!RegisteredClasses.ContainsKey(classDeclaration.Identifier.ValueText))
+                RegisteredClasses.Add(classDeclaration.Identifier.ValueText, cs);
+
             cs.ClassName = classDeclaration.Identifier.ValueText;
             cs.StaticMembers = [.. classDeclaration.Members.Where(x => Helpers.HasModifier(x, SyntaxKind.StaticKeyword))];
-            cs.InstanceMembers = [.. classDeclaration.Members.Where(x => Helpers.HasModifier(x, SyntaxKind.PublicKeyword) && !Helpers.HasModifier(x, SyntaxKind.StaticKeyword))];
+            cs.InstanceMembers = [.. classDeclaration.Members.Where(x => !Helpers.HasModifier(x, SyntaxKind.StaticKeyword))];
 
             // Create the Lua source constructor builder
             SourceConstructor.ClassBuilder builder = SourceConstructor.ClassBuilder.Create(cs.ClassName);
@@ -240,6 +247,7 @@ namespace LUSharpTranspiler.Transpiler.Builder
             });
         }
 
+      
         /// <summary>
         /// Adds all parameters from the C# constructor to the Lua constructor.
         /// </summary>
@@ -290,7 +298,7 @@ namespace LUSharpTranspiler.Transpiler.Builder
                         .OfType<PropertyDeclarationSyntax>()
                         .FirstOrDefault(p => p.Identifier.ValueText == left?.Identifier.ValueText);
 
-                    if(property == null)
+                    if (property == null)
                     {
                         Logger.LogException("Failed to find property for constructor assignment: " + left?.Identifier.ValueText);
                         break;
@@ -298,7 +306,8 @@ namespace LUSharpTranspiler.Transpiler.Builder
 
                     // check for default value
                     var defaultValue = property.Initializer?.Value;
-                    if (defaultValue != null) {
+                    if (defaultValue != null)
+                    {
                         // handle literal default values
                         if (defaultValue is LiteralExpressionSyntax les)
                         {
@@ -313,6 +322,19 @@ namespace LUSharpTranspiler.Transpiler.Builder
                     }
                 }
             }
+            // Add any properties not explicitly assigned in the constructor and assign them a default value
+            // Add any properties not explicitly assigned in the constructor and assign them a default value
+            foreach (var member in constructor.Parent.DescendantNodes().OfType<PropertyDeclarationSyntax>())
+            {
+                var propName = member.Identifier.Text;
+                if (!constructor.Body?.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                        .Any(e => e.Left is IdentifierNameSyntax l && l.Identifier.ValueText == propName) ?? true)
+                {
+                    var defaultValue = GetDefaultValueForType(member.Type);
+                    c.WithPrivateField(propName, defaultValue);
+                }
+            }
+            
         }
 
         #endregion
@@ -667,9 +689,98 @@ namespace LUSharpTranspiler.Transpiler.Builder
                 // Array creation: new object[] { ... }
                 (int)SyntaxKind.ArrayCreationExpression => ProcessArrayCreation(expression, fieldName),
 
+                // Object creation: new Type { ... }
+                (int)SyntaxKind.ObjectCreationExpression => ProcessObjectCreationExpression(expression, fieldName),
+
                 // Unsupported expression type
                 _ => LogUnsupportedExpression(expression, fieldName)
             };
+        }
+
+
+        private static object? ProcessObjectCreationExpression(ExpressionSyntax expression, string fieldName)
+        {
+            var objectCreation = expression as ObjectCreationExpressionSyntax;
+            if (objectCreation == null) 
+                return null;
+
+            var objectType = objectCreation.Type;
+
+            switch (objectType)
+            {
+                case IdentifierNameSyntax identifierNameSyntax:
+                    {
+                        if (RegisteredClasses.TryGetValue(identifierNameSyntax.Identifier.ValueText, out var classDecl))
+                        {
+                            // Create a new Lua table for the instance
+                            LuaTableBuilder instance = new();
+
+                            // Process constructor arguments
+                            var constructorArgs = new List<object?>();
+                            if (objectCreation.ArgumentList != null)
+                            {
+                                foreach (var arg in objectCreation.ArgumentList.Arguments)
+                                {
+                                    var argValue = ProcessCollectionExpression(arg.Expression, fieldName);
+                                    constructorArgs.Add(argValue);
+                                }
+                            }
+
+                            // Add properties with default values
+                            foreach (var member in classDecl.InstanceMembers)
+                            {
+                                if (member is PropertyDeclarationSyntax property)
+                                {
+                                    var propName = property.Identifier.Text;
+                                    var defaultValue = GetDefaultValueForType(property.Type);
+                                    instance.AddField(propName, defaultValue);
+                                }
+                            }
+
+                            // Process object initializer if present
+                            if (objectCreation.Initializer != null)
+                            {
+                                foreach (var initializer in objectCreation.Initializer.Expressions)
+                                {
+                                    if (initializer is AssignmentExpressionSyntax assignment &&
+                                        assignment.Left is IdentifierNameSyntax identifier)
+                                    {
+                                        var propName = identifier.Identifier.Text;
+                                        var value = ProcessCollectionExpression(assignment.Right, $"{fieldName}.{propName}");
+                                        instance.AddField(propName, value);
+                                    }
+                                }
+                            }
+
+                            return instance;
+                        }
+                        else
+                        {
+                            Logger.Log(LogSeverity.Warning, 
+                                $"Unknown class type {identifierNameSyntax.Identifier.ValueText} in object creation for field {fieldName}, skipping.");
+                            return null;
+                        }
+                    }
+                default:
+                    Logger.Log(LogSeverity.Warning, 
+                        $"Unsupported object creation type {objectType.GetType().Name} in field {fieldName}");
+                    return null;
+            }
+        }
+
+        private static object? GetDefaultValueForType(TypeSyntax type)
+        {
+            if (type is PredefinedTypeSyntax predefinedType)
+            {
+                return predefinedType.Keyword.ValueText switch
+                {
+                    "int" or "double" or "float" => 0,
+                    "bool" => false,
+                    "string" => string.Empty,
+                    _ => null
+                };
+            }
+            return null;
         }
 
         /// <summary>

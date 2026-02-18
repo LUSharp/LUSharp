@@ -8,7 +8,7 @@ namespace LUSharpTranspiler.Runtime.STL.Types
     {
     }
     public abstract class RBXScriptSignal : IRBXScriptSignal
-    {
+    {   
         /// <summary>
         /// Establishes a function to be called when the event fires. Returns an RBXScriptConnection object associated with the connection. 
         /// </summary>
@@ -42,6 +42,11 @@ namespace LUSharpTranspiler.Runtime.STL.Types
         /// </summary>
         /// <returns></returns>
         public abstract object[] Wait();
+        public static RBXScriptConnection operator +(RBXScriptSignal signal, Action action)
+        {
+            return signal.Connect(action);
+        }
+
     }
     public abstract class RBXScriptSignal<T1> : IRBXScriptSignal
     {
@@ -78,6 +83,10 @@ namespace LUSharpTranspiler.Runtime.STL.Types
         /// </summary>
         /// <returns></returns>
         public abstract object[] Wait();
+        public static RBXScriptSignal<T1> operator +(RBXScriptSignal<T1> signal, Action<T1> action)
+        {
+            return signal;
+        }
     }
     public abstract class RBXScriptSignal<T1, T2> : IRBXScriptSignal
     {
@@ -114,5 +123,9 @@ namespace LUSharpTranspiler.Runtime.STL.Types
         /// </summary>
         /// <returns></returns>
         public abstract object[] Wait();
+        public static RBXScriptConnection operator +(RBXScriptSignal<T1, T2> signal, Action<T1, T2> action)
+        {
+            return signal.Connect(action);
+        }
     }
 }
