@@ -1,14 +1,16 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36310.24 d17.14
+VisualStudioVersion = 17.14.36310.24
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LUSharp", "LUSharp\LUSharp.csproj", "{81114757-4632-48DE-88EF-ADD15AF29E8D}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LUSharp", "LUSharp\LUSharp.csproj", "{81114757-4632-48DE-88EF-ADD15AF29E8D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LUSharpTranspiler", "LUSharpTranspiler\LUSharpTranspiler.csproj", "{00C7FE5B-54AA-4AE8-B6F7-D4C75B2C9BC1}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LUSharpTranspiler", "LUSharpTranspiler\LUSharpTranspiler.csproj", "{00C7FE5B-54AA-4AE8-B6F7-D4C75B2C9BC1}"
 	ProjectSection(ProjectDependencies) = postProject
 		{81114757-4632-48DE-88EF-ADD15AF29E8D} = {81114757-4632-48DE-88EF-ADD15AF29E8D}
 	EndProjectSection
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LUSharpAPI", "LUSharpAPI\LUSharpAPI.csproj", "{5F2578BF-4B47-43FD-B605-10755A3AA4CD}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -24,6 +26,10 @@ Global
 		{00C7FE5B-54AA-4AE8-B6F7-D4C75B2C9BC1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{00C7FE5B-54AA-4AE8-B6F7-D4C75B2C9BC1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{00C7FE5B-54AA-4AE8-B6F7-D4C75B2C9BC1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5F2578BF-4B47-43FD-B605-10755A3AA4CD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5F2578BF-4B47-43FD-B605-10755A3AA4CD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5F2578BF-4B47-43FD-B605-10755A3AA4CD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5F2578BF-4B47-43FD-B605-10755A3AA4CD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

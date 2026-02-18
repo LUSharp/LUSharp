@@ -1,0 +1,65 @@
+local CorePackages = game:GetService("CorePackages")
+local SharedFlags = require(CorePackages.Workspace.Packages.SharedFlags)
+local PerformFetch = require(CorePackages.Workspace.Packages.Http).PerformFetch
+local InspectAndBuyFolder = script.Parent.Parent
+local Thunk = require(InspectAndBuyFolder.Thunk)
+local AssetInfo = require(InspectAndBuyFolder.Models.AssetInfo)
+local BundleInfo = require(InspectAndBuyFolder.Models.BundleInfo)
+local Network = require(InspectAndBuyFolder.Services.Network)
+local SetAssets = require(InspectAndBuyFolder.Actions.SetAssets)
+local SetBundles = require(InspectAndBuyFolder.Actions.SetBundles)
+local GetExperiencePlayability = require(InspectAndBuyFolder.Thunks.GetExperiencePlayability)
+local GetExperienceInfo = require(InspectAndBuyFolder.Thunks.GetExperienceInfo)
+local createInspectAndBuyKeyMapper = require(InspectAndBuyFolder.createInspectAndBuyKeyMapper)
+local SendCounter = require(InspectAndBuyFolder.Thunks.SendCounter)
+local Constants = require(InspectAndBuyFolder.Constants)
+
+local FFlagIBV2Attribution = SharedFlags.FFlagIBV2Attribution
+
+local requiredServices = {
+	Network,
+}
+
+local keyMapper = createInspectAndBuyKeyMapper("getItemDetails")
+
+--[[
+	Get information about a product. Specifically if it is purchasable or owned.
+]]
+local function GetItemDetails(itemId, itemType)
+	return Thunk.new(script.Name, requiredServices, function(store, services)
+		local network = services[Network]
+
+		local key = keyMapper(store:getState().storeId, itemId, itemType)
+
+		return PerformFetch.Single(key, function()
+			return network.getItemDetails(itemId, itemType):andThen(function(results)
+				if itemType == Enum.AvatarItemType.Asset then
+					local newAsset = AssetInfo.fromGetItemDetails(results)
+					store:dispatch(SetAssets({ newAsset }))
+				elseif itemType == Enum.AvatarItemType.Bundle then
+					local newBundle = BundleInfo.fromGetItemDetails(results)
+					store:dispatch(SetBundles({ newBundle }))
+				else
+					store:dispatch(SendCounter(Constants.Counters.GetItemDetailsRespondedWithUnknownItemType))
+				end
+
+				if FFlagIBV2Attribution and results.CreatingUniverseId then
+					store:dispatch(GetExperiencePlayability(results.CreatingUniverseId))
+					store:dispatch(GetExperienceInfo(results.CreatingUniverseId))
+				end
+
+				store:dispatch(
+					SendCounter(Constants.Counters.GetItemDetails .. Constants.CounterSuffix.RequestSucceeded)
+				)
+			end, function(err)
+				store:dispatch(
+					SendCounter(Constants.Counters.GetItemDetails .. Constants.CounterSuffix.RequestRejected)
+				)
+			end)
+		end)(store):catch(function(err)
+			store:dispatch(SendCounter(Constants.Counters.GetItemDetails .. Constants.CounterSuffix.RequestFailed))
+		end)
+	end)
+end
+
+return GetItemDetails

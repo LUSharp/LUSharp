@@ -1,0 +1,128 @@
+local Players = game:GetService("Players")
+local CorePackages = game:GetService("CorePackages")
+local CoreGui = game:GetService("CoreGui")
+
+local UserProfiles = require(CorePackages.Workspace.Packages.UserProfiles)
+local UserProfileStore = UserProfiles.Stores.UserProfileStore
+local SharedFlags = require(CorePackages.Workspace.Packages.SharedFlags)
+
+local FFlagUserProfileStoreQueryRefetch = SharedFlags.FFlagUserProfileStoreQueryRefetch
+
+local playerConnections = {}
+
+local Connections = {
+	CharacterAdded = "CharacterAdded",
+	CharacterRemoving = "CharacterRemoving",
+	HumanoidDisplayNameChanged = "HumanoidDisplayNameChanged",
+	CharacterHumanoidAdded = "CharacterHumanoidAdded",
+}
+type Profile = {
+	names: {
+		inExperienceCombinedName: string,
+		displayName: string,
+	},
+}
+
+local function setName(humanoid: Humanoid, player: Player, profile: Profile)
+	local combinedName = profile.names.inExperienceCombinedName
+	local displayName = profile.names.displayName
+	if profile.names.displayName == humanoid.DisplayName then
+		humanoid.InternalDisplayName = combinedName
+		playerConnections[player][Connections.HumanoidDisplayNameChanged] = humanoid
+			:GetPropertyChangedSignal("DisplayName")
+			:Connect(function()
+				if displayName ~= humanoid.DisplayName then
+					humanoid.InternalDisplayName = ""
+				end
+			end)
+	end
+end
+
+local function checkHumanoid(player: Player, character: Model, profile: Profile)
+	local humanoid: Humanoid? = character:FindFirstChildWhichIsA("Humanoid")
+	if humanoid then
+		setName(humanoid, player, profile)
+	end
+	playerConnections[player][Connections.CharacterHumanoidAdded] = character.ChildAdded:Connect(function(child)
+		if child:IsA("Humanoid") then
+			setName(child, player, profile)
+		end
+	end)
+end
+
+local function setNameOnCharacterAdded(player: Player, profile: Profile)
+	playerConnections[player] = {}
+	if player.Character then
+		checkHumanoid(player, player.Character, profile)
+	end
+
+	playerConnections[player][Connections.CharacterAdded] = player.CharacterAdded:Connect(function(character)
+		checkHumanoid(player, character, profile)
+	end)
+	playerConnections[player][Connections.CharacterRemoving] = player.CharacterRemoving:Connect(function()
+		local characterHumanoidAdded = playerConnections[player][Connections.CharacterHumanoidAdded]
+		local humanoidDisplayNameChanged = playerConnections[player][Connections.HumanoidDisplayNameChanged]
+		if characterHumanoidAdded then
+			playerConnections[player][Connections.CharacterHumanoidAdded]:Disconnect()
+		end
+		if humanoidDisplayNameChanged then
+			playerConnections[player][Connections.HumanoidDisplayNameChanged]:Disconnect()
+		end
+	end)
+end
+
+local function setCurrentPlayersNames()
+	local players: { Player } = Players:GetPlayers()
+	local playerIds: { string } = {}
+	local playersFormatted = {}
+	for _, player: Player in pairs(players) do
+		table.insert(playerIds, tostring(player.UserId))
+		playersFormatted[tostring(player.UserId)] = player
+	end
+	UserProfileStore.get().fetchNamesByUserIds(playerIds, function(result)
+		local status, profiles = result.status, result.data
+		if status == "success" then
+			for _, profile in profiles do
+				local player = playersFormatted[profile.userId]
+				setNameOnCharacterAdded(player, {
+					names = {
+						inExperienceCombinedName = profile.names.getInExperienceCombinedName(false),
+						displayName = profile.names.getDisplayName(false),
+					},
+				})
+			end
+		end
+	end)
+end
+
+local function onPlayerAdded(player: Player)
+	UserProfileStore.get().fetchNamesByUserIds({ tostring(player.UserId) }, function(result)
+			local status, profiles = result.status, result.data
+			if status == "success" then
+				local profile = profiles[1]
+				setNameOnCharacterAdded(player, {
+					names = {
+						inExperienceCombinedName = profile.names.getInExperienceCombinedName(false),
+						displayName = profile.names.getDisplayName(false),
+					},
+				})
+			end
+		end)
+end
+
+local function onPlayerRemoving(player: Player)
+	local connections = playerConnections[player]
+	if playerConnections[player] then
+		for _, connection in pairs(connections) do
+			connection:Disconnect()
+		end
+		playerConnections[player] = nil
+	end
+	if FFlagUserProfileStoreQueryRefetch then
+		UserProfileStore.get().invalidateCachedNamesForUserIds({ tostring(player.UserId) })
+	end
+end
+
+setCurrentPlayersNames()
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(onPlayerRemoving)
