@@ -70,7 +70,7 @@ namespace LUSharpTranspiler.Frontend
                 }
                 else
                 {
-                    Logger.Log(LUSharp.Logger.LogSeverity.Warning, $"No Lua type mapping found for C# type: {paramType}. Defaulting to 'any'.");
+                    Logger.Log(LogSeverity.Warning, $"No Lua type mapping found for C# type: {paramType}. Defaulting to 'any'.");
                     return $"{paramName}: any"; // default to 'any' if no mapping found
                 }
             }));
@@ -113,7 +113,7 @@ namespace LUSharpTranspiler.Frontend
                                     expressionString = "print";
                                 else
                                 {
-                                    Logger.Log(LUSharp.Logger.LogSeverity.Warning, "Direct usage of Console is not supported in Lua. Use Console.WriteLine for output.");
+                                    Logger.Log(LogSeverity.Warning, "Direct usage of Console is not supported in Lua. Use Console.WriteLine for output.");
                                     break;
                                 }
                             }
@@ -152,7 +152,7 @@ namespace LUSharpTranspiler.Frontend
                                     }
                                 default:
                                     {
-                                        Logger.Log(LUSharp.Logger.LogSeverity.Warning, $"Unhandled argument kind: {arg.Kind()} for {arg.Expression.ToFullString()}");
+                                        Logger.Log(LogSeverity.Warning, $"Unhandled argument kind: {arg.Kind()} for {arg.Expression.ToFullString()}");
                                         break;
                                     }
                             }
@@ -173,7 +173,7 @@ namespace LUSharpTranspiler.Frontend
                 // Handle other expression kinds as needed
                 default:
                     {
-                        Logger.Log(LUSharp.Logger.LogSeverity.Warning, $"Unhandled expression kind: {expr.Kind()}");
+                        Logger.Log(LogSeverity.Warning, $"Unhandled expression kind: {expr.Kind()}");
                         break;
                     }
             }
@@ -277,7 +277,7 @@ namespace LUSharpTranspiler.Frontend
                         }
                     default:
                         {
-                            Logger.Log(LUSharp.Logger.LogSeverity.Warning, $"Unhandled variable type: {node.Type.ToString()} for variable {varName}. Defaulting to nil.");
+                            Logger.Log(LogSeverity.Warning, $"Unhandled variable type: {node.Type.ToString()} for variable {varName}. Defaulting to nil.");
                             break;
                         }
                 }

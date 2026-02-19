@@ -1,6 +1,6 @@
 using Newtonsoft.Json;
 
-namespace LUSharp.Project;
+namespace LUSharpTranspiler.Build;
 
 public class ProjectConfig
 {
