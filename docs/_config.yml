@@ -1,0 +1,9 @@
+title: LUSharp
+description: Write Roblox games in C# — transpiled to Luau.
+remote_theme: pages-themes/cayman@v0.2.0
+plugins:
+  - jekyll-remote-theme
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
