@@ -26,6 +26,15 @@ public class TransformPipeline
                 .Select(c => lowerer.Lower(c))
                 .ToList();
 
+            // Pass 2: optimize method bodies
+            foreach (var cls in classes)
+            {
+                foreach (var method in cls.Methods)
+                    method.Body = Optimizer.OptimizeBlock(method.Body);
+                if (cls.Constructor != null)
+                    cls.Constructor.Body = Optimizer.OptimizeBlock(cls.Constructor.Body);
+            }
+
             modules.Add(new LuaModule
             {
                 SourceFile = f.FilePath,
