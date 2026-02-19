@@ -1,5 +1,4 @@
-# 🦈 LUSharp
-
+# 🦈 LUSharp - [Discord](https://discord.gg/c85RP2dzHY)
 **Write Roblox games in C# — transpiled to Luau.**  
 LUSharp brings the power, structure, and safety of C# to Roblox development. Build scalable Roblox experiences using modern C# syntax and features — then let LUSharp handle converting your code to Luau automatically.
 
