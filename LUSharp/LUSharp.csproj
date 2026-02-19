@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -25,13 +25,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Example\ClientMain.cs" />
-    <None Include="Example\ServerMain.cs" />
-    <None Include="Example\SharedMain.cs" />
+    <EmbeddedResource Include="Example\ClientMain.cs" />
+    <EmbeddedResource Include="Example\ServerMain.cs" />
+    <EmbeddedResource Include="Example\SharedMain.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\LUSharpAPI\LUSharpAPI.csproj" />
+    <ProjectReference Include="..\LUSharpTranspiler\LUSharpTranspiler.csproj" />
   </ItemGroup>
 
 </Project>

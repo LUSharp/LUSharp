@@ -190,7 +190,7 @@ namespace LUSharpTranspiler.Transpiler.Builder
         /// </example>
         private static void BuildDefaultConstructor(SourceConstructor.ClassBuilder builder, List<MemberDeclarationSyntax> instanceMembers)
         {
-            Logger.Log(LUSharp.Logger.LogSeverity.Warning, $"No default constructor found. Creating default.");
+            Logger.Log(LogSeverity.Warning, $"No default constructor found. Creating default.");
 
             builder.WithConstructor(c =>
             {

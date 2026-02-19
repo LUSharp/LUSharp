@@ -1,4 +1,3 @@
-using LUSharp.Project;
 using LUSharpTranspiler.Transform;
 using LUSharpTranspiler.Transform.Passes;
 using LUSharpTranspiler.Backend;

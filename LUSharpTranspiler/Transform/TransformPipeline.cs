@@ -35,14 +35,42 @@ public class TransformPipeline
                     cls.Constructor.Body = Optimizer.OptimizeBlock(cls.Constructor.Body);
             }
 
+            // Pass 3: extract GameEntry() body from Main class as top-level entry code
+            var entryBody = new List<ILuaStatement>();
+            var mainClass = classes.FirstOrDefault(c => c.Name == "Main");
+            if (mainClass != null)
+            {
+                var gameEntry = mainClass.Methods.FirstOrDefault(m => m.Name == "GameEntry");
+                if (gameEntry != null)
+                {
+                    entryBody = gameEntry.Body;
+                    mainClass.Methods.Remove(gameEntry);
+                }
+
+                // Main class is just a script container — remove it from class list
+                classes.Remove(mainClass);
+            }
+
+            // Determine script type from the Main class in this file, or fallback
+            var mainSymbol = classes.Count == 0 && mainClass != null
+                ? _symbols.LookupClass("Main")
+                : null;
+            var scriptType = mainSymbol?.ScriptType
+                ?? _symbols.LookupClass("Main")?.ScriptType
+                ?? ScriptType.ModuleScript;
+
             modules.Add(new LuaModule
             {
                 SourceFile = f.FilePath,
                 OutputPath = DeriveOutputPath(f.FilePath),
-                ScriptType = _symbols.LookupClass("Main")?.ScriptType ?? ScriptType.ModuleScript,
-                Classes = classes
+                ScriptType = scriptType,
+                Classes = classes,
+                EntryBody = entryBody
             });
         }
+
+        // Pass 4: resolve cross-file requires
+        ImportResolver.Resolve(modules, _symbols);
 
         return modules;
     }

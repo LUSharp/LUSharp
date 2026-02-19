@@ -1,137 +1,182 @@
-# 🦈 LUSharp - [Discord](https://discord.gg/c85RP2dzHY)
-**Write Roblox games in C# — transpiled to Luau.**  
-LUSharp brings the power, structure, and safety of C# to Roblox development. Build scalable Roblox experiences using modern C# syntax and features — then let LUSharp handle converting your code to Luau automatically.
+# LUSharp
 
----
+**Write Roblox games in C# — transpiled to Luau.**
 
-## 🚀 Overview
+LUSharp is a C# to Luau transpiler for Roblox, similar to [roblox-ts](https://roblox-ts.com) but for C# developers. Write your game logic in modern C# with full intellisense, then transpile it to Luau that runs natively in Roblox.
 
-**LUSharp** is a C# → Luau transpiler designed for Roblox developers who want:
-- **Strong typing** and **intellisense** while coding.  
-- **Familiar C# OOP patterns** instead of vanilla Lua syntax.  
-- **Full Roblox API support**, including services, instances, and remote events.  
-- **Easy project integration** with tools like [Rojo](https://rojo.space) or [Roblox Studio].  
+## Installation
 
-If you’ve used **roblox-ts**, you already get the idea — LUSharp gives you the same power, but for **C# developers**.
+Download the latest release for your platform from [Releases](../../releases):
 
----
+| Platform | Download |
+|----------|----------|
+| Windows  | `lusharp-win-x64.zip` |
+| Linux    | `lusharp-linux-x64.tar.gz` |
+| macOS    | `lusharp-osx-x64.tar.gz` |
 
-## ✨ Features
+Extract the archive and add the directory to your `PATH`.
 
-✅ Write idiomatic C# — classes, methods, properties, events, and more  
-✅ Private/public variable support (transpiled safely to Luau)  
-✅ Automatic module generation for Roblox environments  
-✅ Type-safe remote events and function wrappers  
-✅ Optional custom APIs for faster development  
-✅ Seamless debugging and runtime type hints  
+**Windows (PowerShell):**
+```powershell
+# Extract to a permanent location, then add to PATH
+$dest = "$env:LOCALAPPDATA\LUSharp"
+Expand-Archive lusharp-win-x64.zip -DestinationPath $dest
+[Environment]::SetEnvironmentVariable("PATH", "$env:PATH;$dest", "User")
+```
 
----
+**Linux / macOS:**
+```bash
+sudo tar -xzf lusharp-linux-x64.tar.gz -C /usr/local/bin
+```
 
-## 🧩 Example
+## Quick Start
 
-### C# Input
+```bash
+# Create a new project
+lusharp new MyGame
+
+# Enter the project directory
+cd MyGame
+
+# Verify intellisense works
+dotnet build
+
+# Transpile C# to Luau
+lusharp build
+
+# Sync to Roblox Studio with Rojo
+rojo serve
+```
+
+## Example
+
+### C# Input (`src/client/ClientMain.cs`)
+
 ```csharp
-public class Player
+using LUSharpAPI.Runtime.Internal;
+
+namespace MyGame.Client
 {
-    private int health = 100;
-    private string name;
-
-    public Player(string name)
+    internal class ClientMain : RobloxScript
     {
-        this.name = name;
-    }
-
-    public void Damage(int amount)
-    {
-        health -= amount;
-    }
-
-    public int GetHealth()
-    {
-        return health;
+        public override void GameEntry()
+        {
+            print("Hello from C# in Luau!");
+        }
     }
 }
 ```
 
-### Generated Luau
+### Generated Luau (`out/client/ClientMain.lua`)
+
 ```lua
-local Player = {}
+local ClientMain = {}
 
-function Player.new(name)
-    local private = {
-        health = 100,
-        name = name
-    }
-
-    return private
+function ClientMain.GameEntry()
+    print("Hello from C# in Luau!")
 end
 
-function Player.Damage(self, amount)
-    self.health -= amount
-end
+ClientMain.GameEntry()
 
-function Player.GetHealth(self)
-    return self.health
-end
-
-return Player
+return ClientMain
 ```
 
----
+## Project Structure
 
-## ⚙️ Getting Started
+Running `lusharp new MyGame` generates:
 
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/yourusername/LUSharp.git
-   cd LUSharp
-   ```
+```
+MyGame/
+  src/
+    client/
+      ClientMain.cs         -- Client-side entry point (LocalScript)
+    server/
+      ServerMain.cs         -- Server-side entry point (Script)
+    shared/
+      SharedModule.cs       -- Shared module (ModuleScript)
+  lib/
+    LUSharpAPI.dll          -- Roblox API bindings for intellisense
+  out/                      -- Transpiled Luau output (gitignored)
+  MyGame.csproj             -- .NET project (references LUSharpAPI)
+  MyGame.sln                -- Solution file
+  lusharp.json              -- LUSharp project config
+  default.project.json      -- Rojo config
+  .gitignore
+```
 
-2. **Build the transpiler**
-   ```bash
-   dotnet build
-   ```
+The `out/` directory maps to Roblox via Rojo:
 
-3. **Transpile your C# project**
-   ```bash
-   lusharp build
-   ```
+| Output Folder   | Roblox Location                           |
+|-----------------|-------------------------------------------|
+| `out/server/`   | `ServerScriptService`                     |
+| `out/client/`   | `StarterPlayer/StarterPlayerScripts`      |
+| `out/shared/`   | `ReplicatedStorage/Shared`                |
+| `out/runtime/`  | `ReplicatedStorage/Runtime`               |
 
-4. **Sync to Roblox Studio**
-   - Use **Rojo** or your preferred method to push the generated Luau files into your game.
+## Commands
 
----
+| Command | Description |
+|---------|-------------|
+| `lusharp new <name>` | Create a new LUSharp project with full .NET scaffolding |
+| `lusharp build` | Transpile C# source to Luau output |
+| `lusharp help` | Show available commands |
 
-## 🧠 How It Works
+## How It Works
 
-LUSharp parses your C# syntax trees and reconstructs the logic into valid Luau equivalents.  
-It automatically:
-- Converts C# classes → Luau module scripts  
-- Converts methods → Luau functions  
-- Converts fields/properties → local or table entries  
-- Preserves method overloading and scoping as much as possible within Luau’s constraints  
+LUSharp uses a three-stage pipeline:
 
----
+1. **Frontend** — Parses C# source files using [Roslyn](https://github.com/dotnet/roslyn) and validates the entry point structure
+2. **Transform** — Converts the Roslyn syntax tree into a Lua IR (intermediate representation) through a series of passes: symbol collection, type resolution, import resolution, method body lowering, control flow lowering, and optimization
+3. **Backend** — Renders the Lua IR into Luau source code
 
-## 🛠️ Roadmap
+### C# to Luau Mappings
 
-- [ ] Support for enums and interfaces  
-- [ ] Asynchronous constructs (`async` / `await` → coroutines)  
-- [ ] Unity-style API extensions  
-- [ ] Editor plugin for VSCode and Rider  
-- [ ] Source map debugging in Roblox Studio  
+| C# | Luau |
+|----|------|
+| Class with fields | `local T = {}` table with `.new()` constructor |
+| Static members | Class-level table entries |
+| Properties | `get_Prop()` / `set_Prop()` methods |
+| `List<T>` | `{1, 2, 3}` numeric table |
+| `Dictionary<K,V>` | `{key = val}` table |
+| `Console.WriteLine()` | `print()` |
+| String interpolation `$"..."` | Backtick string `` `...` `` |
+| `string` / `int` / `float` / `bool` | `string` / `number` / `number` / `boolean` |
 
----
+## Roadmap
 
-## 💬 Community & Contributing
+- [x] Class, property, and constructor transpilation
+- [x] Collection initializers (`List<T>`, `Dictionary<K,V>`)
+- [x] String interpolation conversion
+- [x] `Console.WriteLine` to `print` mapping
+- [x] Project scaffolding with `lusharp new`
+- [x] Rojo integration
+- [x] Roblox API bindings (LUSharpAPI)
+- [x] Build command (`lusharp build`)
+- [ ] Full method body transpilation
+- [ ] Cross-file `require()` references
+- [ ] `async`/`await` to coroutine conversion
+- [ ] Enum and interface support
+- [ ] Watch mode (`lusharp build --watch`)
+- [ ] Package system for community Roblox API extensions
 
-Contributions are welcome!  
-If you find a bug, want to suggest features, or help shape the direction of LUSharp, feel free to open a PR or issue.
+## Contributing
 
-Join the discussions, share snippets, and help build the **next-gen Roblox development experience**.
+Contributions are welcome! Feel free to open an issue or pull request.
 
----
+1. Fork the repo
+2. Create your feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes
+4. Push to the branch and open a pull request
 
-## 📄 License
+### Building from Source
+
+```bash
+git clone https://github.com/yourusername/LUSharp.git
+cd LUSharp
+dotnet build
+dotnet test
+```
+
+## License
 
 LUSharp is licensed under the [MIT License](LICENSE).

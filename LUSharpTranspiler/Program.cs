@@ -1,4 +1,4 @@
-global using LogSeverity = LUSharp.Logger.LogSeverity;
+global using LogSeverity = LUSharpTranspiler.Logger.LogSeverity;
 using System;
 using System.IO;
 using Microsoft.CodeAnalysis.CSharp;
