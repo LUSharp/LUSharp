@@ -1,5 +1,6 @@
 using LUSharpTranspiler.Transform.IR;
 using LUSharpTranspiler.Transform.Passes;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace LUSharpTranspiler.Transform;
 
@@ -14,15 +15,25 @@ public class TransformPipeline
         foreach (var f in files)
             collector.Collect(f.FilePath, f.Tree);
 
-        // Remaining passes wired in as they're implemented
+        // Pass 1: lower each file into a LuaModule
+        var lowerer = new MethodBodyLowerer(_symbols);
         var modules = new List<LuaModule>();
         foreach (var f in files)
+        {
+            var classes = f.Tree.GetRoot()
+                .DescendantNodes()
+                .OfType<ClassDeclarationSyntax>()
+                .Select(c => lowerer.Lower(c))
+                .ToList();
+
             modules.Add(new LuaModule
             {
                 SourceFile = f.FilePath,
                 OutputPath = DeriveOutputPath(f.FilePath),
-                ScriptType = _symbols.LookupClass("Main")?.ScriptType ?? ScriptType.ModuleScript
+                ScriptType = _symbols.LookupClass("Main")?.ScriptType ?? ScriptType.ModuleScript,
+                Classes = classes
             });
+        }
 
         return modules;
     }
