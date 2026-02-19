@@ -17,6 +17,10 @@ namespace LUSharp
 
         static int Main(string[] args)
         {
+            bool noUpdateCheck = args.Contains("--no-update-check");
+            args = args.Where(a => a != "--no-update-check").ToArray();
+
+            int exitCode;
             try
             {
                 if (args.Length < 1)
@@ -32,7 +36,8 @@ namespace LUSharp
                         {
                             var version = Assembly.GetExecutingAssembly().GetName().Version;
                             Console.WriteLine($"lusharp {version?.ToString(3) ?? "0.0.0"}");
-                            return 0;
+                            exitCode = 0;
+                            break;
                         }
                     case "help":
                         {
@@ -40,7 +45,8 @@ namespace LUSharp
                                 PrintHelp(args[1]);
                             else
                                 PrintHelp();
-                            return 0;
+                            exitCode = 0;
+                            break;
                         }
                     case "new":
                         {
@@ -49,7 +55,8 @@ namespace LUSharp
                                 Logger.Log(Logger.LogSeverity.Error, "Missing project name. Usage: lusharp new <project_name>");
                                 return 1;
                             }
-                            return CreateProject(args[1]);
+                            exitCode = CreateProject(args[1]);
+                            break;
                         }
                     case "build":
                         {
@@ -58,7 +65,8 @@ namespace LUSharp
                                 : Directory.GetCurrentDirectory();
                             var outFlag = args.FirstOrDefault(a => a.StartsWith("--out="))?[6..];
                             var release = args.Contains("--release");
-                            return BuildCommand.Run(dir, outFlag, release);
+                            exitCode = BuildCommand.Run(dir, outFlag, release);
+                            break;
                         }
                     default:
                         Logger.Log(Logger.LogSeverity.Error, $"Unknown command '{args[0]}'. Run 'lusharp help' for available commands.");
@@ -70,6 +78,14 @@ namespace LUSharp
                 Logger.Log(Logger.LogSeverity.Error, $"Unexpected error: {ex.Message}");
                 return 1;
             }
+
+            if (!noUpdateCheck)
+            {
+                var version = Assembly.GetExecutingAssembly().GetName().Version;
+                UpdateChecker.CheckAndNotify(version?.ToString(3) ?? "0.0.0");
+            }
+
+            return exitCode;
         }
 
         public static void PrintHelp(string name = "")
@@ -84,7 +100,8 @@ namespace LUSharp
                     Console.WriteLine($"             {cmd.Value.Item2}");
                 }
                 Console.WriteLine("\nFlags:");
-                Console.WriteLine("  --version, -v   Print the LUSharp version");
+                Console.WriteLine("  --version, -v        Print the LUSharp version");
+                Console.WriteLine("  --no-update-check    Suppress update check");
             }
             else
             {
