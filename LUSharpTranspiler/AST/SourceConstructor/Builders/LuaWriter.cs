@@ -23,6 +23,8 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
                 _sb.AppendLine();
         }
 
+        public void WriteInline(string text) => _sb.Append(text);
+
         public override string ToString() => _sb.ToString();
     }
 }
