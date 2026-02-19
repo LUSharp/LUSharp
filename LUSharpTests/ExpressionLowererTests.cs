@@ -50,10 +50,11 @@ public class ExpressionLowererTests
     }
 
     [Fact]
-    public void LowerStringConcatPlus_BecomesLuaConcat()
+    public void LowerAddExpression_StaysBinary()
     {
         var result = MakeLowerer().Lower(Parse("\"hello\" + name"));
-        Assert.IsType<LuaConcat>(result);
+        var bin = Assert.IsType<LuaBinary>(result);
+        Assert.Equal("+", bin.Op);
     }
 
     [Fact]
