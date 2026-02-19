@@ -12,7 +12,8 @@ namespace LUSharp
         {
             {"help", ("command_name(optional)", "List usage for all or a specific command.")},
             {"new", ("project_name[REQUIRED]", "Create a new project with the name project_name.") },
-            {"build", ("[project_dir] [--out=path] [--release]", "Transpile C# source to Luau output.") }
+            {"build", ("[project_dir] [--out=path] [--release]", "Transpile C# source to Luau output.") },
+            {"update", ("", "Update LUSharp to the latest version.") }
         };
 
         static int Main(string[] args)
@@ -67,6 +68,11 @@ namespace LUSharp
                             var release = args.Contains("--release");
                             exitCode = BuildCommand.Run(dir, outFlag, release);
                             break;
+                        }
+                    case "update":
+                        {
+                            var version = Assembly.GetExecutingAssembly().GetName().Version;
+                            return UpdateChecker.RunUpdate(version?.ToString(3) ?? "0.0.0");
                         }
                     default:
                         Logger.Log(Logger.LogSeverity.Error, $"Unknown command '{args[0]}'. Run 'lusharp help' for available commands.");
