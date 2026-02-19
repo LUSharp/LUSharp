@@ -12,20 +12,20 @@ public static class StatementEmitter
         switch (stmt)
         {
             case LuaLocal loc:
-                w.WriteInline($"local {loc.Name}");
+                w.WriteIndent(); w.WriteInline($"local {loc.Name}");
                 if (loc.Value != null) { w.WriteInline(" = "); ExprEmitter.Emit(loc.Value, w); }
                 w.WriteLine();
                 break;
 
             case LuaAssign asgn:
-                ExprEmitter.Emit(asgn.Target, w);
+                w.WriteIndent(); ExprEmitter.Emit(asgn.Target, w);
                 w.WriteInline(" = ");
                 ExprEmitter.Emit(asgn.Value, w);
                 w.WriteLine();
                 break;
 
             case LuaReturn ret:
-                w.WriteInline("return");
+                w.WriteIndent(); w.WriteInline("return");
                 if (ret.Value != null) { w.WriteInline(" "); ExprEmitter.Emit(ret.Value, w); }
                 w.WriteLine();
                 break;
@@ -34,11 +34,11 @@ public static class StatementEmitter
             case LuaContinue: w.WriteLine("continue"); break;
 
             case LuaError err:
-                w.WriteInline("error("); ExprEmitter.Emit(err.Message, w); w.WriteLine(")");
+                w.WriteIndent(); w.WriteInline("error("); ExprEmitter.Emit(err.Message, w); w.WriteInline(")"); w.WriteLine();
                 break;
 
             case LuaExprStatement es:
-                ExprEmitter.Emit(es.Expression, w);
+                w.WriteIndent(); ExprEmitter.Emit(es.Expression, w);
                 w.WriteLine();
                 break;
 
@@ -52,7 +52,7 @@ public static class StatementEmitter
             case LuaConnect cn: EmitConnect(cn, w); break;
 
             case LuaMultiAssign ma:
-                w.WriteInline(string.Join(", ", ma.Targets));
+                w.WriteIndent(); w.WriteInline(string.Join(", ", ma.Targets));
                 w.WriteInline(" = ");
                 for (int i = 0; i < ma.Values.Count; i++)
                 {
@@ -77,11 +77,11 @@ public static class StatementEmitter
 
     private static void EmitIf(LuaIf ifS, LuaWriter w)
     {
-        w.WriteInline("if "); ExprEmitter.Emit(ifS.Condition, w); w.WriteLine(" then");
+        w.WriteIndent(); w.WriteInline("if "); ExprEmitter.Emit(ifS.Condition, w); w.WriteInline(" then"); w.WriteLine();
         EmitBlock(ifS.Then, w);
         foreach (var ei in ifS.ElseIfs)
         {
-            w.WriteInline("elseif "); ExprEmitter.Emit(ei.Condition, w); w.WriteLine(" then");
+            w.WriteIndent(); w.WriteInline("elseif "); ExprEmitter.Emit(ei.Condition, w); w.WriteInline(" then"); w.WriteLine();
             EmitBlock(ei.Body, w);
         }
         if (ifS.Else?.Count > 0) { w.WriteLine("else"); EmitBlock(ifS.Else, w); }
@@ -90,7 +90,7 @@ public static class StatementEmitter
 
     private static void EmitWhile(LuaWhile wh, LuaWriter w)
     {
-        w.WriteInline("while "); ExprEmitter.Emit(wh.Condition, w); w.WriteLine(" do");
+        w.WriteIndent(); w.WriteInline("while "); ExprEmitter.Emit(wh.Condition, w); w.WriteInline(" do"); w.WriteLine();
         EmitBlock(wh.Body, w);
         w.WriteLine("end");
     }
@@ -99,24 +99,24 @@ public static class StatementEmitter
     {
         w.WriteLine("repeat");
         EmitBlock(rep.Body, w);
-        w.WriteInline("until "); ExprEmitter.Emit(rep.Condition, w); w.WriteLine();
+        w.WriteIndent(); w.WriteInline("until "); ExprEmitter.Emit(rep.Condition, w); w.WriteLine();
     }
 
     private static void EmitForNum(LuaForNum fn, LuaWriter w)
     {
-        w.WriteInline($"for {fn.Variable} = ");
+        w.WriteIndent(); w.WriteInline($"for {fn.Variable} = ");
         ExprEmitter.Emit(fn.Start, w); w.WriteInline(", ");
         ExprEmitter.Emit(fn.Limit, w);
         if (fn.Step != null) { w.WriteInline(", "); ExprEmitter.Emit(fn.Step, w); }
-        w.WriteLine(" do");
+        w.WriteInline(" do"); w.WriteLine();
         EmitBlock(fn.Body, w);
         w.WriteLine("end");
     }
 
     private static void EmitForIn(LuaForIn fi, LuaWriter w)
     {
-        w.WriteInline($"for {string.Join(", ", fi.Variables)} in ");
-        ExprEmitter.Emit(fi.Iterator, w); w.WriteLine(" do");
+        w.WriteIndent(); w.WriteInline($"for {string.Join(", ", fi.Variables)} in ");
+        ExprEmitter.Emit(fi.Iterator, w); w.WriteInline(" do"); w.WriteLine();
         EmitBlock(fi.Body, w);
         w.WriteLine("end");
     }
@@ -144,9 +144,9 @@ public static class StatementEmitter
 
     private static void EmitConnect(LuaConnect cn, LuaWriter w)
     {
-        ExprEmitter.Emit(cn.Event, w);
+        w.WriteIndent(); ExprEmitter.Emit(cn.Event, w);
         w.WriteInline(":Connect(");
         ExprEmitter.Emit(cn.Handler, w);
-        w.WriteLine(")");
+        w.WriteInline(")"); w.WriteLine();
     }
 }

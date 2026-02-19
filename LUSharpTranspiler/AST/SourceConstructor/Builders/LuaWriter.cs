@@ -25,6 +25,8 @@ namespace LUSharpTranspiler.AST.SourceConstructor.Builders
 
         public void WriteInline(string text) => _sb.Append(text);
 
+        public void WriteIndent() => _sb.Append(new string(' ', _indent * Indent.Length));
+
         public override string ToString() => _sb.ToString();
     }
 }
