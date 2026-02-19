@@ -371,3 +371,6 @@ C:\Users\table\source\repos\LUSharp\LUSharpTranspiler\Examples/*
 
 # API Generator cache
 LUSharpApiGenerator/cache/
+
+# MkDocs build output
+site/
