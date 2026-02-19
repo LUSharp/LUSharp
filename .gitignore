@@ -368,3 +368,6 @@ C:\Users\table\source\repos\LUSharp\LUSharpTranspiler\Examples/*
 docs/
 /.claude
 /CLAUDE.md
+
+# API Generator cache
+LUSharpApiGenerator/cache/
