@@ -49,10 +49,10 @@ public class TransformPipeline
 
     private static string DeriveOutputPath(string filePath)
     {
-        // Client/Foo.cs → out/client/Foo.lua
+        // Client/Foo.cs → client/Foo.lua (no out/ prefix — BuildCommand adds it)
         var name = Path.GetFileNameWithoutExtension(filePath);
-        if (filePath.Contains("Client")) return $"out/client/{name}.lua";
-        if (filePath.Contains("Server")) return $"out/server/{name}.lua";
-        return $"out/shared/{name}.lua";
+        if (filePath.Contains("Client")) return $"client/{name}.lua";
+        if (filePath.Contains("Server")) return $"server/{name}.lua";
+        return $"shared/{name}.lua";
     }
 }

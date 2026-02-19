@@ -1,0 +1,9 @@
+{
+  "name": "TestProject",
+  "version": "1.0.0",
+  "packages": [],
+  "build": {
+    "src": ".",
+    "out": "./out"
+  }
+}
