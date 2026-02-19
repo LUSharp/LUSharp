@@ -31,7 +31,7 @@ public class ExpressionLowerer
         AssignmentExpressionSyntax assign                         => LowerAssignmentExpr(assign),
         ParenthesizedLambdaExpressionSyntax lam                   => LowerLambda(lam.ParameterList, lam.Body),
         SimpleLambdaExpressionSyntax lam                          => LowerSimpleLambda(lam),
-        ParenthesizedExpressionSyntax par                         => Lower(par.Expression),
+        ParenthesizedExpressionSyntax par                         => new LuaParen(Lower(par.Expression)),
         CastExpressionSyntax cast                                 => Lower(cast.Expression), // strip casts
         _                                                         => new LuaLiteral($"--[[unsupported: {expr.Kind()}]]")
     };
@@ -62,13 +62,12 @@ public class ExpressionLowerer
 
     private ILuaExpression LowerBinary(BinaryExpressionSyntax bin)
     {
-        // String concatenation via + → ..
-        if (bin.IsKind(SyntaxKind.AddExpression))
-        {
-            // Flatten concat chains
-            var parts = FlattenConcat(bin);
-            if (parts.Count > 1) return new LuaConcat(parts);
-        }
+        // Fix #2: `as` and `is` casts — strip to just the left operand
+        if (bin.IsKind(SyntaxKind.AsExpression) || bin.IsKind(SyntaxKind.IsExpression))
+            return Lower(bin.Left);
+
+        // Fix #7: Removed FlattenConcat — without type info we can't distinguish
+        // string + from numeric +. Keep + as + always; use $"" for string concat.
 
         var left = Lower(bin.Left);
         var right = Lower(bin.Right);
@@ -96,17 +95,6 @@ public class ExpressionLowerer
         return new LuaBinary(left, op, right);
     }
 
-    private List<ILuaExpression> FlattenConcat(BinaryExpressionSyntax bin)
-    {
-        var parts = new List<ILuaExpression>();
-        if (bin.Left is BinaryExpressionSyntax lb && lb.IsKind(SyntaxKind.AddExpression))
-            parts.AddRange(FlattenConcat(lb));
-        else
-            parts.Add(Lower(bin.Left));
-        parts.Add(Lower(bin.Right));
-        return parts;
-    }
-
     private ILuaExpression LowerPrefixUnary(PrefixUnaryExpressionSyntax pre)
     {
         var op = pre.Kind() switch
@@ -123,8 +111,20 @@ public class ExpressionLowerer
     private ILuaExpression LowerPostfixUnary(PostfixUnaryExpressionSyntax post) =>
         Lower(post.Operand); // i++ treated as expression value (statement handles increment)
 
-    private ILuaExpression LowerMemberAccess(MemberAccessExpressionSyntax mem) =>
-        new LuaMember(Lower(mem.Expression), mem.Name.Identifier.Text);
+    private ILuaExpression LowerMemberAccess(MemberAccessExpressionSyntax mem)
+    {
+        var memberName = mem.Name.Identifier.Text;
+
+        // Fix #4: Roblox enum prefix — Material.Neon → Enum.Material.Neon
+        if (mem.Expression is IdentifierNameSyntax enumId && RobloxEnumNames.Contains(enumId.Identifier.Text))
+            return new LuaMember(new LuaMember(new LuaIdent("Enum"), enumId.Identifier.Text), memberName);
+
+        // Fix #6 (partial): list.Count → #list
+        if (memberName == "Count" || memberName == "Length")
+            return new LuaUnary("#", Lower(mem.Expression));
+
+        return new LuaMember(Lower(mem.Expression), memberName);
+    }
 
     private ILuaExpression LowerInvocation(InvocationExpressionSyntax inv)
     {
@@ -133,11 +133,68 @@ public class ExpressionLowerer
 
         if (inv.Expression is MemberAccessExpressionSyntax mem)
         {
-            // Map Console.WriteLine → print
             var obj = mem.Expression.ToString();
             var method = mem.Name.Identifier.Text;
+
+            // Extract generic type argument if present (Fix #1)
+            string? genericTypeArg = null;
+            if (mem.Name is GenericNameSyntax generic && generic.TypeArgumentList.Arguments.Count > 0)
+            {
+                genericTypeArg = generic.TypeArgumentList.Arguments[0].ToString();
+                method = generic.Identifier.Text;
+            }
+
+            // Map Console.WriteLine → print
             if (obj == "Console" && method == "WriteLine")
                 return new LuaCall(new LuaIdent("print"), args);
+
+            // Fix #3: Math.Min/Max/etc → math.min/max/etc (dot call, not colon)
+            if (obj == "Math")
+                return new LuaCall(new LuaMember(new LuaIdent("math"), method.ToLower()), args);
+
+            // Fix #5: Instance.New<T>(...) → Instance.new("T", ...)
+            if (obj == "Instance" && method == "New" && genericTypeArg != null)
+            {
+                var newArgs = new List<ILuaExpression> { LuaLiteral.FromString(genericTypeArg) };
+                newArgs.AddRange(args);
+                return new LuaCall(new LuaMember(new LuaIdent("Instance"), "new"), newArgs);
+            }
+
+            // Fix #1: Generic method calls — GetService<Players>() → GetService("Players")
+            if (genericTypeArg != null)
+            {
+                args.Insert(0, LuaLiteral.FromString(genericTypeArg));
+            }
+
+            // Fix #6: Collection method rewrites (expression-level)
+            // dict.ContainsKey(key) → dict[key] ~= nil
+            if (method == "ContainsKey" && args.Count == 1)
+                return new LuaBinary(new LuaIndex(Lower(mem.Expression), args[0]), "~=", LuaLiteral.Nil);
+
+            // list.Contains(item) → table.find(list, item) ~= nil
+            if (method == "Contains" && args.Count == 1)
+            {
+                var findCall = new LuaCall(
+                    new LuaMember(new LuaIdent("table"), "find"),
+                    new List<ILuaExpression> { Lower(mem.Expression), args[0] });
+                return new LuaBinary(findCall, "~=", LuaLiteral.Nil);
+            }
+
+            // list.Add(item) → table.insert(list, item)
+            if (method == "Add" && args.Count == 1)
+                return new LuaCall(
+                    new LuaMember(new LuaIdent("table"), "insert"),
+                    new List<ILuaExpression> { Lower(mem.Expression), args[0] });
+
+            // list.IndexOf(item) → table.find(list, item)
+            if (method == "IndexOf" && args.Count == 1)
+                return new LuaCall(
+                    new LuaMember(new LuaIdent("table"), "find"),
+                    new List<ILuaExpression> { Lower(mem.Expression), args[0] });
+
+            // string.ToString() → tostring(x)
+            if (method == "ToString" && args.Count == 0)
+                return new LuaCall(new LuaIdent("tostring"), new List<ILuaExpression> { Lower(mem.Expression) });
 
             return new LuaMethodCall(Lower(mem.Expression), method, args);
         }
@@ -221,4 +278,32 @@ public class ExpressionLowerer
     }
 
     private static string EscapeString(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    // Known Roblox enum type names — sourced from LUSharpAPI/Runtime/STL/Enums/ and Generated/Enums/
+    private static readonly HashSet<string> RobloxEnumNames = new()
+    {
+        // Hand-crafted STL enums
+        "AssetType", "AvatarItemType", "Axis", "BulkMoveMode", "CameraMode",
+        "CollisionFidelity", "ContentSourceType", "CreatorType", "DevCameraOcclusionMode",
+        "DevComputerCameraMovementMode", "DevComputerMovementMode", "DevTouchCameraMovementMode",
+        "DevTouchMovementMode", "IKCollisionsMode", "JoinSource", "MatchmakingType", "Material",
+        "MembershipType", "ModelLevelOfDetail", "ModelStreamingMode", "NormalId", "PartType",
+        "PlayerExitReason", "RaycastFilterType", "RenderFidelity", "RotationOrder", "RunContext",
+        "SecurityCapability", "SurfaceType",
+        // Commonly used generated enums
+        "EasingDirection", "EasingStyle", "Font", "FontSize", "FontStyle", "FontWeight",
+        "HumanoidRigType", "HumanoidStateType", "KeyCode", "UserInputState", "UserInputType",
+        "AnimationPriority", "CameraType", "FormFactor", "SortOrder", "FillDirection",
+        "ScaleType", "SizeConstraint", "TextXAlignment", "TextYAlignment", "BorderMode",
+        "ElasticBehavior", "ScrollingDirection", "AutomaticSize", "HorizontalAlignment",
+        "VerticalAlignment", "TextTruncate", "ZIndexBehavior", "PlaybackState", "ScreenInsets",
+        "CoreGuiType", "HttpContentType", "HttpError", "TweenStatus", "PathStatus",
+        "PathWaypointAction", "RollOffMode", "ReverbType", "DialogPurpose", "DialogTone",
+        "DialogBehaviorType", "ExplosionType", "MeshType", "RenderPriority", "Technology",
+        "ParticleEmitterShape", "ParticleOrientation", "ParticleFlipbookMode", "Style",
+        "MouseBehavior", "ScreenOrientation", "StartCorner", "ProximityPromptStyle",
+        "ProximityPromptExclusivity", "DragDetectorDragStyle", "DragDetectorResponseStyle",
+        "AlignType", "ActuatorType", "HighlightDepthMode", "StudioStyleGuideColor",
+        "ListenerType", "SurfaceGuiSizingMode", "SafeAreaCompatibility",
+    };
 }

@@ -91,6 +91,17 @@ public static class StatementLowerer
             return new LuaAssign(operand, new LuaBinary(operand, op, delta));
         }
 
+        // Fix #6: dict.Remove(key) as statement → dict[key] = nil
+        if (expr is InvocationExpressionSyntax inv &&
+            inv.Expression is MemberAccessExpressionSyntax mem &&
+            mem.Name.Identifier.Text == "Remove" &&
+            inv.ArgumentList.Arguments.Count == 1)
+        {
+            var obj = exprs.Lower(mem.Expression);
+            var key = exprs.Lower(inv.ArgumentList.Arguments[0].Expression);
+            return new LuaAssign(new LuaIndex(obj, key), LuaLiteral.Nil);
+        }
+
         return new LuaExprStatement(exprs.Lower(expr));
     }
 
