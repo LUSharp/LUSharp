@@ -53,8 +53,14 @@ nav:
     - api/module-script.md
     - api/instance.md
     - api/base-part.md
+    - api/model.md
+    - api/player.md
     - api/vector3.md
     - api/cframe.md
+    - api/color3.md
+    - api/brickcolor.md
+    - api/events.md
+    - api/raycasting.md
     - api/services.md
   - Architecture: architecture.md
   - Contributing: contributing.md

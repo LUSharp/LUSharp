@@ -4,6 +4,8 @@
 Instance > PVInstance > BasePart
 ```
 
+[:octicons-link-external-16: Roblox API Reference](https://create.roblox.com/docs/reference/engine/classes/BasePart){ .md-button .md-button--primary }
+
 The base class for all physical parts in Roblox — `Part`, `MeshPart`, `WedgePart`, and others. BasePart provides properties for position, size, appearance, physics, and collision.
 
 ## Overview

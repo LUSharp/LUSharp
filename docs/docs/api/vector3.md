@@ -1,5 +1,7 @@
 # Vector3
 
+[:octicons-link-external-16: Roblox API Reference](https://create.roblox.com/docs/reference/engine/datatypes/Vector3){ .md-button .md-button--primary }
+
 A 3D vector representing a position, direction, or size in 3D space. Vector3 is one of the most commonly used types in Roblox development.
 
 ## Constructors

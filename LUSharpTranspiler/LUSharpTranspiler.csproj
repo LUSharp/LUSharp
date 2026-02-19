@@ -20,9 +20,5 @@
     <ProjectReference Include="..\LUSharpAPI\LUSharpAPI.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="TestInput\Shared\" />
-    <Folder Include="TestInput\Server\" />
-  </ItemGroup>
 
 </Project>
