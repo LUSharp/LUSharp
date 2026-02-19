@@ -48,10 +48,11 @@ public static class ProjectScaffolder
         // --- LUSharpAPI.dll ---
         BundleApiDll(root);
 
-        Logger.Log($"Project '{name}' created successfully.");
-        Logger.Log($"  cd {name}");
-        Logger.Log($"  dotnet build        # verify intellisense");
-        Logger.Log($"  lusharp build       # transpile to Luau");
+        Console.WriteLine($"\nProject '{name}' created successfully!\n");
+        Console.WriteLine("Next steps:");
+        Console.WriteLine($"  cd {name}");
+        Console.WriteLine("  dotnet build        # build + transpile (requires lusharp on PATH)");
+        Console.WriteLine("  rojo serve          # sync to Roblox Studio");
     }
 
     private static void WriteTemplate(string resourceName, string dest, string projectName)
@@ -85,6 +86,16 @@ public static class ProjectScaffolder
                   <HintPath>lib\LUSharpAPI.dll</HintPath>
                 </Reference>
               </ItemGroup>
+
+              <Target Name="LUSharpTranspile" AfterTargets="Build">
+                <Exec Command="lusharp build &quot;$(ProjectDir).&quot;"
+                      ConsoleToMSBuild="true"
+                      IgnoreExitCode="true">
+                  <Output TaskParameter="ExitCode" PropertyName="LUSharpExitCode" />
+                </Exec>
+                <Error Text="LUSharp transpilation failed."
+                       Condition="'$(LUSharpExitCode)' != '0'" />
+              </Target>
 
             </Project>
             """;
