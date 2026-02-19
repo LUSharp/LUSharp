@@ -93,6 +93,12 @@ public static class ExprEmitter
                 EmitLambda(lam, w);
                 break;
 
+            case LuaParen par:
+                w.WriteInline("(");
+                Emit(par.Inner, w);
+                w.WriteInline(")");
+                break;
+
             case LuaSpread sp:
                 w.WriteInline("table.unpack(");
                 Emit(sp.Table, w);

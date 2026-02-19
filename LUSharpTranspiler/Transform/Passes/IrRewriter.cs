@@ -32,6 +32,7 @@ public static class IrRewriter
         LuaTable tbl  => tbl with { Entries = tbl.Entries.Select(e => new LuaTableEntry(e.Key, RewriteThisToSelf(e.Value, instanceMembers))).ToList() },
         LuaLambda lam => RewriteLambda(lam, instanceMembers),
         LuaSpread sp  => sp with { Table = RewriteThisToSelf(sp.Table, instanceMembers) },
+        LuaParen par  => par with { Inner = RewriteThisToSelf(par.Inner, instanceMembers) },
         _ => expr
     };
 
