@@ -1,4 +1,4 @@
-using LUSharp.Project;
+using LUSharpTranspiler.Build;
 
 namespace LUSharpTests;
 
