@@ -1,11 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using LUSharpTranspiler.Transform;
 
 namespace LUSharpTranspiler.Frontend
 {
@@ -21,94 +16,45 @@ namespace LUSharpTranspiler.Frontend
         /// <param name="outputPath">Output project directory.</param>
         public static void TranspileProject(string projectPath, string outputPath)
         {
-            // Get all .cs files, sort them by client, server and shared
+            var allFiles = new List<ParsedFile>();
 
-            var clientFiles = Directory.GetFiles(projectPath, "Client/*.cs", SearchOption.AllDirectories);
-            var serverFiles = Directory.GetFiles(projectPath, "Server/*.cs", SearchOption.AllDirectories);
-            var sharedFiles = Directory.GetFiles(projectPath, "Shared/*.cs", SearchOption.AllDirectories);
-
-            // Process client scripts
-            foreach (var file in clientFiles)
+            foreach (var file in GetAllSourceFiles(projectPath))
             {
-                // Read the content of the file
                 var code = File.ReadAllText(file);
-                // Parse the code into a syntax tree
-                var syntaxTree = CSharpSyntaxTree.ParseText(code);
-                // verify the file has no errors
-                if(syntaxTree.GetCompilationUnitRoot().ContainsDiagnostics)
+                var tree = CSharpSyntaxTree.ParseText(code);
+
+                if (tree.GetCompilationUnitRoot().ContainsDiagnostics)
                 {
-                    Logger.Log(LogSeverity.Warning, $"The file {file} contains syntax errors. Skipping...");
-
-                    // print the diagnostics(Errors)
-                    var diagnostics = syntaxTree.GetDiagnostics();
-                    foreach(var diag in diagnostics)
-                    {
-                        Logger.Log(diag.Severity, $"{diag} in file /{file[(file.LastIndexOf('\\') + 1)..]}");
-                    }
-
+                    ReportDiagnostics(file, tree);
                     continue;
                 }
 
-                ParseSyntaxTree(syntaxTree);
+                allFiles.Add(new ParsedFile(file, tree));
             }
 
+            var pipeline = new TransformPipeline();
+            var modules = pipeline.Run(allFiles);
 
-            Logger.Log(LogSeverity.Info, "Transpilation completed.");
-        }
-        /// <summary>
-        /// Reads
-        /// </summary>
-        /// <param name="syntaxTree"></param>
-        private static void ParseSyntaxTree(SyntaxTree syntaxTree)
-        {
-            // For now lets just print the root node kind and try to understand the structure of everything
-            var root = syntaxTree.GetRoot();
+            // Backend emission wired in later
+            foreach (var m in modules)
+                Logger.Log(LogSeverity.Info, $"Processed: {m.SourceFile} → {m.OutputPath}");
 
-            // validate the root node is a compilation unit
-            if (root.Kind() != SyntaxKind.CompilationUnit)
-            {
-                Logger.Log(LogSeverity.Error, "The syntax tree root is not a compilation unit.");
-                return;
-            }
-
-            // ensure the entry structure is valid
-            if (!VerifyEntryStructure(root))
-                return;
-
-            CodeWalker roCodeBuilder = new();
-            roCodeBuilder.Visit(root);
-
-            var luauCode = roCodeBuilder.GetFinalizedCode();
-            
-            Console.WriteLine("Generated Luau Code:");
-            Console.WriteLine(luauCode);
+            Logger.Log(LogSeverity.Info, $"Transpilation complete. {modules.Count} modules.");
         }
 
-
-        private static bool VerifyEntryStructure(SyntaxNode tree)
+        private static IEnumerable<string> GetAllSourceFiles(string projectPath)
         {
-            if(tree.DescendantNodes().OfType<ClassDeclarationSyntax>().Any(x => x.Identifier.Text == "Main"))
-            {
-                if (tree.DescendantNodes().OfType<MethodDeclarationSyntax>().Any(x => x.Identifier.Text == "GameEntry"))
-                {
-                    return true;
-                }
-
-                Logger.Log(LogSeverity.Warning, "Project doesnt contain entry method named 'GameEntry'.");
-                return false;
-            }
-
-            Logger.Log(LogSeverity.Warning, "Project doesnt contain entry class named 'Main'.");
-            return false;
+            var patterns = new[] { "Client", "Server", "Shared" };
+            return patterns.SelectMany(p =>
+                Directory.GetFiles(projectPath, "*.cs", SearchOption.AllDirectories)
+                         .Where(f => f.Contains(p)));
         }
 
-        private static void PrintNode(SyntaxNode node, int indent = 0)
+        private static void ReportDiagnostics(string file, SyntaxTree tree)
         {
-            Console.WriteLine(new string(' ', indent * 2) + node.Kind());
-            foreach (var child in node.ChildNodes())
-            {
-                PrintNode(child, indent + 1);
-            }
+            Logger.Log(LogSeverity.Warning, $"{file} contains syntax errors. Skipping...");
+            foreach (var d in tree.GetDiagnostics())
+                Logger.Log(d.Severity, d.ToString());
         }
     }
 }
