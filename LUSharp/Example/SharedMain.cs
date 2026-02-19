@@ -1,5 +1,5 @@
 ﻿using LUSharpAPI.Runtime.Internal;
-using LUSharpAPI.Runtime.STL.Classes.Instance.LuaSourceContainer;
+
 namespace YOURPROJECT.Shared
 {
     public class SharedModule : ModuleScript
