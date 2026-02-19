@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\LUSharp\LUSharp.csproj" />
     <ProjectReference Include="..\LUSharpTranspiler\LUSharpTranspiler.csproj" />
   </ItemGroup>
 
