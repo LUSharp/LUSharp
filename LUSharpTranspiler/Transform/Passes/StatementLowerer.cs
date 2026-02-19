@@ -53,6 +53,14 @@ public static class StatementLowerer
     {
         var expr = exprStmt.Expression;
 
+        // Event += lambda → LuaConnect (must check BEFORE compound assignment)
+        if (expr is AssignmentExpressionSyntax ev &&
+            ev.IsKind(SyntaxKind.AddAssignmentExpression) &&
+            (ev.Right is LambdaExpressionSyntax || ev.Right is AnonymousMethodExpressionSyntax))
+        {
+            return new LuaConnect(exprs.Lower(ev.Left), exprs.Lower(ev.Right));
+        }
+
         // x += 1 etc — compound assignments
         if (expr is AssignmentExpressionSyntax assign)
         {
