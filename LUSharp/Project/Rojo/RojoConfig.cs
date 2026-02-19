@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 
 namespace LUSharp.Project.Rojo
 {
@@ -24,18 +24,13 @@ namespace LUSharp.Project.Rojo
 
         public RojoInstance tree { get; set; }
 
-        public int servePort { get; set; } = 34872;
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? servePort { get; set; }
 
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public List<int> servePlaceIds { get; set; }
 
-        public int placeId { get; set; }
-
-        public int gameId { get; set; }
-
-        public string serveAddress { get; set; }
-
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public List<string> globIgnorePaths { get; set; }
-
-        public bool emitLegacyScripts { get; set; } = true;
     }
 }

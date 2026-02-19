@@ -6,6 +6,20 @@ LUSharp is a C# to Luau transpiler for Roblox, similar to [roblox-ts](https://ro
 
 ## Installation
 
+### Quick Install
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/LUSharp/LUSharp/master/install.ps1 | iex
+```
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/LUSharp/LUSharp/master/install.sh | bash
+```
+
+### Manual Install
+
 Download the latest release for your platform from [Releases](../../releases):
 
 | Platform | Download |
@@ -16,19 +30,6 @@ Download the latest release for your platform from [Releases](../../releases):
 
 Extract the archive and add the directory to your `PATH`.
 
-**Windows (PowerShell):**
-```powershell
-# Extract to a permanent location, then add to PATH
-$dest = "$env:LOCALAPPDATA\LUSharp"
-Expand-Archive lusharp-win-x64.zip -DestinationPath $dest
-[Environment]::SetEnvironmentVariable("PATH", "$env:PATH;$dest", "User")
-```
-
-**Linux / macOS:**
-```bash
-sudo tar -xzf lusharp-linux-x64.tar.gz -C /usr/local/bin
-```
-
 ## Quick Start
 
 ```bash
@@ -38,11 +39,8 @@ lusharp new MyGame
 # Enter the project directory
 cd MyGame
 
-# Verify intellisense works
+# Build + transpile (lusharp runs automatically via MSBuild)
 dotnet build
-
-# Transpile C# to Luau
-lusharp build
 
 # Sync to Roblox Studio with Rojo
 rojo serve
@@ -120,6 +118,7 @@ The `out/` directory maps to Roblox via Rojo:
 | `lusharp new <name>` | Create a new LUSharp project with full .NET scaffolding |
 | `lusharp build` | Transpile C# source to Luau output |
 | `lusharp help` | Show available commands |
+| `lusharp --version` | Print the LUSharp version |
 
 ## How It Works
 
@@ -128,6 +127,10 @@ LUSharp uses a three-stage pipeline:
 1. **Frontend** — Parses C# source files using [Roslyn](https://github.com/dotnet/roslyn) and validates the entry point structure
 2. **Transform** — Converts the Roslyn syntax tree into a Lua IR (intermediate representation) through a series of passes: symbol collection, type resolution, import resolution, method body lowering, control flow lowering, and optimization
 3. **Backend** — Renders the Lua IR into Luau source code
+
+### MSBuild Integration
+
+Generated projects include a post-build target that automatically runs `lusharp build` when you `dotnet build`. Transpiler errors appear in MSBuild-compatible format so VS and Rider can click-navigate to the source.
 
 ### C# to Luau Mappings
 
@@ -152,6 +155,8 @@ LUSharp uses a three-stage pipeline:
 - [x] Rojo integration
 - [x] Roblox API bindings (LUSharpAPI)
 - [x] Build command (`lusharp build`)
+- [x] MSBuild integration (`dotnet build` triggers transpilation)
+- [x] Install scripts (Windows + Linux/macOS)
 - [ ] Full method body transpilation
 - [ ] Cross-file `require()` references
 - [ ] `async`/`await` to coroutine conversion

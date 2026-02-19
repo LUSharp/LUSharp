@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis;
 using LUSharpTranspiler.Transform;
 using LUSharpTranspiler.Transform.Passes;
 using LUSharpTranspiler.Backend;
@@ -13,6 +14,7 @@ public static class BuildCommand
         catch (FileNotFoundException e)
         {
             Console.Error.WriteLine($"ERROR: {e.Message}");
+            Console.Error.WriteLine("No lusharp.json found. Run 'lusharp new' to create a project or specify a project directory.");
             return 1;
         }
 
@@ -25,11 +27,39 @@ public static class BuildCommand
         if (!files.Any()) { Console.Error.WriteLine("No .cs files found."); return 1; }
 
         var parsed = new List<ParsedFile>();
+        int totalErrors = 0;
+        int filesWithErrors = 0;
+
         foreach (var f in files)
         {
             var code = File.ReadAllText(f);
             var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(code);
+
+            var diagnostics = tree.GetDiagnostics()
+                .Where(d => d.Severity == DiagnosticSeverity.Error)
+                .ToList();
+
+            if (diagnostics.Any())
+            {
+                filesWithErrors++;
+                foreach (var diag in diagnostics)
+                {
+                    var span = diag.Location.GetLineSpan();
+                    var line = span.StartLinePosition.Line + 1;
+                    var col = span.StartLinePosition.Character + 1;
+                    var relPath = Path.GetRelativePath(projectDir, f);
+                    Console.Error.WriteLine($"{relPath}({line},{col}): error {diag.Id}: {diag.GetMessage()}");
+                    totalErrors++;
+                }
+            }
+
             parsed.Add(new ParsedFile(f, tree));
+        }
+
+        if (totalErrors > 0)
+        {
+            Console.Error.WriteLine($"\nBuild failed: {totalErrors} error(s) in {filesWithErrors} file(s).");
+            return 1;
         }
 
         var pipeline = new TransformPipeline();
