@@ -24,6 +24,8 @@ Services are singleton objects that provide core Roblox functionality. Access th
 Instance > Players
 ```
 
+[:octicons-link-external-16: Roblox API Reference](https://create.roblox.com/docs/reference/engine/classes/Players){ .md-button }
+
 The Players service manages all connected players and provides events for player join/leave.
 
 ### Properties
@@ -151,6 +153,8 @@ The Players service manages all connected players and provides events for player
 ```
 Instance > PVInstance > WorldRoot > Workspace
 ```
+
+[:octicons-link-external-16: Roblox API Reference](https://create.roblox.com/docs/reference/engine/classes/Workspace){ .md-button }
 
 The Workspace service represents the 3D world. It contains all parts, models, and other 3D objects visible in the game. It is also available as the `workspace` global.
 

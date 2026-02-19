@@ -4,6 +4,8 @@
 RObject > Instance
 ```
 
+[:octicons-link-external-16: Roblox API Reference](https://create.roblox.com/docs/reference/engine/classes/Instance){ .md-button .md-button--primary }
+
 The base class for all objects in the Roblox hierarchy. Every object in a Roblox game — parts, models, scripts, UI elements — is an `Instance`.
 
 ## Overview

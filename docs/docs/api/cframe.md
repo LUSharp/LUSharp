@@ -1,5 +1,7 @@
 # CFrame
 
+[:octicons-link-external-16: Roblox API Reference](https://create.roblox.com/docs/reference/engine/datatypes/CFrame){ .md-button .md-button--primary }
+
 A **Coordinate Frame** representing a position and orientation in 3D space. CFrame is used for positioning and rotating objects, cameras, and other 3D elements.
 
 ## Overview
