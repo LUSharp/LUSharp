@@ -364,7 +364,10 @@ FodyWeavers.xsd
 
 C:\Users\table\source\repos\LUSharp\LUSharpTranspiler\Examples/*
 
-# Claude design docs
-docs/
+# Claude config
+
 /.claude
 /CLAUDE.md
+
+# API Generator cache
+LUSharpApiGenerator/cache/

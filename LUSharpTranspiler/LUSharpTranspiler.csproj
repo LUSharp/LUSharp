@@ -17,7 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\LUSharp\LUSharp.csproj" />
+    <ProjectReference Include="..\LUSharpAPI\LUSharpAPI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

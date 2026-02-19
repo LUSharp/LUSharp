@@ -22,24 +22,34 @@ public class MethodBodyLowerer
     {
         var def = new LuaClassDef { Name = cls.Identifier.Text };
 
+        // First pass: collect fields and properties to know instance member names
+        foreach (var member in cls.Members)
+        {
+            switch (member)
+            {
+                case FieldDeclarationSyntax field:
+                    LowerField(field, def);
+                    break;
+                case PropertyDeclarationSyntax prop:
+                    LowerProperty(prop, def);
+                    break;
+            }
+        }
+
+        // Collect instance member names for implicit this→self rewriting
+        var instanceMembers = new HashSet<string>(
+            def.InstanceFields.Select(f => f.Name));
+
+        // Second pass: lower methods and constructors (needs instance member names)
         foreach (var member in cls.Members)
         {
             switch (member)
             {
                 case MethodDeclarationSyntax method when method.Body != null:
-                    def.Methods.Add(LowerMethod(method));
+                    def.Methods.Add(LowerMethod(method, instanceMembers));
                     break;
-
                 case ConstructorDeclarationSyntax ctor when ctor.Body != null:
-                    def.Constructor = LowerConstructor(ctor, cls.Identifier.Text);
-                    break;
-
-                case FieldDeclarationSyntax field:
-                    LowerField(field, def);
-                    break;
-
-                case PropertyDeclarationSyntax prop:
-                    LowerProperty(prop, def);
+                    def.Constructor = LowerConstructor(ctor, cls.Identifier.Text, instanceMembers);
                     break;
             }
         }
@@ -47,23 +57,29 @@ public class MethodBodyLowerer
         return def;
     }
 
-    private LuaMethodDef LowerMethod(MethodDeclarationSyntax method)
+    private LuaMethodDef LowerMethod(MethodDeclarationSyntax method, HashSet<string> instanceMembers)
     {
         var isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
         var parms = new List<string>();
         if (!isStatic) parms.Add("self");
         parms.AddRange(method.ParameterList.Parameters.Select(p => p.Identifier.Text));
 
+        var body = StatementLowerer.LowerBlock(method.Body!.Statements, _exprs);
+
+        // Rewrite this.X → self.X and bare MemberName → self.MemberName in instance methods
+        if (!isStatic)
+            body = IrRewriter.RewriteBlock(body, instanceMembers);
+
         return new LuaMethodDef
         {
             Name = method.Identifier.Text,
             IsStatic = isStatic,
             Parameters = parms,
-            Body = StatementLowerer.LowerBlock(method.Body!.Statements, _exprs)
+            Body = body
         };
     }
 
-    private LuaMethodDef LowerConstructor(ConstructorDeclarationSyntax ctor, string className)
+    private LuaMethodDef LowerConstructor(ConstructorDeclarationSyntax ctor, string className, HashSet<string> instanceMembers)
     {
         var parms = ctor.ParameterList.Parameters.Select(p => p.Identifier.Text).ToList();
         var body = new List<ILuaStatement>();
@@ -71,9 +87,9 @@ public class MethodBodyLowerer
         // local self = {}
         body.Add(new LuaLocal("self", LuaTable.Empty));
 
-        // Body statements (this.X = x → self.X = x)
+        // Body statements (this.X / bare X → self.X)
         body.AddRange(StatementLowerer.LowerBlock(ctor.Body!.Statements, _exprs)
-            .Select(s => RewriteThisToSelf(s)));
+            .Select(s => IrRewriter.RewriteThisToSelf(s, instanceMembers)));
 
         // return self
         body.Add(new LuaReturn(new LuaIdent("self")));
@@ -133,6 +149,4 @@ public class MethodBodyLowerer
         Body = new() { new LuaAssign(new LuaMember(new LuaIdent(isStatic ? name : "self"), name), new LuaIdent("value")) }
     };
 
-    // Rewrite this.X → self.X in lowered statements (simplified — full rewrite TBD in EventBinder)
-    private static ILuaStatement RewriteThisToSelf(ILuaStatement stmt) => stmt;
 }

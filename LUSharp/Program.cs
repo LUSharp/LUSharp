@@ -1,4 +1,6 @@
-﻿using LUSharp.Project.Rojo;
+﻿using LUSharp.Project;
+using LUSharp.Project.Rojo;
+using LUSharpTranspiler.Build;
 
 namespace LUSharp
 {
@@ -7,7 +9,8 @@ namespace LUSharp
         private static Dictionary<string, (string, string)> commands = new()
         {
             {"help", ("command_name(optional)", "List usage for all or a specific command.")},
-            {"new", ("project_name[REQUIRED]", "Create a new project with the name project_name.") }
+            {"new", ("project_name[REQUIRED]", "Create a new project with the name project_name.") },
+            {"build", ("[project_dir] [--out=path] [--release]", "Transpile C# source to Luau output.") }
         };
 
         static void Main(string[] args)
@@ -40,6 +43,16 @@ namespace LUSharp
                         CreateProject(args[1]);
                         break;
                     }
+                case "build":
+                    {
+                        var dir = args.Length > 1 && !args[1].StartsWith("--")
+                            ? args[1]
+                            : Directory.GetCurrentDirectory();
+                        var outFlag = args.FirstOrDefault(a => a.StartsWith("--out="))?[6..];
+                        var release = args.Contains("--release");
+                        Environment.ExitCode = BuildCommand.Run(dir, outFlag, release);
+                        break;
+                    }
                 default:
                     PrintHelp();
                     break;
@@ -62,103 +75,13 @@ namespace LUSharp
 
         public static void CreateProject(string name)
         {
-            // check if the project exists already in the current directory as the process. 
-            if (Directory.Exists(Directory.GetCurrentDirectory() + $"\\{name}"))
+            if (Directory.Exists(Path.Combine(Directory.GetCurrentDirectory(), name)))
             {
                 Logger.Log(Logger.LogSeverity.Error, "Project in directory exists.");
                 return;
             }
-            else
-            {
-                // if the directory doesnt exist
-                var projectDir = Directory.CreateDirectory(Directory.GetCurrentDirectory() + $"\\{name}");
 
-                // do project init and rojo
-                var config = new RojoConfig
-                {
-                    name = name,
-                    globIgnorePaths = new List<string>
-                    {
-                        "**/*.csproj",
-                        "**/*.sln",
-                        "**/bin/**",
-                        "**/obj/**"
-                    },
-                    tree = new RojoInstance
-                    {
-                        ClassName = "DataModel",
-                        Children = new Dictionary<string, RojoInstance>
-                        {
-                            ["HttpService"] = new RojoInstance
-                            {
-                                ClassName = "HttpService",
-                                Properties = new Dictionary<string, object>
-                                {
-                                    ["HttpEnabled"] = true
-                                }
-                            },
-
-                            // ===== SERVER OUTPUT =====
-                            ["ServerScriptService"] = new RojoInstance
-                            {
-                                ClassName = "ServerScriptService",
-                                Path = "out/server"
-                            },
-
-                            // ===== SHARED OUTPUT =====
-                            ["ReplicatedStorage"] = new RojoInstance
-                            {
-                                ClassName = "ReplicatedStorage",
-                                Children = new Dictionary<string, RojoInstance>
-                                {
-                                    ["Shared"] = new RojoInstance
-                                    {
-                                        Path = "out/shared"
-                                    },
-
-                                    ["Runtime"] = new RojoInstance
-                                    {
-                                        Path = "out/runtime"
-                                    }
-                                }
-                            },
-
-                            // ===== CLIENT OUTPUT =====
-                            ["StarterPlayer"] = new RojoInstance
-                            {
-                                ClassName = "StarterPlayer",
-                                Children = new Dictionary<string, RojoInstance>
-                                {
-                                    ["StarterPlayerScripts"] = new RojoInstance
-                                    {
-                                        ClassName = "StarterPlayerScripts",
-                                        Path = "out/client"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                };
-
-
-                // Write ROJO project to the project directory
-                RojoManager.WriteConfig($"{projectDir}\\default.project.json", config);
-
-                /*== Code Directories ==*/
-                Directory.CreateDirectory($"{projectDir}\\client");
-                Directory.CreateDirectory($"{projectDir}\\server");
-                Directory.CreateDirectory($"{projectDir}\\shared");
-                /*== OUTPUT DIRECTORIES ==*/
-                Directory.CreateDirectory($"{projectDir}\\out");
-                Directory.CreateDirectory($"{projectDir}\\out\\client");
-                Directory.CreateDirectory($"{projectDir}\\out\\server");
-                Directory.CreateDirectory($"{projectDir}\\out\\shared");
-                Directory.CreateDirectory($"{projectDir}\\out\\runtime");
-
-                Logger.Log("Project created successfully.");
-
-                // VS Project Generation/Implementation maybe?
-            }
+            ProjectScaffolder.Scaffold(name);
         }
     }
 }
