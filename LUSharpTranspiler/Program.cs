@@ -1,4 +1,4 @@
-﻿global using LogSeverity = LUSharp.Logger.LogSeverity;
+global using LogSeverity = LUSharp.Logger.LogSeverity;
 using System;
 using System.IO;
 using Microsoft.CodeAnalysis.CSharp;
@@ -9,6 +9,17 @@ namespace LUSharpTranspiler
     {
         static void Main(string[] args)
         {
+            // Handle "build" command
+            if (args.Length > 0 && args[0] == "build")
+            {
+                var dir = args.Length > 1 ? args[1] : Directory.GetCurrentDirectory();
+                var outFlag = args.FirstOrDefault(a => a.StartsWith("--out="))?[6..];
+                var release = args.Contains("--release");
+                Environment.ExitCode = Build.BuildCommand.Run(dir, outFlag, release);
+                return;
+            }
+
+            // Legacy: default to TestInput transpilation
             Array.Resize(ref args, 1);
             args[0] = "C:\\Users\\table\\source\\repos\\LUSharp\\LUSharpTranspiler\\TestInput";
 
@@ -18,11 +29,11 @@ namespace LUSharpTranspiler
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(
-                @"                 _ _                                            
-                 __    _____ _| | |_    _____                     _ _         
-                |  |  |  |  |_     _|  |_   _|___ ___ ___ ___ ___|_| |___ ___ 
+                @"                 _ _
+                 __    _____ _| | |_    _____                     _ _
+                |  |  |  |  |_     _|  |_   _|___ ___ ___ ___ ___|_| |___ ___
                 |  |__|  |  |_     _|    | | |  _| .'|   |_ -| . | | | -_|  _|
-                |_____|_____| |_|_|      |_| |_| |__,|_|_|___|  _|_|_|___|_|  
+                |_____|_____| |_|_|      |_| |_| |__,|_|_|___|  _|_|_|___|_|
                                                              |_|              ");
             Console.ForegroundColor = ConsoleColor.Gray;
             // validate input args
