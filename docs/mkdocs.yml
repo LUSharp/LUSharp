@@ -1,6 +1,6 @@
 site_name: LUSharp
 site_description: Write Roblox games in C# — transpiled to Luau.
-site_url: https://lusharp.github.io/LUSharp/
+site_url: https://lusharp.github.io/docs/
 repo_url: https://github.com/LUSharp/LUSharp
 repo_name: LUSharp/LUSharp
 
