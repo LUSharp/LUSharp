@@ -61,6 +61,40 @@ local function trimRight(text)
     return (text:gsub("[ \t]+$", ""))
 end
 
+local function findSingleSplice(oldText, updatedText)
+    if oldText == updatedText then
+        return nil
+    end
+
+    local oldLen = #oldText
+    local newLen = #updatedText
+
+    local prefixLen = 0
+    local minLen = math.min(oldLen, newLen)
+    while prefixLen < minLen do
+        local i = prefixLen + 1
+        if oldText:sub(i, i) ~= updatedText:sub(i, i) then
+            break
+        end
+        prefixLen += 1
+    end
+
+    local oldEnd = oldLen
+    local newEnd = newLen
+    while oldEnd > prefixLen and newEnd > prefixLen do
+        if oldText:sub(oldEnd, oldEnd) ~= updatedText:sub(newEnd, newEnd) then
+            break
+        end
+        oldEnd -= 1
+        newEnd -= 1
+    end
+
+    local startPos = prefixLen + 1
+    local removedText = oldText:sub(startPos, oldEnd)
+    local insertedText = updatedText:sub(startPos, newEnd)
+    return startPos, removedText, insertedText
+end
+
 local function updateStatus(self)
     local line, col = getLineCol(self.textBox.Text, self.textBox.CursorPosition)
     self.statusLabel.Text = string.format("%s | Ln %d, Col %d", self.fileName, line, col)
@@ -179,36 +213,6 @@ local function replaceTextRange(textBox, startPos, endPosExclusive, insertText)
     textBox.SelectionStart = -1
 end
 
-local function applyAutoIndent(textBox, tabText)
-    tabText = tabText or "    "
-
-    local text = textBox.Text
-    local cursor = textBox.CursorPosition
-
-    if cursor < 2 then
-        return
-    end
-
-    local prevLineEnd = cursor - 2
-    if prevLineEnd < 1 then
-        return
-    end
-
-    local prefix = text:sub(1, prevLineEnd)
-    local lastNewline = prefix:match(".*()\n")
-    local prevLineStart = lastNewline and (lastNewline + 1) or 1
-    local prevLine = text:sub(prevLineStart, prevLineEnd)
-
-    local indent = getLeadingWhitespace(prevLine)
-    local trimmed = trimRight(prevLine)
-    if trimmed:sub(-1) == "{" then
-        indent ..= tabText
-    end
-
-    if #indent > 0 then
-        insertAtCursor(textBox, indent)
-    end
-end
 
 local function refresh(self)
     local source = self.textBox.Text
@@ -390,6 +394,9 @@ function Editor.new(pluginObject, options)
     self._caretBlinkToken = 0
     self._charWidth = measureCharWidth(self.options.textSize, Enum.Font.Code)
     self._suppressTextChange = false
+    self._lastText = textBox.Text
+    self._lastCursorPos = textBox.CursorPosition
+    self._pendingAutoIndent = nil
 
     local caret = Instance.new("Frame")
     caret.Name = "Caret"
@@ -420,6 +427,10 @@ function Editor.new(pluginObject, options)
     table.insert(self._connections, textBox:GetPropertyChangedSignal("Text"):Connect(function()
         if self._suppressTextChange then
             self._suppressTextChange = false
+            self._pendingAutoIndent = nil
+            self._lastText = textBox.Text
+            self._lastCursorPos = textBox.CursorPosition
+
             refresh(self)
             if self.onSourceChanged then
                 self.onSourceChanged(textBox.Text)
@@ -428,12 +439,41 @@ function Editor.new(pluginObject, options)
             return
         end
 
+        local prevText = self._lastText or ""
+        local prevCursor = self._lastCursorPos
+
         local newText, newCursor, changed = EditorTextUtils.autoDedentClosingBrace(textBox.Text, textBox.CursorPosition, self.options.tabText)
         if changed then
             self._suppressTextChange = true
             textBox.Text = newText
             textBox.CursorPosition = newCursor
             return
+        end
+
+        local pendingIndent = false
+        if self.options.autoIndent and prevText ~= textBox.Text then
+            local indent = EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, textBox.Text, textBox.CursorPosition, self.options.tabText)
+            if indent ~= "" then
+                self._pendingAutoIndent = nil
+                self._suppressTextChange = true
+                insertAtCursor(textBox, indent)
+                return
+            end
+
+            local startPos, _removedText, insertedText = findSingleSplice(prevText, textBox.Text)
+            if insertedText == "\n" then
+                self._pendingAutoIndent = { newText = textBox.Text }
+                pendingIndent = true
+            else
+                self._pendingAutoIndent = nil
+            end
+        else
+            self._pendingAutoIndent = nil
+        end
+
+        if not pendingIndent then
+            self._lastText = textBox.Text
+            self._lastCursorPos = textBox.CursorPosition
         end
 
         refresh(self)
@@ -444,6 +484,24 @@ function Editor.new(pluginObject, options)
     end))
 
     table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(function()
+        if self._pendingAutoIndent and self.options.autoIndent then
+            if textBox.Text == self._pendingAutoIndent.newText then
+                local indent = EditorTextUtils.computeAutoIndentInsertion(self._lastText, self._lastCursorPos, textBox.Text, textBox.CursorPosition, self.options.tabText)
+                if indent ~= "" then
+                    self._pendingAutoIndent = nil
+                    self._suppressTextChange = true
+                    insertAtCursor(textBox, indent)
+                    return
+                end
+            else
+                self._pendingAutoIndent = nil
+                self._lastText = textBox.Text
+                self._lastCursorPos = textBox.CursorPosition
+            end
+        elseif not self._pendingAutoIndent then
+            self._lastCursorPos = textBox.CursorPosition
+        end
+
         updateStatus(self)
         updateCaretPosition(self)
     end))
@@ -473,14 +531,6 @@ function Editor.new(pluginObject, options)
             and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
             if self.onRequestCompletions then
                 self.onRequestCompletions()
-            end
-        elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
-            if self.options.autoIndent then
-                task.defer(function()
-                    if self.textBox and self.textBox.Parent then
-                        applyAutoIndent(textBox, self.options.tabText)
-                    end
-                end)
             end
         end
     end))
