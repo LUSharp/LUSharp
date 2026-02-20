@@ -13,7 +13,9 @@ namespace LUSharp
             {"help", ("command_name(optional)", "List usage for all or a specific command.")},
             {"new", ("project_name[REQUIRED]", "Create a new project with the name project_name.") },
             {"build", ("[project_dir] [--out=path] [--release]", "Transpile C# source to Luau output.") },
-            {"update", ("", "Update LUSharp to the latest version.") }
+            {"update", ("", "Update LUSharp to the latest version.") },
+            {"fix", ("[project_dir]", "Verify and repair project structure and config files.") },
+            {"generate-types", ("", "Generate Luau type database from LUSharpAPI reflection.") }
         };
 
         static int Main(string[] args)
@@ -69,10 +71,23 @@ namespace LUSharp
                             exitCode = BuildCommand.Run(dir, outFlag, release);
                             break;
                         }
+                    case "fix":
+                        {
+                            var dir = args.Length > 1 && !args[1].StartsWith("--")
+                                ? args[1]
+                                : Directory.GetCurrentDirectory();
+                            exitCode = ProjectFixer.Run(dir);
+                            break;
+                        }
                     case "update":
                         {
                             var version = Assembly.GetExecutingAssembly().GetName().Version;
                             return UpdateChecker.RunUpdate(version?.ToString(3) ?? "0.0.0");
+                        }
+                    case "generate-types":
+                        {
+                            // Return early to avoid update-notification text polluting generated output.
+                            return TypeDatabaseGenerator.Run();
                         }
                     default:
                         Logger.Log(Logger.LogSeverity.Error, $"Unknown command '{args[0]}'. Run 'lusharp help' for available commands.");

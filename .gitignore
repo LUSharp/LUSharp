@@ -374,3 +374,4 @@ LUSharpApiGenerator/cache/
 
 # MkDocs build output
 site/
+luau.exe

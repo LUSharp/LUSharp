@@ -1,7 +1,6 @@
 {
   "name": "LUSharp",
   "tree": {
-    "$className": "Script",
     "$path": "src"
   }
 }
