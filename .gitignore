@@ -378,3 +378,7 @@ luau.exe
 
 # Rojo plugin build output
 plugin/build/
+
+# Git worktrees
+.worktrees/
+worktrees/
