@@ -374,3 +374,7 @@ LUSharpApiGenerator/cache/
 
 # MkDocs build output
 site/
+luau.exe
+
+# Rojo plugin build output
+plugin/build/
