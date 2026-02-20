@@ -1,4 +1,5 @@
 local UserInputService = game:GetService("UserInputService")
+local TextService = game:GetService("TextService")
 
 local function requireModule(name)
     if typeof(script) == "Instance" and script.Parent then
@@ -62,6 +63,65 @@ end
 local function updateStatus(self)
     local line, col = getLineCol(self.textBox.Text, self.textBox.CursorPosition)
     self.statusLabel.Text = string.format("%s | Ln %d, Col %d", self.fileName, line, col)
+end
+
+local function measureCharWidth(textSize, font)
+    local size = TextService:GetTextSize("M", textSize, font, Vector2.new(1000, 1000))
+    return size.X
+end
+
+local function caretShouldShow(textBox)
+    if not textBox or not textBox:IsFocused() then
+        return false
+    end
+
+    local sel = textBox.SelectionStart
+    return sel == -1 or sel == textBox.CursorPosition
+end
+
+local function updateCaretPosition(self)
+    if not self.caret or not self.textBox then
+        return
+    end
+
+    local line, col = getLineCol(self.textBox.Text, self.textBox.CursorPosition)
+    local charWidth = self._charWidth or measureCharWidth(self.options.textSize, Enum.Font.Code)
+
+    local x = (col - 1) * charWidth
+    local y = (line - 1) * self.options.lineHeight
+
+    self.caret.Position = UDim2.new(0, x, 0, y)
+    self.caret.Size = UDim2.new(0, 1, 0, self.options.lineHeight)
+end
+
+local function stopCaretBlink(self)
+    self._caretBlinkToken = (self._caretBlinkToken or 0) + 1
+    if self.caret then
+        self.caret.Visible = false
+    end
+end
+
+local function startCaretBlink(self)
+    self._caretBlinkToken = (self._caretBlinkToken or 0) + 1
+    local token = self._caretBlinkToken
+
+    task.spawn(function()
+        local visible = true
+
+        while self._caretBlinkToken == token and self.caret and self.textBox do
+            updateCaretPosition(self)
+
+            if caretShouldShow(self.textBox) then
+                self.caret.Visible = visible
+                visible = not visible
+            else
+                self.caret.Visible = false
+                visible = true
+            end
+
+            task.wait(0.5)
+        end
+    end)
 end
 
 local function insertAtCursor(textBox, insertText)
@@ -160,6 +220,7 @@ local function refresh(self)
     self.scroller.CanvasSize = UDim2.new(0, 0, 0, contentHeight)
 
     updateStatus(self)
+    updateCaretPosition(self)
 end
 
 function Editor.new(pluginObject, options)
@@ -309,6 +370,18 @@ function Editor.new(pluginObject, options)
     textBox.Parent = codeContainer
     self.textBox = textBox
 
+    self._caretBlinkToken = 0
+    self._charWidth = measureCharWidth(self.options.textSize, Enum.Font.Code)
+
+    local caret = Instance.new("Frame")
+    caret.Name = "Caret"
+    caret.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
+    caret.BorderSizePixel = 0
+    caret.ZIndex = 3
+    caret.Visible = false
+    caret.Parent = codeContainer
+    self.caret = caret
+
     local completionFrame = Instance.new("Frame")
     completionFrame.Name = "Completions"
     completionFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
@@ -336,15 +409,19 @@ function Editor.new(pluginObject, options)
 
     table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(function()
         updateStatus(self)
+        updateCaretPosition(self)
     end))
 
     table.insert(self._connections, textBox.Focused:Connect(function()
         updateStatus(self)
+        updateCaretPosition(self)
+        startCaretBlink(self)
     end))
 
     table.insert(self._connections, textBox.FocusLost:Connect(function()
         updateStatus(self)
         self:hideCompletions()
+        stopCaretBlink(self)
     end))
 
     table.insert(self._connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -511,6 +588,8 @@ function Editor:applySettings(settings)
         self.textBox.TextSize = self.options.textSize
         self.overlay.TextSize = self.options.textSize
         self.lineNumbers.TextSize = self.options.textSize
+
+        self._charWidth = measureCharWidth(self.options.textSize, Enum.Font.Code)
     end
 
     if settings.theme == "Light" then
@@ -518,11 +597,17 @@ function Editor:applySettings(settings)
         self.scroller.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
         self.statusLabel.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
         self.statusLabel.TextColor3 = Color3.fromRGB(20, 20, 20)
+        if self.caret then
+            self.caret.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        end
     else
         self.root.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
         self.scroller.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
         self.statusLabel.BackgroundColor3 = Color3.fromRGB(37, 37, 38)
         self.statusLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+        if self.caret then
+            self.caret.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
+        end
     end
 
     refresh(self)
@@ -546,11 +631,17 @@ end
 
 function Editor:destroy()
     self:hideCompletions()
+    stopCaretBlink(self)
 
     for _, connection in ipairs(self._connections) do
         connection:Disconnect()
     end
     self._connections = {}
+
+    if self.caret then
+        self.caret:Destroy()
+        self.caret = nil
+    end
 
     if self.widget then
         self.widget:Destroy()
