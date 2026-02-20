@@ -230,8 +230,8 @@ projectView:setOnScriptSelected(function(moduleScript)
     openScript(moduleScript)
 end)
 
-local function compileOne(moduleScript)
-    local source = ScriptManager.getSource(moduleScript)
+local function compileOne(scriptInstance)
+    local source = ScriptManager.getSource(scriptInstance)
     if source == nil then
         return false
     end
@@ -240,16 +240,28 @@ local function compileOne(moduleScript)
     local parseResult = Parser.parse(tokens)
 
     if parseResult.diagnostics and #parseResult.diagnostics > 0 then
-        warn("[LUSharp] Parse diagnostics in " .. moduleScript:GetFullName())
+        warn("[LUSharp] Parse diagnostics in " .. scriptInstance:GetFullName())
         for _, diagnostic in ipairs(parseResult.diagnostics) do
             warn(string.format("  %s (%d:%d): %s", diagnostic.severity, diagnostic.line, diagnostic.column, diagnostic.message))
         end
     end
 
     local ir = Lowerer.lower(parseResult)
+
+    local desiredType = "ModuleScript"
+    if scriptInstance:IsA("Script") then
+        desiredType = "Script"
+    elseif scriptInstance:IsA("LocalScript") then
+        desiredType = "LocalScript"
+    end
+
+    if ir.modules and ir.modules[1] then
+        ir.modules[1].scriptType = desiredType
+    end
+
     local out = Emitter.emit(ir.modules[1])
 
-    moduleScript.Source = "-- Compiled by LUSharp (do not edit)\n" .. out
+    scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n" .. out
     return true
 end
 
@@ -268,7 +280,7 @@ local function compileActiveOrSelected()
     local ok, err = pcall(function()
         local compiled = compileOne(target)
         if not compiled then
-            warn("[LUSharp] Selected instance is not a tagged LUSharp ModuleScript.")
+            warn("[LUSharp] Selected instance is not a tagged LUSharp script.")
         end
     end)
 
@@ -342,7 +354,7 @@ Selection.SelectionChanged:Connect(function()
     local selection = Selection:Get()
     local target = selection[1]
 
-    if target and target:IsA("ModuleScript") then
+    if target and target:IsA("LuaSourceContainer") then
         if ScriptManager.getSource(target) ~= nil then
             openScript(target)
         end
@@ -350,5 +362,8 @@ Selection.SelectionChanged:Connect(function()
 end)
 
 projectView:refresh()
+
+editor:show()
+editor:focus()
 
 print("[LUSharp] Plugin loaded")

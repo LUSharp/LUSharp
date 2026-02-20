@@ -266,7 +266,7 @@ function Editor.new(pluginObject, options)
     self._completionConnections = {}
 
     local widgetInfo = DockWidgetPluginGuiInfo.new(
-        Enum.InitialDockState.Left,
+        Enum.InitialDockState.Float,
         true,
         false,
         options.width or 650,
@@ -460,8 +460,8 @@ function Editor.new(pluginObject, options)
         stopCaretBlink(self)
     end))
 
-    table.insert(self._connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed or not textBox:IsFocused() then
+    table.insert(self._connections, UserInputService.InputBegan:Connect(function(input, _gameProcessed)
+        if not textBox:IsFocused() then
             return
         end
 
