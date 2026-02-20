@@ -152,6 +152,7 @@ function Parser.parse(tokens)
     local parseStatement
     local parseBlock
     local parseTypeName
+    local parseUnary
 
     -- Parse a type name (including generics: List<int>, Dictionary<string, int>)
     parseTypeName = function()
@@ -248,10 +249,121 @@ function Parser.parse(tokens)
         return args
     end
 
-    -- Parse a primary expression (atom): literal, identifier, new, parenthesized
-    local function parsePrimaryExpression()
-        -- Parenthesized expression
+    -- Helper: check if current position is a lambda expression
+    -- Single-param: identifier =>
+    -- Multi-param: ( identifiers... ) =>
+    local function isLambdaExpression()
+        -- Single-param lambda: identifier =>
+        if check("identifier") and peek(1).type == "operator" and peek(1).value == "=>" then
+            return true
+        end
+        -- Multi-param lambda: (x, y) => ...
+        -- We need lookahead to distinguish from parenthesized expression
         if check("punctuation", "(") then
+            local savePos = pos
+            local isLambda = false
+            -- Try to scan past matching parens to see if => follows
+            local depth = 0
+            local i = pos
+            while i <= #tokens do
+                local tok = tokens[i]
+                if tok.type == "punctuation" and tok.value == "(" then
+                    depth += 1
+                elseif tok.type == "punctuation" and tok.value == ")" then
+                    depth -= 1
+                    if depth == 0 then
+                        -- Check if next token is =>
+                        if i + 1 <= #tokens and tokens[i + 1].type == "operator" and tokens[i + 1].value == "=>" then
+                            -- Check contents are valid lambda params (identifiers and commas only)
+                            local valid = true
+                            for j = savePos + 1, i - 1 do
+                                local t = tokens[j]
+                                if t.type ~= "identifier" and not (t.type == "punctuation" and t.value == ",")
+                                    and not (t.type == "keyword" and TYPE_KEYWORDS[t.value]) then
+                                    valid = false
+                                    break
+                                end
+                            end
+                            isLambda = valid
+                        end
+                        break
+                    end
+                elseif tok.type == "eof" then
+                    break
+                end
+                i += 1
+            end
+            return isLambda
+        end
+        return false
+    end
+
+    -- Parse lambda expression: x => expr  or  (x, y) => { stmts } / (x, y) => expr
+    local function parseLambda()
+        local params = {}
+        if check("punctuation", "(") then
+            advance() -- (
+            while not check("punctuation", ")") and not check("eof") do
+                local paramName = expect("identifier").value
+                table.insert(params, paramName)
+                if not match("punctuation", ",") then break end
+            end
+            expect("punctuation", ")")
+        else
+            -- Single parameter
+            local paramName = expect("identifier").value
+            table.insert(params, paramName)
+        end
+        expect("operator", "=>") -- =>
+        local body
+        if check("punctuation", "{") then
+            body = parseBlock()
+        else
+            body = parseExpression()
+        end
+        return { type = "lambda", parameters = params, body = body }
+    end
+
+    -- Parse a primary expression (atom): literal, identifier, new, parenthesized, lambda
+    local function parsePrimaryExpression()
+        -- Lambda: must check before parenthesized expression and identifier
+        if isLambdaExpression() then
+            return parseLambda()
+        end
+
+        -- Parenthesized expression (or cast)
+        if check("punctuation", "(") then
+            -- Try to detect cast: (TypeName)expr
+            -- Heuristic: if contents is a single type keyword or identifier and closing ) is
+            -- followed by something that looks like an expression start (not an operator)
+            local savePos = pos
+            advance() -- (
+            local castCandidate = false
+            if (check("keyword") and TYPE_KEYWORDS[current().value]) or check("identifier") then
+                local typeTok = current()
+                local typePos = pos
+                -- Try parsing as type name
+                local ok, typeName = pcall(function() return parseTypeName() end)
+                if ok and check("punctuation", ")") then
+                    advance() -- )
+                    -- Check what follows: if it's an expression start, treat as cast
+                    local next = current()
+                    if next.type == "identifier" or next.type == "number" or next.type == "string"
+                        or next.type == "interpolated_string"
+                        or (next.type == "keyword" and (next.value == "new" or next.value == "true"
+                            or next.value == "false" or next.value == "null" or next.value == "this"
+                            or next.value == "base" or next.value == "typeof"))
+                        or (next.type == "operator" and (next.value == "!" or next.value == "-"
+                            or next.value == "++" or next.value == "--"))
+                        or (next.type == "punctuation" and next.value == "(") then
+                        -- It's a cast
+                        local expression = parseUnary()
+                        return { type = "cast", targetType = typeName, expression = expression }
+                    end
+                end
+            end
+            -- Not a cast; restore and parse as parenthesized expression
+            pos = savePos
             advance() -- (
             local expr = parseExpression()
             expect("punctuation", ")")
@@ -284,7 +396,13 @@ function Parser.parse(tokens)
         -- this keyword
         if check("keyword", "this") then
             advance()
-            return { type = "identifier", name = "this" }
+            return { type = "this" }
+        end
+
+        -- base keyword
+        if check("keyword", "base") then
+            advance()
+            return { type = "base" }
         end
 
         -- typeof
@@ -293,7 +411,7 @@ function Parser.parse(tokens)
             expect("punctuation", "(")
             local typeName = parseTypeName()
             expect("punctuation", ")")
-            return { type = "typeof", typeName = typeName }
+            return { type = "typeof", targetType = typeName }
         end
 
         -- Number literal
@@ -302,8 +420,14 @@ function Parser.parse(tokens)
             return { type = "literal", value = tok.value, literalType = "number" }
         end
 
+        -- Interpolated string literal
+        if check("interpolated_string") then
+            local tok = advance()
+            return { type = "interpolated_string", value = tok.value }
+        end
+
         -- String literal
-        if check("string") or check("interpolated_string") then
+        if check("string") then
             local tok = advance()
             return { type = "literal", value = tok.value, literalType = "string" }
         end
@@ -319,18 +443,31 @@ function Parser.parse(tokens)
         return { type = "unknown", value = tok.value }
     end
 
-    -- Parse postfix: member access (a.b), method calls (a()), indexing (a[])
+    -- Parse postfix: member access (a.b), null-conditional (a?.b), method calls (a()), indexing (a[])
     local function parsePostfix(expr)
         while true do
+            -- Null-conditional member access: expr?.member
+            if check("operator", "?.") then
+                advance() -- ?.
+                local memberName = expect("identifier").value
+                expr = { type = "null_conditional", object = expr, member = memberName }
             -- Member access: expr.member
-            if check("punctuation", ".") then
+            elseif check("punctuation", ".") then
                 advance() -- .
                 local memberName = expect("identifier").value
                 expr = { type = "member_access", object = expr, member = memberName }
             -- Method call: expr(args)
             elseif check("punctuation", "(") then
                 local args = parseArguments()
-                expr = { type = "call", callee = expr, arguments = args }
+                -- Set convenience `name` field when callee is a simple identifier
+                local callNode = { type = "call", callee = expr, arguments = args }
+                if expr.type == "identifier" then
+                    callNode.name = expr.name
+                elseif expr.type == "member_access" then
+                    callNode.name = expr.member
+                    callNode.target = expr.object
+                end
+                expr = callNode
             -- Indexing: expr[index]
             elseif check("punctuation", "[") then
                 advance() -- [
@@ -345,23 +482,23 @@ function Parser.parse(tokens)
     end
 
     -- Parse unary prefix: !, -, ++, --
-    local function parseUnary()
+    parseUnary = function()
         if check("operator", "!") or check("operator", "-") then
             local op = advance().value
             local operand = parseUnary()
-            return { type = "unary", operator = op, operand = operand }
+            return { type = "unary", operator = op, operand = operand, isPrefix = true }
         end
         if check("operator", "++") or check("operator", "--") then
             local op = advance().value
             local operand = parseUnary()
-            return { type = "unary_prefix", operator = op, operand = operand }
+            return { type = "unary", operator = op, operand = operand, isPrefix = true }
         end
         local expr = parsePrimaryExpression()
         expr = parsePostfix(expr)
         -- Postfix ++ / --
         if check("operator", "++") or check("operator", "--") then
             local op = advance().value
-            expr = { type = "unary_postfix", operator = op, operand = expr }
+            expr = { type = "unary", operator = op, operand = expr, isPrefix = false }
         end
         return expr
     end
@@ -371,6 +508,7 @@ function Parser.parse(tokens)
         ["*"] = 12, ["/"] = 12, ["%"] = 12,
         ["+"] = 11, ["-"] = 11,
         ["<"] = 9, [">"] = 9, ["<="] = 9, [">="] = 9,
+        ["is"] = 9, ["as"] = 9,
         ["=="] = 8, ["!="] = 8,
         ["&&"] = 4,
         ["||"] = 3,
@@ -382,19 +520,45 @@ function Parser.parse(tokens)
         local left = parseUnary()
         while true do
             local tok = current()
-            if tok.type ~= "operator" then break end
-            local prec = PRECEDENCE[tok.value]
+            local prec
+            -- Check for operator tokens
+            if tok.type == "operator" then
+                prec = PRECEDENCE[tok.value]
+            -- Check for keyword operators: is, as
+            elseif tok.type == "keyword" and (tok.value == "is" or tok.value == "as") then
+                prec = PRECEDENCE[tok.value]
+            end
             if not prec or prec < minPrec then break end
             local op = advance().value
-            local right = parseBinaryExpression(prec + 1)
-            left = { type = "binary", operator = op, left = left, right = right }
+            -- 'is' and 'as' take a type name on the right, not an expression
+            if op == "is" or op == "as" then
+                local targetType = parseTypeName()
+                left = { type = op, expression = left, targetType = targetType }
+            else
+                local right = parseBinaryExpression(prec + 1)
+                left = { type = "binary", operator = op, left = left, right = right }
+            end
         end
         return left
     end
 
-    -- Parse a full expression (including assignment)
+    -- Parse a ternary expression: condition ? thenExpr : elseExpr
+    local function parseTernary(minPrec)
+        local expr = parseBinaryExpression(minPrec)
+        -- Ternary: expr ? a : b
+        if check("operator", "?") then
+            advance() -- ?
+            local thenExpr = parseExpression()
+            expect("punctuation", ":")
+            local elseExpr = parseExpression()
+            return { type = "ternary", condition = expr, thenExpr = thenExpr, elseExpr = elseExpr }
+        end
+        return expr
+    end
+
+    -- Parse a full expression (including ternary and assignment)
     parseExpression = function()
-        local expr = parseBinaryExpression(1)
+        local expr = parseTernary(1)
 
         -- Assignment operators: =, +=, -=, *=, /=, %=
         if check("operator", "=") or check("operator", "+=") or check("operator", "-=")

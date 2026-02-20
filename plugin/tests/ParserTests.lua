@@ -192,6 +192,76 @@ class Foo : Bar {
             expect(stmt.type):toBe("throw")
         end)
     end)
+
+    describe("Parser: Expressions", function()
+        it("parses binary expression", function()
+            local ast = parse("class C { void M() { var x = 1 + 2; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("binary")
+            expect(init.operator):toBe("+")
+        end)
+
+        it("parses method call", function()
+            local ast = parse("class C { void M() { print(42); } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.expression.type):toBe("call")
+            expect(stmt.expression.name):toBe("print")
+        end)
+
+        it("parses member access", function()
+            local ast = parse("class C { void M() { var x = player.Name; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("member_access")
+            expect(init.member):toBe("Name")
+        end)
+
+        it("parses object creation", function()
+            local ast = parse("class C { void M() { var p = new Part(); } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("new")
+            expect(init.className):toBe("Part")
+        end)
+
+        it("parses lambda expression", function()
+            local ast = parse("class C { void M() { var f = x => x + 1; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("lambda")
+        end)
+
+        it("parses string interpolation", function()
+            local ast = parse('class C { void M() { var s = $"Hello {name}"; } }')
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("interpolated_string")
+        end)
+
+        it("parses ternary", function()
+            local ast = parse("class C { void M() { var x = a > b ? a : b; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("ternary")
+        end)
+
+        it("parses null coalescing", function()
+            local ast = parse('class C { void M() { var x = a ?? "default"; } }')
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("binary")
+            expect(init.operator):toBe("??")
+        end)
+
+        it("parses chained member access + method call", function()
+            local ast = parse('class C { void M() { game.GetService("Players").LocalPlayer.Name; } }')
+            local expr = ast.classes[1].methods[1].body[1].expression
+            expect(expr.type):toBe("member_access")
+        end)
+
+        it("respects operator precedence", function()
+            local ast = parse("class C { void M() { var x = 1 + 2 * 3; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            -- Should be +(1, *(2, 3)) not *(+(1, 2), 3)
+            expect(init.type):toBe("binary")
+            expect(init.operator):toBe("+")
+            expect(init.right.operator):toBe("*")
+        end)
+    end)
 end
 
 return run
