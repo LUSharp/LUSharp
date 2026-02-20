@@ -149,16 +149,7 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
 
         insertedNewlinePos = startPos
     else
-        -- Text didn't change: handle ordering where cursor updates after the newline was inserted.
-        if newCursor <= 1 or newCursor ~= prevCursor + 1 then
-            return ""
-        end
-
-        if newText:sub(newCursor - 1, newCursor - 1) ~= "\n" then
-            return ""
-        end
-
-        insertedNewlinePos = newCursor - 1
+        return ""
     end
 
     -- Previous line is the line that ends at the inserted newline.
