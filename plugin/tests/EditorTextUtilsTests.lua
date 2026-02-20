@@ -85,13 +85,23 @@ return function(describe, it, expect)
             expect(indent):toBe("    ")
         end)
 
-        it("computes auto-indent when cursor updates after text", function()
+        it("does not auto-indent when only the cursor moves", function()
             local textWithNewline = "if (x) {\n"
             local prevCursor = #textWithNewline -- cursor still before the '\n'
             local newCursor = #textWithNewline + 1 -- cursor moved after the '\n'
 
             local indent = TextUtils.computeAutoIndentInsertion(textWithNewline, prevCursor, textWithNewline, newCursor, "    ")
-            expect(indent):toBe("    ")
+            expect(indent):toBe("")
+        end)
+
+        it("does not auto-indent when cursor crosses an existing newline", function()
+            local text = "if (x) {\n    y"
+            local newlineIndex = assert(text:find("\n", 1, true))
+            local prevCursor = newlineIndex
+            local newCursor = newlineIndex + 1
+
+            local indent = TextUtils.computeAutoIndentInsertion(text, prevCursor, text, newCursor, "    ")
+            expect(indent):toBe("")
         end)
 
         it("does not auto-indent after newline when previous line does not open scope", function()
