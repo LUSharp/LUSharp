@@ -63,6 +63,37 @@ return function(describe, it, expect)
             expect(indent):toBe("    ")
         end)
 
+        it("carries forward leading whitespace after newline", function()
+            local prevText = "    x;"
+            local prevCursor = #prevText + 1
+
+            local newText = "    x;\n"
+            local newCursor = #newText + 1
+
+            local indent = TextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, "    ")
+            expect(indent):toBe("    ")
+        end)
+
+        it("computes auto-indent when newline replaces a selection", function()
+            local prevText = "    abcdef"
+            local prevCursor = 10 -- simulate selection end
+
+            local newText = "    ab\nf"
+            local newCursor = 8 -- cursor after inserted newline
+
+            local indent = TextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, "    ")
+            expect(indent):toBe("    ")
+        end)
+
+        it("computes auto-indent when cursor updates after text", function()
+            local textWithNewline = "if (x) {\n"
+            local prevCursor = #textWithNewline -- cursor still before the '\n'
+            local newCursor = #textWithNewline + 1 -- cursor moved after the '\n'
+
+            local indent = TextUtils.computeAutoIndentInsertion(textWithNewline, prevCursor, textWithNewline, newCursor, "    ")
+            expect(indent):toBe("    ")
+        end)
+
         it("does not auto-indent after newline when previous line does not open scope", function()
             local prevText = "x;"
             local prevCursor = #prevText + 1

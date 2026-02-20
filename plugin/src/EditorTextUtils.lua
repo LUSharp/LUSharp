@@ -75,39 +75,105 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
     newText = newText or ""
     tabText = tabText or "    "
 
-    if type(prevCursor) ~= "number" or type(newCursor) ~= "number" then
+    local function normalizeCursor(text, cursorPos)
+        if type(cursorPos) ~= "number" then
+            return nil
+        end
+
+        cursorPos = math.floor(cursorPos)
+        if cursorPos < 1 then
+            return 1
+        end
+
+        local maxPos = #text + 1
+        if cursorPos > maxPos then
+            return maxPos
+        end
+
+        return cursorPos
+    end
+
+    prevCursor = normalizeCursor(prevText, prevCursor)
+    newCursor = normalizeCursor(newText, newCursor)
+    if not prevCursor or not newCursor then
         return ""
     end
 
-    prevCursor = math.floor(prevCursor)
-    newCursor = math.floor(newCursor)
+    local function findSingleSplice(oldText, updatedText)
+        if oldText == updatedText then
+            return nil
+        end
 
-    -- Minimal v1: detect a single '\n' insertion at the cursor.
-    if newCursor <= 1 or newCursor ~= prevCursor + 1 then
-        return ""
+        local oldLen = #oldText
+        local newLen = #updatedText
+
+        local prefixLen = 0
+        local minLen = math.min(oldLen, newLen)
+        while prefixLen < minLen do
+            local i = prefixLen + 1
+            if oldText:sub(i, i) ~= updatedText:sub(i, i) then
+                break
+            end
+            prefixLen += 1
+        end
+
+        local oldEnd = oldLen
+        local newEnd = newLen
+        while oldEnd > prefixLen and newEnd > prefixLen do
+            if oldText:sub(oldEnd, oldEnd) ~= updatedText:sub(newEnd, newEnd) then
+                break
+            end
+            oldEnd -= 1
+            newEnd -= 1
+        end
+
+        local startPos = prefixLen + 1
+        local removedText = oldText:sub(startPos, oldEnd)
+        local insertedText = updatedText:sub(startPos, newEnd)
+        return startPos, removedText, insertedText
     end
 
-    if newText:sub(newCursor - 1, newCursor - 1) ~= "\n" then
-        return ""
-    end
+    local insertedNewlinePos
 
-    local expected = prevText:sub(1, prevCursor - 1) .. "\n" .. prevText:sub(prevCursor)
-    if newText ~= expected then
-        return ""
+    if prevText ~= newText then
+        -- Text changed: detect a single-splice replacement with a lone '\n'.
+        local startPos, _removedText, insertedText = findSingleSplice(prevText, newText)
+        if insertedText ~= "\n" then
+            return ""
+        end
+
+        -- Only insert auto-indent when the cursor is at the insertion point.
+        if newCursor ~= startPos + 1 then
+            return ""
+        end
+
+        insertedNewlinePos = startPos
+    else
+        -- Text didn't change: handle ordering where cursor updates after the newline was inserted.
+        if newCursor <= 1 or newCursor ~= prevCursor + 1 then
+            return ""
+        end
+
+        if newText:sub(newCursor - 1, newCursor - 1) ~= "\n" then
+            return ""
+        end
+
+        insertedNewlinePos = newCursor - 1
     end
 
     -- Previous line is the line that ends at the inserted newline.
-    local lineStart = findLineStart(newText, newCursor - 1)
-    local prevLine = newText:sub(lineStart, newCursor - 2)
+    local lineStart = findLineStart(newText, insertedNewlinePos)
+    local prevLine = newText:sub(lineStart, insertedNewlinePos - 1)
 
     local leadingWhitespace = prevLine:match("^([ \t]*)") or ""
     local trimmed = prevLine:match("^(.-)%s*$") or ""
 
+    local indent = leadingWhitespace
     if trimmed ~= "" and trimmed:sub(-1) == "{" then
-        return leadingWhitespace .. tabText
+        indent ..= tabText
     end
 
-    return ""
+    return indent
 end
 
 return EditorTextUtils
