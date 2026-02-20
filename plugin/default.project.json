@@ -1,0 +1,13 @@
+{
+  "name": "LUSharpPluginDev",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "LUSharp": {
+        "$path": "src"
+      }
+    }
+  },
+  "servePort": 34873
+}

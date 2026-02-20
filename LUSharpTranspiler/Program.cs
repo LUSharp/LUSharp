@@ -3,6 +3,8 @@ using System;
 using System.IO;
 using Microsoft.CodeAnalysis.CSharp;
 using LUSharpTranspiler.Frontend;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 namespace LUSharpTranspiler
 {
     internal class Program
