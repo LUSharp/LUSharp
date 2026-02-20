@@ -5,12 +5,12 @@ local passed = 0
 local failed = 0
 local errors = {}
 
-function describe(name, fn)
+local function describe(name, fn)
     print("\n" .. name)
     fn()
 end
 
-function it(name, fn)
+local function it(name, fn)
     local ok, err = pcall(fn)
     if ok then
         passed += 1
@@ -23,7 +23,7 @@ function it(name, fn)
     end
 end
 
-function expect(value)
+local function expect(value)
     return {
         toBe = function(_, expected)
             if value ~= expected then
@@ -70,6 +70,7 @@ function expect(value)
 end
 
 -- Load and run test files
+-- Each test file returns a function(describe, it, expect)
 local testFiles = {
     "LexerTests",
     "ParserTests",
@@ -79,7 +80,10 @@ local testFiles = {
 
 for _, name in ipairs(testFiles) do
     local ok, err = pcall(function()
-        require("plugin/tests/" .. name)
+        local testModule = require("./" .. name)
+        if type(testModule) == "function" then
+            testModule(describe, it, expect)
+        end
     end)
     if not ok then
         print("ERROR loading " .. name .. ": " .. tostring(err))
