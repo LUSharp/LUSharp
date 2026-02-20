@@ -5,7 +5,9 @@ local ScriptManager = {}
 local TAG = "LUSharp"
 local SOURCE_VALUE_NAME = "CSharpSource"
 local SOURCE_TEMPLATE = [[public class %s {
+    public static void GameEntry() {
 
+    }
 }
 ]]
 
@@ -42,8 +44,8 @@ local function ensureSourceValue(moduleScript)
     return value
 end
 
-local function isManagedModule(instance)
-    if not instance or not instance:IsA("ModuleScript") then
+local function isManagedScript(instance)
+    if not instance or not instance:IsA("LuaSourceContainer") then
         return false
     end
 
@@ -55,7 +57,7 @@ function ScriptManager.getAll()
     local scripts = {}
 
     for _, instance in ipairs(tagged) do
-        if instance:IsA("ModuleScript") then
+        if instance:IsA("LuaSourceContainer") then
             table.insert(scripts, instance)
         end
     end
@@ -68,7 +70,7 @@ function ScriptManager.getAll()
 end
 
 function ScriptManager.getSource(moduleScript)
-    if not isManagedModule(moduleScript) then
+    if not isManagedScript(moduleScript) then
         return nil
     end
 
@@ -81,7 +83,7 @@ function ScriptManager.getSource(moduleScript)
 end
 
 function ScriptManager.setSource(moduleScript, source)
-    if not isManagedModule(moduleScript) or type(source) ~= "string" then
+    if not isManagedScript(moduleScript) or type(source) ~= "string" then
         return false
     end
 
@@ -103,25 +105,32 @@ function ScriptManager.createScript(name, parent, context)
         return nil
     end
 
-    local moduleScript = Instance.new("ModuleScript")
-    moduleScript.Name = name
-    moduleScript.Source = "-- Compiled by LUSharp (do not edit)\nreturn {}"
-    moduleScript.Parent = parent
+    local className = "ModuleScript"
+    if context == "Server" then
+        className = "Script"
+    elseif context == "Client" then
+        className = "LocalScript"
+    end
 
-    CollectionService:AddTag(moduleScript, TAG)
+    local scriptInstance = Instance.new(className)
+    scriptInstance.Name = name
+    scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n"
+    scriptInstance.Parent = parent
 
-    local sourceValue = ensureSourceValue(moduleScript)
+    CollectionService:AddTag(scriptInstance, TAG)
+
+    local sourceValue = ensureSourceValue(scriptInstance)
     sourceValue.Value = string.format(SOURCE_TEMPLATE, name)
 
     if context then
-        moduleScript:SetAttribute("LUSharpContext", context)
+        scriptInstance:SetAttribute("LUSharpContext", context)
     end
 
-    return moduleScript
+    return scriptInstance
 end
 
 function ScriptManager.renameScript(moduleScript, newName)
-    if not isManagedModule(moduleScript) or type(newName) ~= "string" or newName:match("^%s*$") then
+    if not isManagedScript(moduleScript) or type(newName) ~= "string" or newName:match("^%s*$") then
         return false
     end
 
@@ -136,7 +145,7 @@ function ScriptManager.renameScript(moduleScript, newName)
 end
 
 function ScriptManager.deleteScript(moduleScript)
-    if not isManagedModule(moduleScript) then
+    if not isManagedScript(moduleScript) then
         return false
     end
 
