@@ -51,5 +51,27 @@ return function(describe, it, expect)
             expect(newText):toBe("if (x) {\n}")
             expect(newCursor):toBe(#newText + 1)
         end)
+
+        it("computes auto-indent after newline", function()
+            local prevText = "if (x) {"
+            local prevCursor = #prevText + 1
+
+            local newText = "if (x) {\n"
+            local newCursor = #newText + 1
+
+            local indent = TextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, "    ")
+            expect(indent):toBe("    ")
+        end)
+
+        it("does not auto-indent after newline when previous line does not open scope", function()
+            local prevText = "x;"
+            local prevCursor = #prevText + 1
+
+            local newText = "x;\n"
+            local newCursor = #newText + 1
+
+            local indent = TextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, "    ")
+            expect(indent):toBe("")
+        end)
     end)
 end
