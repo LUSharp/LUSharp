@@ -720,6 +720,190 @@ lowerBlock = function(stmts)
     return result
 end
 
+local function cloneSet(set)
+    local out = {}
+    for k, v in pairs(set or {}) do
+        if v then
+            out[k] = true
+        end
+    end
+    return out
+end
+
+local function addListToSet(set, list)
+    for _, name in ipairs(list or {}) do
+        set[name] = true
+    end
+end
+
+local rewriteSelfCallsInBlock
+
+local function rewriteSelfCallsInExpression(expr, ctx, locals)
+    if not expr then
+        return expr
+    end
+
+    local t = expr.type
+
+    if t == "call" then
+        expr.callee = rewriteSelfCallsInExpression(expr.callee, ctx, locals)
+        for i, arg in ipairs(expr.args or {}) do
+            expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
+        end
+
+        if expr.callee and expr.callee.type == "identifier" then
+            local name = expr.callee.name
+            if name and not locals[name] then
+                if (not ctx.isStatic) and ctx.instanceMethods[name] then
+                    return {
+                        type = "method_call",
+                        object = { type = "identifier", name = "self" },
+                        method = name,
+                        args = expr.args,
+                    }
+                end
+
+                if ctx.staticMethods[name] then
+                    return {
+                        type = "call",
+                        callee = {
+                            type = "dot_access",
+                            object = { type = "identifier", name = ctx.className },
+                            field = name,
+                        },
+                        args = expr.args,
+                    }
+                end
+            end
+        end
+
+        return expr
+    end
+
+    if t == "method_call" then
+        expr.object = rewriteSelfCallsInExpression(expr.object, ctx, locals)
+        for i, arg in ipairs(expr.args or {}) do
+            expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
+        end
+        return expr
+    end
+
+    if t == "dot_access" then
+        expr.object = rewriteSelfCallsInExpression(expr.object, ctx, locals)
+        return expr
+    end
+
+    if t == "index_access" then
+        expr.object = rewriteSelfCallsInExpression(expr.object, ctx, locals)
+        expr.key = rewriteSelfCallsInExpression(expr.key, ctx, locals)
+        return expr
+    end
+
+    if t == "binary_op" then
+        expr.left = rewriteSelfCallsInExpression(expr.left, ctx, locals)
+        expr.right = rewriteSelfCallsInExpression(expr.right, ctx, locals)
+        return expr
+    end
+
+    if t == "unary_op" then
+        expr.operand = rewriteSelfCallsInExpression(expr.operand, ctx, locals)
+        return expr
+    end
+
+    if t == "ternary" then
+        expr.condition = rewriteSelfCallsInExpression(expr.condition, ctx, locals)
+        expr.thenExpr = rewriteSelfCallsInExpression(expr.thenExpr, ctx, locals)
+        expr.elseExpr = rewriteSelfCallsInExpression(expr.elseExpr, ctx, locals)
+        return expr
+    end
+
+    if t == "null_conditional" then
+        expr.object = rewriteSelfCallsInExpression(expr.object, ctx, locals)
+        return expr
+    end
+
+    if t == "incdec_expr" then
+        expr.operand = rewriteSelfCallsInExpression(expr.operand, ctx, locals)
+        return expr
+    end
+
+    if t == "new_object" then
+        for i, arg in ipairs(expr.args or {}) do
+            expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
+        end
+        return expr
+    end
+
+    if t == "function_expr" then
+        local innerLocals = cloneSet(locals)
+        addListToSet(innerLocals, expr.params)
+        rewriteSelfCallsInBlock(expr.body or {}, ctx, innerLocals)
+        return expr
+    end
+
+    return expr
+end
+
+rewriteSelfCallsInBlock = function(stmts, ctx, locals)
+    locals = locals or {}
+
+    for _, stmt in ipairs(stmts or {}) do
+        local t = stmt.type
+
+        if t == "local_decl" then
+            if stmt.value then
+                stmt.value = rewriteSelfCallsInExpression(stmt.value, ctx, locals)
+            end
+            locals[stmt.name] = true
+        elseif t == "assignment" then
+            stmt.target = rewriteSelfCallsInExpression(stmt.target, ctx, locals)
+            stmt.value = rewriteSelfCallsInExpression(stmt.value, ctx, locals)
+        elseif t == "expr_statement" then
+            stmt.expression = rewriteSelfCallsInExpression(stmt.expression, ctx, locals)
+        elseif t == "if_stmt" then
+            stmt.condition = rewriteSelfCallsInExpression(stmt.condition, ctx, locals)
+            rewriteSelfCallsInBlock(stmt.body or {}, ctx, cloneSet(locals))
+            if stmt.elseBody then
+                rewriteSelfCallsInBlock(stmt.elseBody, ctx, cloneSet(locals))
+            end
+        elseif t == "for_numeric" then
+            stmt.start = rewriteSelfCallsInExpression(stmt.start, ctx, locals)
+            stmt.stop = rewriteSelfCallsInExpression(stmt.stop, ctx, locals)
+            stmt.step = rewriteSelfCallsInExpression(stmt.step, ctx, locals)
+            local innerLocals = cloneSet(locals)
+            innerLocals[stmt.var] = true
+            rewriteSelfCallsInBlock(stmt.body or {}, ctx, innerLocals)
+        elseif t == "for_in" then
+            stmt.iterator = rewriteSelfCallsInExpression(stmt.iterator, ctx, locals)
+            local innerLocals = cloneSet(locals)
+            addListToSet(innerLocals, stmt.vars)
+            rewriteSelfCallsInBlock(stmt.body or {}, ctx, innerLocals)
+        elseif t == "while_stmt" then
+            stmt.condition = rewriteSelfCallsInExpression(stmt.condition, ctx, locals)
+            rewriteSelfCallsInBlock(stmt.body or {}, ctx, cloneSet(locals))
+        elseif t == "repeat_until" then
+            rewriteSelfCallsInBlock(stmt.body or {}, ctx, cloneSet(locals))
+            stmt.condition = rewriteSelfCallsInExpression(stmt.condition, ctx, locals)
+        elseif t == "return_stmt" then
+            if stmt.value then
+                stmt.value = rewriteSelfCallsInExpression(stmt.value, ctx, locals)
+            end
+        elseif t == "try_catch" then
+            rewriteSelfCallsInBlock(stmt.tryBody or {}, ctx, cloneSet(locals))
+            local catchLocals = cloneSet(locals)
+            if stmt.catchVar then
+                catchLocals[stmt.catchVar] = true
+            end
+            rewriteSelfCallsInBlock(stmt.catchBody or {}, ctx, catchLocals)
+            if stmt.finallyBody then
+                rewriteSelfCallsInBlock(stmt.finallyBody or {}, ctx, cloneSet(locals))
+            end
+        elseif t == "compound" then
+            rewriteSelfCallsInBlock(stmt.statements or {}, ctx, locals)
+        end
+    end
+end
+
 -- Lower a class AST node to IR class
 local function lowerClass(classNode)
     local cls = {
@@ -745,6 +929,16 @@ local function lowerClass(classNode)
         end
     end
 
+    local instanceMethodNames = {}
+    local staticMethodNames = {}
+    for _, m in ipairs(classNode.methods or {}) do
+        if m.isStatic then
+            staticMethodNames[m.name] = true
+        else
+            instanceMethodNames[m.name] = true
+        end
+    end
+
     -- Lower methods
     for _, method in ipairs(classNode.methods or {}) do
         local params = {}
@@ -757,6 +951,16 @@ local function lowerClass(classNode)
             params = params,
             body = lowerBlock(method.body),
         }
+
+        local locals = {}
+        addListToSet(locals, params)
+        rewriteSelfCallsInBlock(irMethod.body, {
+            className = classNode.name,
+            isStatic = irMethod.isStatic,
+            instanceMethods = instanceMethodNames,
+            staticMethods = staticMethodNames,
+        }, locals)
+
         table.insert(cls.methods, irMethod)
     end
 
@@ -770,6 +974,15 @@ local function lowerClass(classNode)
             params = params,
             body = lowerBlock(classNode.constructor.body),
         }
+
+        local locals = {}
+        addListToSet(locals, params)
+        rewriteSelfCallsInBlock(cls.constructor.body, {
+            className = classNode.name,
+            isStatic = false,
+            instanceMethods = instanceMethodNames,
+            staticMethods = staticMethodNames,
+        }, locals)
     end
 
     -- Lower properties
