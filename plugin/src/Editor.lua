@@ -13,6 +13,7 @@ local function requireModule(name)
 end
 
 local SyntaxHighlighter = requireModule("SyntaxHighlighter")
+local EditorTextUtils = requireModule("EditorTextUtils")
 
 local Editor = {}
 Editor.__index = Editor
@@ -84,10 +85,26 @@ local function updateCaretPosition(self)
         return
     end
 
-    local line, col = getLineCol(self.textBox.Text, self.textBox.CursorPosition)
-    local charWidth = self._charWidth or measureCharWidth(self.options.textSize, Enum.Font.Code)
+    local text = self.textBox.Text
+    local cursorPos = self.textBox.CursorPosition
+    if cursorPos == nil or cursorPos < 1 then
+        cursorPos = #text + 1
+    end
 
-    local x = (col - 1) * charWidth
+    local line = 1
+    local prefix = text:sub(1, math.max(0, cursorPos - 1))
+    for i = 1, #prefix do
+        if prefix:sub(i, i) == "\n" then
+            line += 1
+        end
+    end
+
+    local lastNewline = prefix:match(".*()\n")
+    local lineStart = lastNewline and (lastNewline + 1) or 1
+    local linePrefix = text:sub(lineStart, math.max(lineStart - 1, cursorPos - 1))
+
+    local measured = TextService:GetTextSize(linePrefix, self.options.textSize, Enum.Font.Code, Vector2.new(100000, 100000))
+    local x = measured.X
     local y = (line - 1) * self.options.lineHeight
 
     self.caret.Position = UDim2.new(0, x, 0, y)
@@ -372,6 +389,7 @@ function Editor.new(pluginObject, options)
 
     self._caretBlinkToken = 0
     self._charWidth = measureCharWidth(self.options.textSize, Enum.Font.Code)
+    self._suppressTextChange = false
 
     local caret = Instance.new("Frame")
     caret.Name = "Caret"
@@ -400,6 +418,24 @@ function Editor.new(pluginObject, options)
     self.completionLayout = completionLayout
 
     table.insert(self._connections, textBox:GetPropertyChangedSignal("Text"):Connect(function()
+        if self._suppressTextChange then
+            self._suppressTextChange = false
+            refresh(self)
+            if self.onSourceChanged then
+                self.onSourceChanged(textBox.Text)
+            end
+            self:hideCompletions()
+            return
+        end
+
+        local newText, newCursor, changed = EditorTextUtils.autoDedentClosingBrace(textBox.Text, textBox.CursorPosition, self.options.tabText)
+        if changed then
+            self._suppressTextChange = true
+            textBox.Text = newText
+            textBox.CursorPosition = newCursor
+            return
+        end
+
         refresh(self)
         if self.onSourceChanged then
             self.onSourceChanged(textBox.Text)
@@ -431,6 +467,7 @@ function Editor.new(pluginObject, options)
 
         if input.KeyCode == Enum.KeyCode.Tab then
             insertAtCursor(textBox, self.options.tabText)
+            updateCaretPosition(self)
             textBox:CaptureFocus()
         elseif input.KeyCode == Enum.KeyCode.Space
             and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
@@ -520,6 +557,7 @@ function Editor:_applyCompletion(label)
 
     local startPos = cursor - #prefix
     replaceTextRange(self.textBox, startPos, cursor, label)
+    updateCaretPosition(self)
 end
 
 function Editor:showCompletions(items)

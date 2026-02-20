@@ -32,42 +32,42 @@ local toolbar = plugin:CreateToolbar("LUSharp")
 local buildButton = toolbar:CreateButton(
     "Build",
     "Compile selected/active C# script",
-    "rbxassetid://0",
+    "rbxassetid://101453582644426",
     "Build"
 )
 
 local buildAllButton = toolbar:CreateButton(
     "BuildAll",
     "Compile all tagged C# scripts",
-    "rbxassetid://0",
+    "rbxassetid://101453582644426",
     "Build All"
 )
 
 local newScriptButton = toolbar:CreateButton(
     "NewScript",
     "Create a new LUSharp C# script",
-    "rbxassetid://0",
+    "rbxassetid://140243957745633",
     "New C# Script"
 )
 
 local editorButton = toolbar:CreateButton(
     "Editor",
     "Toggle LUSharp editor",
-    "rbxassetid://0",
+    "rbxassetid://135264217576717",
     "Editor"
 )
 
 local projectButton = toolbar:CreateButton(
     "Project",
     "Toggle LUSharp project view",
-    "rbxassetid://0",
+    "rbxassetid://129582648595696",
     "Project"
 )
 
 local settingsButton = toolbar:CreateButton(
     "Settings",
     "Toggle LUSharp settings",
-    "rbxassetid://0",
+    "rbxassetid://103086022120574",
     "Settings"
 )
 
