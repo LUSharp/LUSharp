@@ -69,7 +69,7 @@ public static class ProjectScaffolder
         File.WriteAllText(dest, content);
     }
 
-    private static string GenerateCsproj()
+    internal static string GenerateCsproj()
     {
         return """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -136,7 +136,7 @@ public static class ProjectScaffolder
             """;
     }
 
-    private static void WriteRojoConfig(string root, string name)
+    internal static void WriteRojoConfig(string root, string name)
     {
         var config = new RojoConfig
         {
@@ -171,8 +171,8 @@ public static class ProjectScaffolder
                         ClassName = "ReplicatedStorage",
                         Children = new Dictionary<string, RojoInstance>
                         {
-                            ["Shared"] = new RojoInstance { Path = "out/shared" },
-                            ["Runtime"] = new RojoInstance { Path = "out/runtime" }
+                            ["Shared"] = new RojoInstance { ClassName = "Folder", Path = "out/shared" },
+                            ["Runtime"] = new RojoInstance { ClassName = "Folder", Path = "out/runtime" }
                         }
                     },
                     ["StarterPlayer"] = new RojoInstance
@@ -194,7 +194,7 @@ public static class ProjectScaffolder
         RojoManager.WriteConfig(Path.Combine(root, "default.project.json"), config);
     }
 
-    private static void BundleApiDll(string root)
+    internal static void BundleApiDll(string root)
     {
         var dllName = "LUSharpAPI.dll";
         var source = Path.Combine(AppContext.BaseDirectory, dllName);

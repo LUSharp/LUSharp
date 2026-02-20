@@ -76,6 +76,8 @@ local testFiles = {
     "ParserTests",
     "LowererTests",
     "EmitterTests",
+    "SyntaxHighlighterTests",
+    "IntelliSenseTests",
 }
 
 for _, name in ipairs(testFiles) do
@@ -86,6 +88,8 @@ for _, name in ipairs(testFiles) do
         end
     end)
     if not ok then
+        failed += 1
+        table.insert(errors, { name = "load " .. name, err = err })
         print("ERROR loading " .. name .. ": " .. tostring(err))
     end
 end
@@ -97,4 +101,5 @@ if #errors > 0 then
     for _, e in ipairs(errors) do
         print("  " .. e.name .. ": " .. e.err)
     end
+    error("Test run failed", 0)
 end
