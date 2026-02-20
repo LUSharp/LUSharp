@@ -93,6 +93,24 @@ class Foo {
             expect(out):toContain("        if (y > 0) then")
             expect(out):toContain("            print(\"ok\")")
         end)
+
+        it("calls other instance methods via self", function()
+            local out = emit([[
+class Foo {
+    public void A() { B(); }
+    public void B() { }
+}]])
+            expect(out):toContain("function Foo:A()\n    self:B()\nend")
+        end)
+
+        it("calls other static methods via class table", function()
+            local out = emit([[
+class Foo {
+    public static void A() { B(); }
+    public static void B() { }
+}]])
+            expect(out):toContain("function Foo.A()\n    Foo.B()\nend")
+        end)
     end)
 end
 

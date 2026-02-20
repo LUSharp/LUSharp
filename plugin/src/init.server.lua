@@ -71,6 +71,10 @@ local settingsButton = toolbar:CreateButton(
     "Settings"
 )
 
+for _, btn in ipairs({ buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton }) do
+    btn.ClickableWhenViewportHidden = true
+end
+
 local promptInfo = DockWidgetPluginGuiInfo.new(
     Enum.InitialDockState.Float,
     false,
