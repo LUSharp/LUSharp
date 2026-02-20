@@ -68,4 +68,46 @@ function EditorTextUtils.autoDedentClosingBrace(text, cursorPos, indentText)
     return newText, newCursor, true
 end
 
+-- If the user just inserted a newline, compute the indentation text that should be inserted at the new cursor.
+-- Pure helper: does not mutate text.
+function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, tabText)
+    prevText = prevText or ""
+    newText = newText or ""
+    tabText = tabText or "    "
+
+    if type(prevCursor) ~= "number" or type(newCursor) ~= "number" then
+        return ""
+    end
+
+    prevCursor = math.floor(prevCursor)
+    newCursor = math.floor(newCursor)
+
+    -- Minimal v1: detect a single '\n' insertion at the cursor.
+    if newCursor <= 1 or newCursor ~= prevCursor + 1 then
+        return ""
+    end
+
+    if newText:sub(newCursor - 1, newCursor - 1) ~= "\n" then
+        return ""
+    end
+
+    local expected = prevText:sub(1, prevCursor - 1) .. "\n" .. prevText:sub(prevCursor)
+    if newText ~= expected then
+        return ""
+    end
+
+    -- Previous line is the line that ends at the inserted newline.
+    local lineStart = findLineStart(newText, newCursor - 1)
+    local prevLine = newText:sub(lineStart, newCursor - 2)
+
+    local leadingWhitespace = prevLine:match("^([ \t]*)") or ""
+    local trimmed = prevLine:match("^(.-)%s*$") or ""
+
+    if trimmed ~= "" and trimmed:sub(-1) == "{" then
+        return leadingWhitespace .. tabText
+    end
+
+    return ""
+end
+
 return EditorTextUtils
