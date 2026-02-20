@@ -118,6 +118,80 @@ class Foo : Bar {
             expect(method.isOverride):toBe(true)
         end)
     end)
+
+    describe("Parser: Statements", function()
+        it("parses variable declaration with var", function()
+            local ast = parse("class C { void M() { var x = 42; } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("local_var")
+            expect(stmt.name):toBe("x")
+        end)
+
+        it("parses typed variable declaration", function()
+            local ast = parse("class C { void M() { int x = 42; } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("local_var")
+            expect(stmt.varType):toBe("int")
+        end)
+
+        it("parses if/else", function()
+            local ast = parse("class C { void M() { if (x > 0) { } else { } } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("if")
+            expect(stmt.elseBody):toNotBeNil()
+        end)
+
+        it("parses for loop", function()
+            local ast = parse("class C { void M() { for (int i = 0; i < 10; i++) { } } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("for")
+        end)
+
+        it("parses foreach loop", function()
+            local ast = parse("class C { void M() { foreach (var item in list) { } } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("foreach")
+            expect(stmt.variable):toBe("item")
+        end)
+
+        it("parses while loop", function()
+            local ast = parse("class C { void M() { while (true) { } } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("while")
+        end)
+
+        it("parses return", function()
+            local ast = parse("class C { int M() { return 42; } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("return")
+        end)
+
+        it("parses try/catch", function()
+            local ast = parse("class C { void M() { try { } catch (Exception e) { } } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("try_catch")
+        end)
+
+        it("parses switch", function()
+            local ast = parse([[class C { void M() {
+                switch (x) { case 1: break; default: break; }
+            } }]])
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("switch")
+        end)
+
+        it("parses break and continue", function()
+            local ast = parse("class C { void M() { break; continue; } }")
+            expect(ast.classes[1].methods[1].body[1].type):toBe("break")
+            expect(ast.classes[1].methods[1].body[2].type):toBe("continue")
+        end)
+
+        it("parses throw", function()
+            local ast = parse('class C { void M() { throw new Exception("err"); } }')
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("throw")
+        end)
+    end)
 end
 
 return run

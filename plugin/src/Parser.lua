@@ -151,9 +151,10 @@ function Parser.parse(tokens)
     local parseExpression
     local parseStatement
     local parseBlock
+    local parseTypeName
 
     -- Parse a type name (including generics: List<int>, Dictionary<string, int>)
-    local function parseTypeName()
+    parseTypeName = function()
         local tok = current()
         local name
         -- Handle keyword types (string, int, void, bool, float, double, etc.)
@@ -228,20 +229,484 @@ function Parser.parse(tokens)
         return params
     end
 
-    -- Parse a block { ... } -- placeholder, filled in Task 4
+    -- Set of C# keyword types that start a variable declaration
+    local TYPE_KEYWORDS = {
+        int = true, string = true, float = true, double = true, bool = true,
+        byte = true, short = true, long = true, char = true, decimal = true,
+        uint = true, ulong = true, ushort = true, object = true, void = true,
+    }
+
+    -- Parse a parenthesized argument list: (expr, expr, ...)
+    local function parseArguments()
+        local args = {}
+        expect("punctuation", "(")
+        while not check("punctuation", ")") and not check("eof") do
+            table.insert(args, parseExpression())
+            if not match("punctuation", ",") then break end
+        end
+        expect("punctuation", ")")
+        return args
+    end
+
+    -- Parse a primary expression (atom): literal, identifier, new, parenthesized
+    local function parsePrimaryExpression()
+        -- Parenthesized expression
+        if check("punctuation", "(") then
+            advance() -- (
+            local expr = parseExpression()
+            expect("punctuation", ")")
+            return expr
+        end
+
+        -- new ClassName(args)
+        if check("keyword", "new") then
+            advance() -- new
+            local className = parseTypeName()
+            local args = {}
+            if check("punctuation", "(") then
+                args = parseArguments()
+            end
+            return { type = "new", className = className, arguments = args }
+        end
+
+        -- Boolean literals
+        if check("keyword", "true") or check("keyword", "false") then
+            local tok = advance()
+            return { type = "literal", value = tok.value, literalType = "bool" }
+        end
+
+        -- null literal
+        if check("keyword", "null") then
+            local tok = advance()
+            return { type = "literal", value = tok.value, literalType = "null" }
+        end
+
+        -- this keyword
+        if check("keyword", "this") then
+            advance()
+            return { type = "identifier", name = "this" }
+        end
+
+        -- typeof
+        if check("keyword", "typeof") then
+            advance()
+            expect("punctuation", "(")
+            local typeName = parseTypeName()
+            expect("punctuation", ")")
+            return { type = "typeof", typeName = typeName }
+        end
+
+        -- Number literal
+        if check("number") then
+            local tok = advance()
+            return { type = "literal", value = tok.value, literalType = "number" }
+        end
+
+        -- String literal
+        if check("string") or check("interpolated_string") then
+            local tok = advance()
+            return { type = "literal", value = tok.value, literalType = "string" }
+        end
+
+        -- Identifier
+        if check("identifier") then
+            local tok = advance()
+            return { type = "identifier", name = tok.value }
+        end
+
+        -- Fallback: skip the token and return a generic node
+        local tok = advance()
+        return { type = "unknown", value = tok.value }
+    end
+
+    -- Parse postfix: member access (a.b), method calls (a()), indexing (a[])
+    local function parsePostfix(expr)
+        while true do
+            -- Member access: expr.member
+            if check("punctuation", ".") then
+                advance() -- .
+                local memberName = expect("identifier").value
+                expr = { type = "member_access", object = expr, member = memberName }
+            -- Method call: expr(args)
+            elseif check("punctuation", "(") then
+                local args = parseArguments()
+                expr = { type = "call", callee = expr, arguments = args }
+            -- Indexing: expr[index]
+            elseif check("punctuation", "[") then
+                advance() -- [
+                local index = parseExpression()
+                expect("punctuation", "]")
+                expr = { type = "index", object = expr, index = index }
+            else
+                break
+            end
+        end
+        return expr
+    end
+
+    -- Parse unary prefix: !, -, ++, --
+    local function parseUnary()
+        if check("operator", "!") or check("operator", "-") then
+            local op = advance().value
+            local operand = parseUnary()
+            return { type = "unary", operator = op, operand = operand }
+        end
+        if check("operator", "++") or check("operator", "--") then
+            local op = advance().value
+            local operand = parseUnary()
+            return { type = "unary_prefix", operator = op, operand = operand }
+        end
+        local expr = parsePrimaryExpression()
+        expr = parsePostfix(expr)
+        -- Postfix ++ / --
+        if check("operator", "++") or check("operator", "--") then
+            local op = advance().value
+            expr = { type = "unary_postfix", operator = op, operand = expr }
+        end
+        return expr
+    end
+
+    -- Operator precedence for binary operators
+    local PRECEDENCE = {
+        ["*"] = 12, ["/"] = 12, ["%"] = 12,
+        ["+"] = 11, ["-"] = 11,
+        ["<"] = 9, [">"] = 9, ["<="] = 9, [">="] = 9,
+        ["=="] = 8, ["!="] = 8,
+        ["&&"] = 4,
+        ["||"] = 3,
+        ["??"] = 2,
+    }
+
+    -- Parse binary expression with precedence climbing
+    local function parseBinaryExpression(minPrec)
+        local left = parseUnary()
+        while true do
+            local tok = current()
+            if tok.type ~= "operator" then break end
+            local prec = PRECEDENCE[tok.value]
+            if not prec or prec < minPrec then break end
+            local op = advance().value
+            local right = parseBinaryExpression(prec + 1)
+            left = { type = "binary", operator = op, left = left, right = right }
+        end
+        return left
+    end
+
+    -- Parse a full expression (including assignment)
+    parseExpression = function()
+        local expr = parseBinaryExpression(1)
+
+        -- Assignment operators: =, +=, -=, *=, /=, %=
+        if check("operator", "=") or check("operator", "+=") or check("operator", "-=")
+            or check("operator", "*=") or check("operator", "/=") or check("operator", "%=") then
+            local op = advance().value
+            local right = parseExpression()
+            return { type = "assignment", target = expr, operator = op, value = right }
+        end
+
+        return expr
+    end
+
+    -- Parse a block { ... }
     parseBlock = function()
         local stmts = {}
         expect("punctuation", "{")
-        local depth = 1
-        while depth > 0 and not check("eof") do
-            if check("punctuation", "{") then depth += 1
-            elseif check("punctuation", "}") then depth -= 1
-                if depth == 0 then break end
+        while not check("punctuation", "}") and not check("eof") do
+            local stmt = parseStatement()
+            if stmt then
+                table.insert(stmts, stmt)
             end
-            table.insert(stmts, advance())
         end
         expect("punctuation", "}")
         return stmts
+    end
+
+    -- Determine if current position looks like a variable declaration:
+    -- TypeKeyword identifier  OR  identifier identifier
+    local function isVariableDeclaration()
+        local tok = current()
+        -- var keyword is always a declaration
+        if tok.type == "keyword" and tok.value == "var" then
+            return true
+        end
+        -- Keyword types: int x, string y, etc.
+        if tok.type == "keyword" and TYPE_KEYWORDS[tok.value] then
+            -- Next token should be identifier (the variable name)
+            local next = peek(1)
+            if next.type == "identifier" then
+                return true
+            end
+            -- Could be generic: List<int> x
+            if next.type == "operator" and next.value == "<" then
+                return true
+            end
+            -- Could be array: int[] x
+            if next.type == "punctuation" and next.value == "[" then
+                return true
+            end
+        end
+        -- Identifier followed by identifier: MyType myVar
+        if tok.type == "identifier" then
+            local next = peek(1)
+            -- Simple: MyType myVar
+            if next.type == "identifier" then
+                return true
+            end
+            -- Generic: List<int> myVar  — identifier followed by <
+            if next.type == "operator" and next.value == "<" then
+                -- Heuristic: if after closing >, there's an identifier, it's a declaration
+                -- This is approximate; we just check the pattern
+                -- Save position, try to parse type, see if next is identifier
+                local savePos = pos
+                pcall(function()
+                    parseTypeName()
+                end)
+                local isDecl = check("identifier")
+                pos = savePos
+                return isDecl
+            end
+            -- Array: MyType[] myVar
+            if next.type == "punctuation" and next.value == "[" and peek(2).value == "]" then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Parse a single statement
+    parseStatement = function()
+        -- var declaration: var x = expr;
+        if check("keyword", "var") then
+            advance() -- var
+            local name = expect("identifier").value
+            local initializer = nil
+            if match("operator", "=") then
+                initializer = parseExpression()
+            end
+            match("punctuation", ";")
+            return { type = "local_var", name = name, varType = "var", initializer = initializer }
+        end
+
+        -- if statement
+        if check("keyword", "if") then
+            advance() -- if
+            expect("punctuation", "(")
+            local condition = parseExpression()
+            expect("punctuation", ")")
+            local body = parseBlock()
+            local elseIfs = {}
+            local elseBody = nil
+            while check("keyword", "else") do
+                advance() -- else
+                if check("keyword", "if") then
+                    advance() -- if
+                    expect("punctuation", "(")
+                    local elifCond = parseExpression()
+                    expect("punctuation", ")")
+                    local elifBody = parseBlock()
+                    table.insert(elseIfs, { condition = elifCond, body = elifBody })
+                else
+                    elseBody = parseBlock()
+                    break
+                end
+            end
+            return { type = "if", condition = condition, body = body, elseIfs = elseIfs, elseBody = elseBody }
+        end
+
+        -- for loop
+        if check("keyword", "for") then
+            advance() -- for
+            expect("punctuation", "(")
+            -- Init part: could be variable declaration or expression
+            local init = nil
+            if not check("punctuation", ";") then
+                if isVariableDeclaration() then
+                    local varType = parseTypeName()
+                    local name = expect("identifier").value
+                    local initializer = nil
+                    if match("operator", "=") then
+                        initializer = parseExpression()
+                    end
+                    init = { type = "local_var", name = name, varType = varType, initializer = initializer }
+                else
+                    init = parseExpression()
+                end
+            end
+            expect("punctuation", ";")
+            -- Condition
+            local condition = nil
+            if not check("punctuation", ";") then
+                condition = parseExpression()
+            end
+            expect("punctuation", ";")
+            -- Increment
+            local increment = nil
+            if not check("punctuation", ")") then
+                increment = parseExpression()
+            end
+            expect("punctuation", ")")
+            local body = parseBlock()
+            return { type = "for", init = init, condition = condition, increment = increment, body = body }
+        end
+
+        -- foreach loop
+        if check("keyword", "foreach") then
+            advance() -- foreach
+            expect("punctuation", "(")
+            local varType
+            if check("keyword", "var") then
+                varType = "var"
+                advance()
+            else
+                varType = parseTypeName()
+            end
+            local variable = expect("identifier").value
+            expect("keyword", "in")
+            local iterable = parseExpression()
+            expect("punctuation", ")")
+            local body = parseBlock()
+            return { type = "foreach", variable = variable, varType = varType, iterable = iterable, body = body }
+        end
+
+        -- while loop
+        if check("keyword", "while") then
+            advance() -- while
+            expect("punctuation", "(")
+            local condition = parseExpression()
+            expect("punctuation", ")")
+            local body = parseBlock()
+            return { type = "while", condition = condition, body = body }
+        end
+
+        -- do-while loop
+        if check("keyword", "do") then
+            advance() -- do
+            local body = parseBlock()
+            expect("keyword", "while")
+            expect("punctuation", "(")
+            local condition = parseExpression()
+            expect("punctuation", ")")
+            match("punctuation", ";")
+            return { type = "do_while", condition = condition, body = body }
+        end
+
+        -- return statement
+        if check("keyword", "return") then
+            advance() -- return
+            local value = nil
+            if not check("punctuation", ";") and not check("punctuation", "}") then
+                value = parseExpression()
+            end
+            match("punctuation", ";")
+            return { type = "return", value = value }
+        end
+
+        -- break
+        if check("keyword", "break") then
+            advance()
+            match("punctuation", ";")
+            return { type = "break" }
+        end
+
+        -- continue
+        if check("keyword", "continue") then
+            advance()
+            match("punctuation", ";")
+            return { type = "continue" }
+        end
+
+        -- try/catch/finally
+        if check("keyword", "try") then
+            advance() -- try
+            local tryBody = parseBlock()
+            local catchType = nil
+            local catchVar = nil
+            local catchBody = nil
+            local finallyBody = nil
+            if check("keyword", "catch") then
+                advance() -- catch
+                if check("punctuation", "(") then
+                    advance() -- (
+                    catchType = parseTypeName()
+                    if check("identifier") then
+                        catchVar = advance().value
+                    end
+                    expect("punctuation", ")")
+                end
+                catchBody = parseBlock()
+            end
+            if check("keyword", "finally") then
+                advance() -- finally
+                finallyBody = parseBlock()
+            end
+            return { type = "try_catch", tryBody = tryBody, catchType = catchType, catchVar = catchVar, catchBody = catchBody, finallyBody = finallyBody }
+        end
+
+        -- throw
+        if check("keyword", "throw") then
+            advance() -- throw
+            local expression = nil
+            if not check("punctuation", ";") then
+                expression = parseExpression()
+            end
+            match("punctuation", ";")
+            return { type = "throw", expression = expression }
+        end
+
+        -- switch
+        if check("keyword", "switch") then
+            advance() -- switch
+            expect("punctuation", "(")
+            local expression = parseExpression()
+            expect("punctuation", ")")
+            expect("punctuation", "{")
+            local cases = {}
+            while not check("punctuation", "}") and not check("eof") do
+                if check("keyword", "case") then
+                    advance() -- case
+                    local caseValue = parseExpression()
+                    expect("punctuation", ":")
+                    local stmts = {}
+                    while not check("keyword", "case") and not check("keyword", "default")
+                        and not check("punctuation", "}") and not check("eof") do
+                        local stmt = parseStatement()
+                        if stmt then table.insert(stmts, stmt) end
+                    end
+                    table.insert(cases, { type = "case", value = caseValue, body = stmts })
+                elseif check("keyword", "default") then
+                    advance() -- default
+                    expect("punctuation", ":")
+                    local stmts = {}
+                    while not check("keyword", "case") and not check("keyword", "default")
+                        and not check("punctuation", "}") and not check("eof") do
+                        local stmt = parseStatement()
+                        if stmt then table.insert(stmts, stmt) end
+                    end
+                    table.insert(cases, { type = "default", body = stmts })
+                else
+                    advance() -- skip unexpected token
+                end
+            end
+            expect("punctuation", "}")
+            return { type = "switch", expression = expression, cases = cases }
+        end
+
+        -- Variable declaration: Type name = expr;
+        if isVariableDeclaration() then
+            local varType = parseTypeName()
+            local name = expect("identifier").value
+            local initializer = nil
+            if match("operator", "=") then
+                initializer = parseExpression()
+            end
+            match("punctuation", ";")
+            return { type = "local_var", name = name, varType = varType, initializer = initializer }
+        end
+
+        -- Expression statement (assignment, method call, etc.)
+        local expr = parseExpression()
+        match("punctuation", ";")
+        return { type = "expression_statement", expression = expr }
     end
 
     -- Parse a class member (method, field, property, constructor, event)
