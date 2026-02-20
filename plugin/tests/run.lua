@@ -78,6 +78,7 @@ local testFiles = {
     "EmitterTests",
     "SyntaxHighlighterTests",
     "IntelliSenseTests",
+    "EditorTextUtilsTests",
 }
 
 for _, name in ipairs(testFiles) do
