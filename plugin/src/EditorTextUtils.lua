@@ -68,46 +68,6 @@ function EditorTextUtils.autoDedentClosingBrace(text, cursorPos, indentText)
     return newText, newCursor, true
 end
 
--- Resolves tab key behavior based on completion visibility and selection state.
-function EditorTextUtils.resolveTabAction(completionVisible, hasSelection)
-    if completionVisible and hasSelection then
-        return "acceptCompletion"
-    end
-
-    return "insertIndent"
-end
-
-function EditorTextUtils.normalizeSnippetText(snippetText)
-    if type(snippetText) ~= "string" then
-        return ""
-    end
-
-    local normalized = snippetText
-
-    normalized = normalized:gsub("%${%d+:([^}]*)}", "%1")
-    normalized = normalized:gsub("%${%d+}", "")
-    normalized = normalized:gsub("%$%d+", "")
-
-    return normalized
-end
-
-function EditorTextUtils.getCompletionReplacePrefix(beforeText, insertText)
-    beforeText = beforeText or ""
-
-    local identifierPrefix = beforeText:match("([%a_][%w_]*)$") or ""
-
-    if type(insertText) ~= "string" or string.find(insertText, ".", 1, true) == nil then
-        return identifierPrefix
-    end
-
-    local dottedPrefix = beforeText:match("([%a_][%w_%.]*)$")
-    if type(dottedPrefix) == "string" and dottedPrefix ~= "" then
-        return dottedPrefix
-    end
-
-    return identifierPrefix
-end
-
 -- If the user just inserted a newline, compute the indentation text that should be inserted at the new cursor.
 -- Pure helper: does not mutate text.
 function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, tabText)
