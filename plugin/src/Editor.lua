@@ -1,5 +1,4 @@
 local UserInputService = game:GetService("UserInputService")
-local ContextActionService = game:GetService("ContextActionService")
 local TextService = game:GetService("TextService")
 
 local function requireModule(name)
@@ -18,8 +17,6 @@ local EditorTextUtils = requireModule("EditorTextUtils")
 
 local Editor = {}
 Editor.__index = Editor
-
-local completionActionCounter = 0
 
 local function countLines(text)
     local _, newlines = text:gsub("\n", "\n")
@@ -217,82 +214,6 @@ local function replaceTextRange(textBox, startPos, endPosExclusive, insertText)
 end
 
 
-local function getSelectedCompletionItem(self)
-    if not self.completionFrame or not self.completionFrame.Visible then
-        return nil
-    end
-
-    if type(self._selectedCompletionIndex) ~= "number" then
-        return nil
-    end
-
-    local index = self._selectedCompletionIndex
-    return self._completionItems[index]
-end
-
-local function updateCompletionSelectionVisual(self)
-    for index, button in ipairs(self._completionButtons or {}) do
-        local isSelected = self._selectedCompletionIndex == index and self._completionItems[index] ~= nil
-        button.BackgroundColor3 = isSelected and Color3.fromRGB(75, 75, 75) or Color3.fromRGB(55, 55, 55)
-    end
-end
-
-local function moveCompletionSelection(self, delta)
-    local itemCount = #self._completionItems
-    if itemCount == 0 then
-        return false
-    end
-
-    local currentIndex = self._selectedCompletionIndex
-    if type(currentIndex) ~= "number" or currentIndex < 1 or currentIndex > itemCount then
-        currentIndex = 1
-    end
-
-    local nextIndex = currentIndex + delta
-    if nextIndex < 1 then
-        nextIndex = itemCount
-    elseif nextIndex > itemCount then
-        nextIndex = 1
-    end
-
-    self._selectedCompletionIndex = nextIndex
-    updateCompletionSelectionVisual(self)
-    return true
-end
-
-local function acceptSelectedCompletion(self)
-    local item = getSelectedCompletionItem(self)
-    if not item then
-        return false
-    end
-
-    self:_applyCompletion(item)
-    self:hideCompletions()
-    self:focus()
-    return true
-end
-
-local function handleCompletionPopupKey(self, keyCode)
-    if not self.completionFrame or not self.completionFrame.Visible then
-        return false
-    end
-
-    if keyCode == Enum.KeyCode.Up then
-        moveCompletionSelection(self, -1)
-        return true
-    elseif keyCode == Enum.KeyCode.Down then
-        moveCompletionSelection(self, 1)
-        return true
-    elseif keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter then
-        if acceptSelectedCompletion(self) then
-            updateCaretPosition(self)
-            return true
-        end
-    end
-
-    return false
-end
-
 local function refresh(self)
     local source = self.textBox.Text
     self.overlay.Text = SyntaxHighlighter.highlight(source, self.options.highlight)
@@ -347,37 +268,6 @@ function Editor.new(pluginObject, options)
     self.onRequestCompletions = nil
     self._connections = {}
     self._completionConnections = {}
-    self._completionItems = {}
-    self._completionButtons = {}
-    self._selectedCompletionIndex = nil
-
-    completionActionCounter += 1
-    self._completionActionName = "LUSharpEditorCompletionKeys" .. tostring(completionActionCounter)
-
-    ContextActionService:BindActionAtPriority(
-        self._completionActionName,
-        function(_, inputState, input)
-            if inputState ~= Enum.UserInputState.Begin then
-                return Enum.ContextActionResult.Pass
-            end
-
-            if not self.textBox or not self.textBox:IsFocused() then
-                return Enum.ContextActionResult.Pass
-            end
-
-            if handleCompletionPopupKey(self, input.KeyCode) then
-                return Enum.ContextActionResult.Sink
-            end
-
-            return Enum.ContextActionResult.Pass
-        end,
-        false,
-        Enum.ContextActionPriority.High.Value,
-        Enum.KeyCode.Up,
-        Enum.KeyCode.Down,
-        Enum.KeyCode.Return,
-        Enum.KeyCode.KeypadEnter
-    )
 
     local widgetInfo = DockWidgetPluginGuiInfo.new(
         Enum.InitialDockState.Float,
@@ -633,25 +523,7 @@ function Editor.new(pluginObject, options)
             return
         end
 
-        local completionVisible = self.completionFrame ~= nil and self.completionFrame.Visible
-        if completionVisible then
-            if input.KeyCode == Enum.KeyCode.Up
-                or input.KeyCode == Enum.KeyCode.Down
-                or input.KeyCode == Enum.KeyCode.Return
-                or input.KeyCode == Enum.KeyCode.KeypadEnter then
-                return
-            end
-        end
-
         if input.KeyCode == Enum.KeyCode.Tab then
-            local hasSelection = getSelectedCompletionItem(self) ~= nil
-            local tabAction = EditorTextUtils.resolveTabAction(completionVisible, hasSelection)
-
-            if tabAction == "acceptCompletion" and acceptSelectedCompletion(self) then
-                updateCaretPosition(self)
-                return
-            end
-
             insertAtCursor(textBox, self.options.tabText)
             updateCaretPosition(self)
             textBox:CaptureFocus()
@@ -719,35 +591,10 @@ function Editor:hideCompletions()
         end
     end
 
-    self._completionItems = {}
-    self._completionButtons = {}
-    self._selectedCompletionIndex = nil
     self.completionFrame.Size = UDim2.new(0, 240, 0, 0)
 end
 
-function Editor:_applyCompletion(item)
-    local completion = item
-    if type(completion) ~= "table" then
-        completion = {
-            label = tostring(item),
-            insertText = tostring(item),
-            insertMode = "replacePrefix",
-        }
-    end
-
-    local insertMode = completion.insertMode
-    if type(insertMode) ~= "string" or insertMode == "" then
-        insertMode = "replacePrefix"
-    end
-
-    local insertText = completion.insertText
-    if type(insertText) ~= "string" then
-        insertText = completion.label
-    end
-    if type(insertText) ~= "string" then
-        insertText = tostring(insertText or "")
-    end
-
+function Editor:_applyCompletion(label)
     local text = self.textBox.Text
     local cursor = self.textBox.CursorPosition
 
@@ -755,20 +602,11 @@ function Editor:_applyCompletion(item)
         cursor = #text + 1
     end
 
-    if insertMode == "snippetExpand" then
-        insertText = EditorTextUtils.normalizeSnippetText(insertText)
-    end
+    local before = text:sub(1, cursor - 1)
+    local prefix = before:match("([%a_][%w_]*)$") or ""
 
-    if insertMode == "replacePrefix" or insertMode == "snippetExpand" then
-        local before = text:sub(1, cursor - 1)
-        local prefix = EditorTextUtils.getCompletionReplacePrefix(before, insertText)
-
-        local startPos = cursor - #prefix
-        replaceTextRange(self.textBox, startPos, cursor, insertText)
-    else
-        insertAtCursor(self.textBox, insertText)
-    end
-
+    local startPos = cursor - #prefix
+    replaceTextRange(self.textBox, startPos, cursor, label)
     updateCaretPosition(self)
 end
 
@@ -784,46 +622,18 @@ function Editor:showCompletions(items)
     self.completionFrame.Size = UDim2.new(0, 240, 0, (maxItems * 22) + (maxItems - 1) * 2 + 4)
 
     for i = 1, maxItems do
-        local rawItem = items[i]
-        local completion = rawItem
-
-        if type(completion) ~= "table" then
-            completion = {
-                label = tostring(rawItem),
-            }
-        end
-
-        local label = completion.label
+        local item = items[i]
+        local label = item and item.label or nil
         if type(label) ~= "string" or label == "" then
-            label = tostring(rawItem)
+            label = tostring(item)
         end
-
-        local insertText = completion.insertText
-        if type(insertText) ~= "string" then
-            insertText = label
-        end
-
-        local insertMode = completion.insertMode
-        if type(insertMode) ~= "string" or insertMode == "" then
-            insertMode = "replacePrefix"
-        end
-
-        self._completionItems[i] = {
-            label = label,
-            kind = completion.kind,
-            detail = completion.detail,
-            documentation = completion.documentation,
-            source = completion.source,
-            insertText = insertText,
-            insertMode = insertMode,
-        }
 
         local button = Instance.new("TextButton")
         button.Name = "Completion" .. tostring(i)
         button.Size = UDim2.new(1, 0, 0, 22)
         button.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
         button.BorderSizePixel = 0
-        button.AutoButtonColor = false
+        button.AutoButtonColor = true
         button.Font = Enum.Font.Code
         button.TextSize = 14
         button.TextXAlignment = Enum.TextXAlignment.Left
@@ -833,21 +643,12 @@ function Editor:showCompletions(items)
         button.ZIndex = self.completionFrame.ZIndex + 1
         button.Parent = self.completionFrame
 
-        self._completionButtons[i] = button
-
-        table.insert(self._completionConnections, button.MouseEnter:Connect(function()
-            self._selectedCompletionIndex = i
-            updateCompletionSelectionVisual(self)
-        end))
-
         table.insert(self._completionConnections, button.Activated:Connect(function()
-            self._selectedCompletionIndex = i
-            acceptSelectedCompletion(self)
+            self:_applyCompletion(label)
+            self:hideCompletions()
+            self:focus()
         end))
     end
-
-    self._selectedCompletionIndex = #self._completionItems > 0 and 1 or nil
-    updateCompletionSelectionVisual(self)
 end
 
 function Editor:applySettings(settings)
@@ -924,11 +725,6 @@ function Editor:destroy()
         connection:Disconnect()
     end
     self._connections = {}
-
-    if self._completionActionName then
-        ContextActionService:UnbindAction(self._completionActionName)
-        self._completionActionName = nil
-    end
 
     if self.caret then
         self.caret:Destroy()
