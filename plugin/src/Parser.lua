@@ -82,9 +82,59 @@ local function InterfaceNode(name, methods, accessModifier)
     }
 end
 
-function Parser.parse(tokens)
+function Parser.parse(tokens, options)
     local pos = 1
     local diagnostics = {}
+
+    options = type(options) == "table" and options or {}
+
+    local yieldEvery = tonumber(options.yieldEvery) or 0
+    if yieldEvery < 1 then
+        yieldEvery = 0
+    else
+        yieldEvery = math.floor(yieldEvery)
+    end
+
+    local maxOperations = tonumber(options.maxOperations) or 0
+    if maxOperations < 1 then
+        maxOperations = 0
+    else
+        maxOperations = math.floor(maxOperations)
+    end
+
+    local canYield = type(task) == "table" and type(task.wait) == "function"
+    local operationCount = 0
+    local parseAborted = false
+    local addedBudgetDiagnostic = false
+
+    local function registerOperation()
+        operationCount += 1
+
+        if maxOperations > 0 and operationCount > maxOperations then
+            if not addedBudgetDiagnostic then
+                local cur = tokens[math.clamp(pos, 1, #tokens)] or tokens[#tokens] or { line = 1, column = 1, value = "" }
+                local tokenLength = math.max(1, #(cur.value or ""))
+                table.insert(diagnostics, {
+                    severity = "warning",
+                    message = "Parser operation budget exceeded; diagnostics may be incomplete.",
+                    line = cur.line,
+                    column = cur.column,
+                    endLine = cur.line,
+                    endColumn = cur.column + tokenLength,
+                    length = tokenLength,
+                })
+                addedBudgetDiagnostic = true
+            end
+
+            parseAborted = true
+            pos = #tokens
+            return
+        end
+
+        if canYield and yieldEvery > 0 and (operationCount % yieldEvery == 0) then
+            task.wait()
+        end
+    end
 
     local function peek(offset)
         offset = offset or 0
@@ -98,12 +148,14 @@ function Parser.parse(tokens)
     end
 
     local function advance()
+        registerOperation()
         local tok = current()
         pos += 1
         return tok
     end
 
     local function check(type, value)
+        registerOperation()
         local tok = current()
         if value then
             return tok.type == type and tok.value == value
@@ -126,11 +178,15 @@ function Parser.parse(tokens)
             if value then msg ..= " '" .. value .. "'" end
             msg ..= ", got " .. cur.type .. " '" .. cur.value .. "'"
             msg ..= " at line " .. cur.line .. ":" .. cur.column
+            local tokenLength = math.max(1, #(cur.value or ""))
             table.insert(diagnostics, {
                 severity = "error",
                 message = msg,
                 line = cur.line,
                 column = cur.column,
+                endLine = cur.line,
+                endColumn = cur.column + tokenLength,
+                length = tokenLength,
             })
             return { type = type, value = value or "", line = cur.line, column = cur.column }
         end
@@ -139,11 +195,15 @@ function Parser.parse(tokens)
 
     local function addDiagnostic(severity, message, tok)
         tok = tok or current()
+        local tokenLength = math.max(1, #(tok.value or ""))
         table.insert(diagnostics, {
             severity = severity,
             message = message,
             line = tok.line,
             column = tok.column,
+            endLine = tok.line,
+            endColumn = tok.column + tokenLength,
+            length = tokenLength,
         })
     end
 
@@ -370,15 +430,36 @@ function Parser.parse(tokens)
             return expr
         end
 
-        -- new ClassName(args)
+        -- new ClassName(args) OR target-typed new(), optionally with collection initializer
         if check("keyword", "new") then
             advance() -- new
-            local className = parseTypeName()
+
+            local className = nil
+            if not check("punctuation", "(") then
+                className = parseTypeName()
+            end
+
             local args = {}
             if check("punctuation", "(") then
                 args = parseArguments()
             end
-            return { type = "new", className = className, arguments = args }
+
+            local initializer = nil
+            if check("punctuation", "{") then
+                advance() -- {
+                initializer = {}
+
+                while not check("punctuation", "}") and not check("eof") do
+                    table.insert(initializer, parseExpression())
+                    if not match("punctuation", ",") then
+                        break
+                    end
+                end
+
+                expect("punctuation", "}")
+            end
+
+            return { type = "new", className = className, arguments = args, initializer = initializer }
         end
 
         -- Boolean literals
@@ -968,12 +1049,21 @@ function Parser.parse(tokens)
         local cls = ClassNode(name, baseClass, mods.access, mods.isStatic, mods.isAbstract)
         expect("punctuation", "{")
         while not check("punctuation", "}") and not check("eof") do
+            local memberStartPos = pos
             local kind, node = parseClassMember(name)
-            if kind == "method" then table.insert(cls.methods, node)
-            elseif kind == "field" then table.insert(cls.fields, node)
-            elseif kind == "property" then table.insert(cls.properties, node)
-            elseif kind == "constructor" then cls.constructor = node
-            elseif kind == "event" then table.insert(cls.events, node)
+
+            -- Safety guard: ensure class-body parsing always makes progress.
+            -- Unsupported tokens can cause parseClassMember to return without consuming input.
+            if pos == memberStartPos then
+                addDiagnostic("warning", "Unexpected token in class body: " .. tostring(current().value), current())
+                advance()
+            else
+                if kind == "method" then table.insert(cls.methods, node)
+                elseif kind == "field" then table.insert(cls.fields, node)
+                elseif kind == "property" then table.insert(cls.properties, node)
+                elseif kind == "constructor" then cls.constructor = node
+                elseif kind == "event" then table.insert(cls.events, node)
+                end
             end
         end
         expect("punctuation", "}")
@@ -1072,6 +1162,7 @@ function Parser.parse(tokens)
         end
     end
 
+    ast.aborted = parseAborted
     return ast
 end
 

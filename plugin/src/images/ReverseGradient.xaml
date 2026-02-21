@@ -1,0 +1,16 @@
+<Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+  <Canvas Background="Transparent" Width="16" Height="16">
+    <Path Opacity="0.25" Data="M6 2V6H8V2H6Z" Fill="#202020" />
+    <Path Opacity="0.15" Data="M4 2V6H6V2H4Z" Fill="#202020" />
+    <Path Opacity="0.5" Data="M8 2V6H10V2H8Z" Fill="#202020" />
+    <Path Data="M12 2V6H14V2H12Z" Fill="#202020" />
+    <Path Opacity="0.75" Data="M10 2V6H12V2H10Z" Fill="#202020" />
+    <Path Data="M14 1H2C1.448 1 1 1.449 1 2V6C1 6.551 1.448 7 2 7H14C14.552 7 15 6.551 15 6V2C15 1.449 14.552 1 14 1ZM14 6H2V2H14V6Z" Fill="#202020" />
+    <Path Opacity="0.25" Data="M10 14V10H8V14H10Z" Fill="#202020" />
+    <Path Opacity="0.15" Data="M12 14V10H10V14H12Z" Fill="#202020" />
+    <Path Opacity="0.5" Data="M8 14V10H6V14H8Z" Fill="#202020" />
+    <Path Data="M4 14V10H2V14H4Z" Fill="#202020" />
+    <Path Opacity="0.75" Data="M6 14V10H4V14H6Z" Fill="#202020" />
+    <Path Data="M2 15H14C14.552 15 15 14.551 15 14V10C15 9.449 14.552 9 14 9H2C1.448 9 1 9.449 1 10V14C1 14.551 1.448 15 2 15ZM2 10H14V14H2V10Z" Fill="#202020" />
+  </Canvas>
+</Viewbox>

@@ -111,6 +111,54 @@ class Foo {
 }]])
             expect(out):toContain("function Foo.A()\n    Foo.B()\nend")
         end)
+
+        it("emits target-typed new() from declared type", function()
+            local out = emit([[
+using System.Collections.Generic;
+class Foo {
+    public void M() {
+        List<int> xs = new();
+    }
+}]])
+            expect(out):toContain("local xs = List.new()")
+        end)
+
+        it("emits target-typed collection initializer items", function()
+            local out = emit([[
+using System.Collections.Generic;
+class Foo {
+    public void M() {
+        List<int> xd = new(){3,3,3,3,3};
+    }
+}]])
+            expect(out):toContain("local xd = List.new(3, 3, 3, 3, 3)")
+        end)
+
+        it("emits target-typed new for nullable declared types", function()
+            local out = emit([[
+using System.Collections.Generic;
+class Foo {
+    public void M() {
+        List<int>? xs = new(){1};
+    }
+}]])
+            expect(out):toContain("local xs = List.new(1)")
+        end)
+
+        it("lowers event += and -= using Connect/Disconnect cache", function()
+            local out = emit([[
+class Foo {
+    public static void GameEntry() {
+        game.GetService("Players").PlayerAdded += OnPlayerJoined;
+        game.GetService("Players").PlayerAdded -= OnPlayerJoined;
+    }
+
+    public static void OnPlayerJoined(Player p) { }
+}
+]])
+            expect(out):toContain(":Connect")
+            expect(out):toContain(":Disconnect")
+        end)
     end)
 end
 

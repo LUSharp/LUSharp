@@ -1,0 +1,14 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path opacity="0.25" d="M6 2V6H8V2H6Z" fill="#202020"/>
+<path opacity="0.15" d="M4 2V6H6V2H4Z" fill="#202020"/>
+<path opacity="0.5" d="M8 2V6H10V2H8Z" fill="#202020"/>
+<path d="M12 2V6H14V2H12Z" fill="#202020"/>
+<path opacity="0.75" d="M10 2V6H12V2H10Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M14 1H2C1.448 1 1 1.449 1 2V6C1 6.551 1.448 7 2 7H14C14.552 7 15 6.551 15 6V2C15 1.449 14.552 1 14 1ZM14 6H2V2H14V6Z" fill="#202020"/>
+<path opacity="0.25" d="M10 14V10H8V14H10Z" fill="#202020"/>
+<path opacity="0.15" d="M12 14V10H10V14H12Z" fill="#202020"/>
+<path opacity="0.5" d="M8 14V10H6V14H8Z" fill="#202020"/>
+<path d="M4 14V10H2V14H4Z" fill="#202020"/>
+<path opacity="0.75" d="M6 14V10H4V14H6Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M2 15H14C14.552 15 15 14.551 15 14V10C15 9.449 14.552 9 14 9H2C1.448 9 1 9.449 1 10V14C1 14.551 1.448 15 2 15ZM2 10H14V14H2V10Z" fill="#202020"/>
+</svg>

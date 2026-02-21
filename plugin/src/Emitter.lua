@@ -68,7 +68,12 @@ emitExpression = function(expr)
         for _, arg in ipairs(expr.args or {}) do
             table.insert(args, emitExpression(arg))
         end
-        return tostring(expr.class or "") .. ".new(" .. join(args) .. ")"
+
+        local className = tostring(expr.class or "")
+        className = className:gsub("<.*>", "")
+        className = className:match("([%w_]+)$") or className
+
+        return className .. ".new(" .. join(args) .. ")"
     end
 
     if t == "template_string" then
@@ -158,6 +163,11 @@ emitStatement = function(stmt, lines, level)
 
     if t == "expr_statement" then
         appendLine(lines, level, emitExpression(stmt.expression))
+        return
+    end
+
+    if t == "compound" then
+        emitBlock(stmt.statements or {}, lines, level)
         return
     end
 
@@ -296,6 +306,11 @@ end
 
 function Emitter.emit(moduleIR)
     local lines = {}
+
+    if moduleIR.needsEventConnectionCache then
+        appendLine(lines, 0, "local __eventConnections = setmetatable({}, { __mode = \"k\" })")
+        appendLine(lines, 0, "")
+    end
 
     for _, cls in ipairs(moduleIR.classes or {}) do
         emitClass(cls, lines)
