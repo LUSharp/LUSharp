@@ -1,0 +1,9 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path fill-rule="evenodd" clip-rule="evenodd" d="M5 7H4C3.449 7 3 6.552 3 6V5C3 4.448 3.449 4 4 4H5C5.551 4 6 4.448 6 5V6C6 6.552 5.551 7 5 7ZM4 5V6H5V5H4Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M9 7H8C7.449 7 7 6.552 7 6V5C7 4.448 7.449 4 8 4H9C9.551 4 10 4.448 10 5V6C10 6.552 9.551 7 9 7ZM8 5V6H9V5H8Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M12 7H13C13.551 7 14 6.552 14 6V5C14 4.448 13.551 4 13 4H12C11.449 4 11 4.448 11 5V6C11 6.552 11.449 7 12 7ZM12 6V5H13V6H12Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M3 11H2C1.449 11 1 10.552 1 10V9C1 8.448 1.449 8 2 8H3C3.551 8 4 8.448 4 9V10C4 10.552 3.551 11 3 11ZM2 9V10H3V9H2Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M6 11H7C7.551 11 8 10.552 8 10V9C8 8.448 7.551 8 7 8H6C5.449 8 5 8.448 5 9V10C5 10.552 5.449 11 6 11ZM6 10V9H7V10H6Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M11 11H10C9.449 11 9 10.552 9 10V9C9 8.448 9.449 8 10 8H11C11.551 8 12 8.448 12 9V10C12 10.552 11.551 11 11 11ZM10 9V10H11V9H10Z" fill="#202020"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M14 11H15C15.551 11 16 10.552 16 10V9C16 8.448 15.551 8 15 8H14C13.449 8 13 8.448 13 9V10C13 10.552 13.449 11 14 11ZM14 10V9H15V10H14Z" fill="#202020"/>
+</svg>

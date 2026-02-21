@@ -1,0 +1,5 @@
+<Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+  <Canvas Background="Transparent" Width="16" Height="16">
+    <Path Data="M13.5 2H1.5C1.224 2 1 2.224 1 2.5V12.5C1 12.776 1.224 13 1.5 13H13.5C13.776 13 14 12.776 14 12.5V2.5C14 2.224 13.776 2 13.5 2ZM13 12H2V3H13V7H8C8 6.449 7.551 6 7 6H6C5.449 6 5 6.449 5 7V8C5 8.551 5.449 9 6 9H7C7.551 9 8 8.551 8 8H13V12ZM6 8V7H7V8H6Z" Fill="#202020" />
+  </Canvas>
+</Viewbox>

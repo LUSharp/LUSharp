@@ -1,9 +1,9 @@
 local Lexer = require("../src/Lexer")
 local Parser = require("../src/Parser")
 
-local function parse(source)
+local function parse(source, options)
     local tokens = Lexer.tokenize(source)
-    return Parser.parse(tokens)
+    return Parser.parse(tokens, options)
 end
 
 local function run(describe, it, expect)
@@ -82,6 +82,16 @@ using System.Collections.Generic;
 class Foo { }]])
             expect(#ast.usings):toBe(2)
             expect(ast.usings[1]):toBe("System")
+        end)
+
+        it("parses classes wrapped in a namespace block", function()
+            local ast = parse([[
+namespace Game.Shared {
+    class Foo { }
+}]])
+            expect(ast.namespace):toBe("Game.Shared")
+            expect(#ast.classes):toBe(1)
+            expect(ast.classes[1].name):toBe("Foo")
         end)
 
         it("parses generic type in field", function()
@@ -222,6 +232,20 @@ class Foo : Bar {
             expect(init.className):toBe("Part")
         end)
 
+        it("parses target-typed new()", function()
+            local ast = parse("class C { void M() { List<int> xs = new(); } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("new")
+            expect(init.className):toBeNil()
+        end)
+
+        it("parses collection initializer before foreach without desync", function()
+            local ast = parse([[class C { void M() { var list1 = new List<int>{1,2,3}; foreach (var item in list1) { print(item); } } }]])
+            expect(#ast.diagnostics):toBe(0)
+            expect(ast.classes[1].methods[1].body[1].type):toBe("local_var")
+            expect(ast.classes[1].methods[1].body[2].type):toBe("foreach")
+        end)
+
         it("parses lambda expression", function()
             local ast = parse("class C { void M() { var f = x => x + 1; } }")
             local init = ast.classes[1].methods[1].body[1].initializer
@@ -260,6 +284,34 @@ class Foo : Bar {
             expect(init.type):toBe("binary")
             expect(init.operator):toBe("+")
             expect(init.right.operator):toBe("*")
+        end)
+    end)
+
+    describe("Parser: Diagnostics", function()
+        it("includes range data for parse errors", function()
+            local ast = parse("class Foo { void M( { }")
+            expect(#(ast.diagnostics or {} ) > 0):toBe(true)
+
+            local first = ast.diagnostics[1]
+            expect(first.line):toNotBeNil()
+            expect(first.column):toNotBeNil()
+            expect(first.endLine):toNotBeNil()
+            expect(first.endColumn):toNotBeNil()
+            expect(first.length):toNotBeNil()
+            expect(first.endColumn > first.column):toBe(true)
+        end)
+
+        it("recovers from unsupported class-body tokens without stalling", function()
+            local ast = parse("class C { [ }")
+            expect(#ast.classes):toBe(1)
+            expect(ast.classes[1].name):toBe("C")
+            expect(#(ast.diagnostics or {} ) > 0):toBe(true)
+        end)
+
+        it("aborts gracefully when parser operation budget is exceeded", function()
+            local ast = parse("class C { void M() { var x = 1 + 2 + 3; } }", { maxOperations = 1 })
+            expect(ast.aborted):toBe(true)
+            expect(#(ast.diagnostics or {} ) > 0):toBe(true)
         end)
     end)
 end

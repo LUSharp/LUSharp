@@ -4,6 +4,8 @@
 
 local Lowerer = {}
 
+local TypeDatabase = require("./TypeDatabase")
+
 -- Script type determination from base class
 local SCRIPT_BASES = {
     RobloxScript = "Script",
@@ -58,6 +60,118 @@ local UNARY_OP_MAP = {
 local lowerExpression
 local lowerStatement
 local lowerBlock
+
+local needsEventConnectionCache = false
+
+local function normalizeTypeName(typeName)
+    typeName = tostring(typeName or "")
+    typeName = typeName:gsub("<.*>", "")
+    typeName = typeName:gsub("%?", "")
+    typeName = typeName:gsub("%[%]$", "")
+    return typeName:match("([%w_]+)$") or typeName
+end
+
+local function tryUnquoteStringLiteral(astExpr)
+    if not astExpr or astExpr.type ~= "literal" or astExpr.literalType ~= "string" then
+        return nil
+    end
+
+    local v = tostring(astExpr.value or "")
+    if #v >= 2 and v:sub(1, 1) == '"' and v:sub(-1) == '"' then
+        return v:sub(2, -2)
+    end
+
+    if v == '"' then
+        return ""
+    end
+
+    return nil
+end
+
+local function resolveTypeInfo(typeName)
+    if type(typeName) ~= "string" or typeName == "" then
+        return nil
+    end
+
+    local full = (TypeDatabase.aliases and TypeDatabase.aliases[typeName]) or typeName
+    return TypeDatabase.types and TypeDatabase.types[full] or nil
+end
+
+local function getMemberType(objectTypeName, memberName)
+    local typeInfo = resolveTypeInfo(objectTypeName)
+    if not typeInfo or type(typeInfo.members) ~= "table" then
+        return nil
+    end
+
+    for _, member in ipairs(typeInfo.members) do
+        if member.name == memberName then
+            return member.type
+        end
+    end
+
+    return nil
+end
+
+local BUILTIN_TYPES = {
+    game = "DataModel",
+    workspace = "Workspace",
+    script = "LuaSourceContainer",
+    Enum = "Enums",
+}
+
+local function inferAstType(astExpr)
+    if not astExpr or type(astExpr) ~= "table" then
+        return nil
+    end
+
+    if astExpr.type == "identifier" then
+        return BUILTIN_TYPES[astExpr.name]
+    end
+
+    if astExpr.type == "call" and astExpr.target then
+        local objectType = inferAstType(astExpr.target)
+        if objectType == "DataModel" and astExpr.name == "GetService" then
+            local firstArg = astExpr.arguments and astExpr.arguments[1]
+            local service = tryUnquoteStringLiteral(firstArg)
+            if service and service ~= "" then
+                return normalizeTypeName(service)
+            end
+        end
+
+        if objectType then
+            local memberReturn = getMemberType(objectType, astExpr.name)
+            if type(memberReturn) == "string" then
+                return normalizeTypeName(memberReturn)
+            end
+        end
+
+        return nil
+    end
+
+    if astExpr.type == "member_access" then
+        local objectType = inferAstType(astExpr.object)
+        if not objectType then
+            return nil
+        end
+
+        local memberType = getMemberType(objectType, astExpr.member)
+        if type(memberType) == "string" then
+            return normalizeTypeName(memberType)
+        end
+
+        return nil
+    end
+
+    return nil
+end
+
+local function isSignalType(typeName)
+    if type(typeName) ~= "string" then
+        return false
+    end
+
+    return typeName:sub(1, #"RBXScriptSignal") == "RBXScriptSignal"
+end
 
 -- Lower an expression AST node to IR expression node
 lowerExpression = function(expr)
@@ -193,6 +307,9 @@ lowerExpression = function(expr)
         local args = {}
         for _, arg in ipairs(expr.arguments or {}) do
             table.insert(args, lowerExpression(arg))
+        end
+        for _, item in ipairs(expr.initializer or {}) do
+            table.insert(args, lowerExpression(item))
         end
         return {
             type = "new_object",
@@ -351,10 +468,20 @@ lowerStatement = function(stmt)
 
     -- Local variable declaration
     if t == "local_var" then
+        local init = stmt.initializer
+        if init and init.type == "new" and init.className == nil and stmt.varType and stmt.varType ~= "var" then
+            init = {
+                type = "new",
+                className = normalizeTypeName(stmt.varType),
+                arguments = init.arguments,
+                initializer = init.initializer,
+            }
+        end
+
         return {
             type = "local_decl",
             name = stmt.name,
-            value = stmt.initializer and lowerExpression(stmt.initializer) or nil,
+            value = init and lowerExpression(init) or nil,
         }
     end
 
@@ -364,6 +491,92 @@ lowerStatement = function(stmt)
         if stmt.expression and stmt.expression.type == "assignment" then
             local op = stmt.expression.operator
             local target = lowerExpression(stmt.expression.target)
+            local value
+            if op == "+=" or op == "-=" then
+                local targetType = inferAstType(stmt.expression.target)
+                if isSignalType(targetType) then
+                    needsEventConnectionCache = true
+
+                    local signalExpr = lowerExpression(stmt.expression.target)
+                    local handlerExpr = lowerExpression(stmt.expression.value)
+
+                    local sigVar = "__sig"
+                    local mapVar = "__map"
+                    local connVar = "__conn"
+
+                    if op == "+=" then
+                        return {
+                            type = "compound",
+                            statements = {
+                                { type = "local_decl", name = sigVar, value = signalExpr },
+                                {
+                                    type = "local_decl",
+                                    name = mapVar,
+                                    value = {
+                                        type = "binary_op",
+                                        left = { type = "index_access", object = { type = "identifier", name = "__eventConnections" }, key = { type = "identifier", name = sigVar } },
+                                        op = "or",
+                                        right = { type = "literal", value = "{}", literalType = "table" },
+                                    },
+                                },
+                                {
+                                    type = "local_decl",
+                                    name = connVar,
+                                    value = { type = "method_call", object = { type = "identifier", name = sigVar }, method = "Connect", args = { handlerExpr } },
+                                },
+                                {
+                                    type = "assignment",
+                                    target = { type = "index_access", object = { type = "identifier", name = mapVar }, key = handlerExpr },
+                                    value = { type = "identifier", name = connVar },
+                                },
+                                {
+                                    type = "assignment",
+                                    target = { type = "index_access", object = { type = "identifier", name = "__eventConnections" }, key = { type = "identifier", name = sigVar } },
+                                    value = { type = "identifier", name = mapVar },
+                                },
+                            },
+                        }
+                    else
+                        return {
+                            type = "compound",
+                            statements = {
+                                { type = "local_decl", name = sigVar, value = signalExpr },
+                                {
+                                    type = "local_decl",
+                                    name = mapVar,
+                                    value = { type = "index_access", object = { type = "identifier", name = "__eventConnections" }, key = { type = "identifier", name = sigVar } },
+                                },
+                                {
+                                    type = "if_stmt",
+                                    condition = { type = "identifier", name = mapVar },
+                                    body = {
+                                        {
+                                            type = "local_decl",
+                                            name = connVar,
+                                            value = { type = "index_access", object = { type = "identifier", name = mapVar }, key = handlerExpr },
+                                        },
+                                        {
+                                            type = "if_stmt",
+                                            condition = { type = "identifier", name = connVar },
+                                            body = {
+                                                { type = "expr_statement", expression = { type = "method_call", object = { type = "identifier", name = connVar }, method = "Disconnect", args = {} } },
+                                                {
+                                                    type = "assignment",
+                                                    target = { type = "index_access", object = { type = "identifier", name = mapVar }, key = handlerExpr },
+                                                    value = { type = "literal", value = "nil", literalType = "nil" },
+                                                },
+                                            },
+                                            elseBody = nil,
+                                        },
+                                    },
+                                    elseBody = nil,
+                                },
+                            },
+                        }
+                    end
+                end
+            end
+
             local value
             if op == "=" then
                 value = lowerExpression(stmt.expression.value)
@@ -1047,6 +1260,7 @@ function Lowerer.lower(ast)
         classes = {},
         enums = {},
         entryClass = nil,
+        needsEventConnectionCache = needsEventConnectionCache,
     }
 
     -- Lower classes
@@ -1064,6 +1278,8 @@ function Lowerer.lower(ast)
 
     -- Find entry class
     module.entryClass = findEntryClass(ast.classes or {})
+
+    module.needsEventConnectionCache = needsEventConnectionCache
 
     table.insert(ir.modules, module)
 

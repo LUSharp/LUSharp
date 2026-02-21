@@ -1,15 +1,111 @@
-local CollectionService = game:GetService("CollectionService")
-
 local ScriptManager = {}
+
+local function getCollectionService()
+    return game:GetService("CollectionService")
+end
 
 local TAG = "LUSharp"
 local SOURCE_VALUE_NAME = "CSharpSource"
+local NAMESPACE_ATTRIBUTE_NAME = "LUSharpNamespace"
+local DEFAULT_NAMESPACE_ROOT = "Game"
+
 local SOURCE_TEMPLATE = [[public class %s {
     public static void GameEntry() {
 
     }
 }
 ]]
+
+local SOURCE_TEMPLATE_WITH_NAMESPACE = [[namespace %s {
+public class %s {
+    public static void GameEntry() {
+
+    }
+}
+}
+]]
+
+local function trim(text)
+    if type(text) ~= "string" then
+        return ""
+    end
+
+    return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function sanitizeNamespaceSegment(segment)
+    local cleaned = trim(segment)
+    if cleaned == "" then
+        return nil
+    end
+
+    cleaned = cleaned:gsub("[^%w_]", "_")
+    if cleaned == "" then
+        return nil
+    end
+
+    if string.match(string.sub(cleaned, 1, 1), "%d") then
+        cleaned = "_" .. cleaned
+    end
+
+    return cleaned
+end
+
+local function normalizeNamespace(namespaceValue)
+    if type(namespaceValue) ~= "string" then
+        return nil
+    end
+
+    local trimmed = trim(namespaceValue)
+    if trimmed == "" then
+        return nil
+    end
+
+    local parts = {}
+    for part in string.gmatch(trimmed, "[^%.]+") do
+        local sanitized = sanitizeNamespaceSegment(part)
+        if sanitized then
+            table.insert(parts, sanitized)
+        end
+    end
+
+    if #parts == 0 then
+        return nil
+    end
+
+    return table.concat(parts, ".")
+end
+
+local function defaultNamespaceForContext(context)
+    local contextSegment = sanitizeNamespaceSegment(context)
+    if not contextSegment then
+        return nil
+    end
+
+    if contextSegment == "Other" then
+        return DEFAULT_NAMESPACE_ROOT
+    end
+
+    return DEFAULT_NAMESPACE_ROOT .. "." .. contextSegment
+end
+
+function ScriptManager.resolveNamespace(context, explicitNamespace)
+    local normalized = normalizeNamespace(explicitNamespace)
+    if normalized then
+        return normalized
+    end
+
+    return defaultNamespaceForContext(context)
+end
+
+function ScriptManager.buildSourceTemplate(className, context, explicitNamespace)
+    local namespaceName = ScriptManager.resolveNamespace(context, explicitNamespace)
+    if namespaceName then
+        return string.format(SOURCE_TEMPLATE_WITH_NAMESPACE, namespaceName, className)
+    end
+
+    return string.format(SOURCE_TEMPLATE, className)
+end
 
 local function getSourceValue(moduleScript)
     local sourceValue = nil
@@ -39,7 +135,11 @@ local function ensureSourceValue(moduleScript)
 
     value = Instance.new("StringValue")
     value.Name = SOURCE_VALUE_NAME
-    value.Value = string.format(SOURCE_TEMPLATE, moduleScript.Name)
+    value.Value = ScriptManager.buildSourceTemplate(
+        moduleScript.Name,
+        moduleScript:GetAttribute("LUSharpContext"),
+        moduleScript:GetAttribute(NAMESPACE_ATTRIBUTE_NAME)
+    )
     value.Parent = moduleScript
     return value
 end
@@ -49,11 +149,11 @@ local function isManagedScript(instance)
         return false
     end
 
-    return CollectionService:HasTag(instance, TAG)
+    return getCollectionService():HasTag(instance, TAG)
 end
 
 function ScriptManager.getAll()
-    local tagged = CollectionService:GetTagged(TAG)
+    local tagged = getCollectionService():GetTagged(TAG)
     local scripts = {}
 
     for _, instance in ipairs(tagged) do
@@ -92,7 +192,7 @@ function ScriptManager.setSource(moduleScript, source)
     return true
 end
 
-function ScriptManager.createScript(name, parent, context)
+function ScriptManager.createScript(name, parent, context, namespace)
     if type(name) ~= "string" or name:match("^%s*$") then
         return nil
     end
@@ -102,6 +202,10 @@ function ScriptManager.createScript(name, parent, context)
     end
 
     if context ~= nil and type(context) ~= "string" then
+        return nil
+    end
+
+    if namespace ~= nil and type(namespace) ~= "string" then
         return nil
     end
 
@@ -117,14 +221,19 @@ function ScriptManager.createScript(name, parent, context)
     scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n"
     scriptInstance.Parent = parent
 
-    CollectionService:AddTag(scriptInstance, TAG)
-
-    local sourceValue = ensureSourceValue(scriptInstance)
-    sourceValue.Value = string.format(SOURCE_TEMPLATE, name)
+    getCollectionService():AddTag(scriptInstance, TAG)
 
     if context then
         scriptInstance:SetAttribute("LUSharpContext", context)
     end
+
+    local trimmedNamespace = trim(namespace)
+    if trimmedNamespace ~= "" then
+        scriptInstance:SetAttribute(NAMESPACE_ATTRIBUTE_NAME, trimmedNamespace)
+    end
+
+    local sourceValue = ensureSourceValue(scriptInstance)
+    sourceValue.Value = ScriptManager.buildSourceTemplate(name, context, namespace)
 
     return scriptInstance
 end
@@ -138,7 +247,11 @@ function ScriptManager.renameScript(moduleScript, newName)
 
     local sourceValue = ensureSourceValue(moduleScript)
     if sourceValue.Value == "" then
-        sourceValue.Value = string.format(SOURCE_TEMPLATE, newName)
+        sourceValue.Value = ScriptManager.buildSourceTemplate(
+            newName,
+            moduleScript:GetAttribute("LUSharpContext"),
+            moduleScript:GetAttribute(NAMESPACE_ATTRIBUTE_NAME)
+        )
     end
 
     return true
@@ -149,7 +262,7 @@ function ScriptManager.deleteScript(moduleScript)
         return false
     end
 
-    CollectionService:RemoveTag(moduleScript, TAG)
+    getCollectionService():RemoveTag(moduleScript, TAG)
     moduleScript:Destroy()
     return true
 end

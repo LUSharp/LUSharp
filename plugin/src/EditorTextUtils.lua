@@ -1,3 +1,16 @@
+local function requireModule(name)
+    if typeof(script) == "Instance" and script.Parent then
+        local moduleScript = script.Parent:FindFirstChild(name)
+        if moduleScript then
+            return require(moduleScript)
+        end
+    end
+
+    return require("./" .. name)
+end
+
+local Lexer = requireModule("Lexer")
+
 local EditorTextUtils = {}
 
 local function clampCursor(text, cursorPos)
@@ -28,6 +41,85 @@ local function findLineStart(text, cursorPos)
     return lastNewline and (lastNewline + 1) or 1
 end
 
+local function classifyForwardDeleteChar(char)
+    if char == "\n" then
+        return "newline"
+    end
+
+    if char == " " or char == "\t" or char == "\r" or char == "\f" or char == "\v" then
+        return "space"
+    end
+
+    if char:match("[%w_]") then
+        return "word"
+    end
+
+    return "punctuation"
+end
+
+function EditorTextUtils.deleteNextWordSegment(text, cursorPos)
+    text = text or ""
+    cursorPos = clampCursor(text, cursorPos)
+
+    if cursorPos > #text then
+        return text, cursorPos, false
+    end
+
+    local firstChar = text:sub(cursorPos, cursorPos)
+    local segmentKind = classifyForwardDeleteChar(firstChar)
+
+    if segmentKind == "newline" then
+        return text, cursorPos, false
+    end
+
+    local endPosExclusive = cursorPos
+
+    if segmentKind == "punctuation" then
+        endPosExclusive += 1
+    else
+        while endPosExclusive <= #text do
+            local currentChar = text:sub(endPosExclusive, endPosExclusive)
+            local currentKind = classifyForwardDeleteChar(currentChar)
+
+            if currentKind == "newline" or currentKind ~= segmentKind then
+                break
+            end
+
+            endPosExclusive += 1
+        end
+    end
+
+    if endPosExclusive == cursorPos then
+        return text, cursorPos, false
+    end
+
+    local newText = text:sub(1, cursorPos - 1) .. text:sub(endPosExclusive)
+    return newText, cursorPos, true
+end
+
+function EditorTextUtils.computeCtrlDeleteEdit(text, cursorPos, selectionStart)
+    text = text or ""
+    cursorPos = clampCursor(text, cursorPos)
+
+    local normalizedSelection = -1
+    if type(selectionStart) == "number" then
+        selectionStart = math.floor(selectionStart)
+        if selectionStart ~= -1 then
+            normalizedSelection = clampCursor(text, selectionStart)
+        end
+    end
+
+    if normalizedSelection ~= -1 and normalizedSelection ~= cursorPos then
+        local startPos = math.min(cursorPos, normalizedSelection)
+        local endPos = math.max(cursorPos, normalizedSelection)
+        local newText = text:sub(1, startPos - 1) .. text:sub(endPos)
+        return newText, startPos, -1, true
+    end
+
+    local newText, newCursor, changed = EditorTextUtils.deleteNextWordSegment(text, cursorPos)
+    return newText, newCursor, -1, changed
+end
+
 -- If the user just typed a '}' on an otherwise-whitespace line, dedent by 1 indent level.
 -- Returns: newText, newCursorPos, changed
 function EditorTextUtils.autoDedentClosingBrace(text, cursorPos, indentText)
@@ -56,8 +148,35 @@ function EditorTextUtils.autoDedentClosingBrace(text, cursorPos, indentText)
         return text, cursorPos, false
     end
 
-    local removeCount = math.min(#indent, #indentText)
-    local newIndent = indent:sub(removeCount + 1)
+    if type(indentText) == "string" and indentText ~= "" then
+        local tokens = Lexer.tokenize(text:sub(1, lineStart - 1))
+        local depth = 0
+        for _, token in ipairs(tokens) do
+            if token.type == "punctuation" then
+                if token.value == "{" then
+                    depth += 1
+                elseif token.value == "}" then
+                    depth = math.max(0, depth - 1)
+                end
+            end
+        end
+
+        local targetIndentLength = math.max(0, depth - 1) * #indentText
+        if depth > 0 and #indent <= targetIndentLength then
+            return text, cursorPos, false
+        end
+    end
+
+    local newIndent
+
+    if type(indentText) == "string" and indentText ~= "" and #indent >= #indentText and indent:sub(-#indentText) == indentText then
+        newIndent = indent:sub(1, #indent - #indentText)
+    elseif indent:sub(-1) == "\t" then
+        newIndent = indent:sub(1, #indent - 1)
+    else
+        local removeCount = math.min(#indent, #indentText)
+        newIndent = indent:sub(1, #indent - removeCount)
+    end
 
     local before = text:sub(1, lineStart - 1)
     local after = text:sub(cursorPos)
@@ -162,9 +281,160 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
     local indent = leadingWhitespace
     if trimmed ~= "" and trimmed:sub(-1) == "{" then
         indent ..= tabText
+        return indent
+    end
+
+    if trimmed == "" then
+        local tokens = Lexer.tokenize(newText:sub(1, insertedNewlinePos - 1))
+        local depth = 0
+        for _, token in ipairs(tokens) do
+            if token.type == "punctuation" then
+                if token.value == "{" then
+                    depth += 1
+                elseif token.value == "}" then
+                    depth = math.max(0, depth - 1)
+                end
+            end
+        end
+
+        if depth > 0 then
+            return string.rep(tabText, depth)
+        end
     end
 
     return indent
+end
+
+function EditorTextUtils.isUndoRedoShortcut(keyCode, ctrlDown, altDown)
+    if ctrlDown ~= true or altDown == true then
+        return false
+    end
+
+    local keyName = ""
+    if type(keyCode) == "string" then
+        keyName = keyCode
+    elseif keyCode ~= nil then
+        keyName = tostring(keyCode)
+        local enumName = keyName:match("Enum%.KeyCode%.([%w_]+)$")
+        if enumName then
+            keyName = enumName
+        end
+    end
+
+    keyName = string.upper(keyName)
+    return keyName == "Z" or keyName == "Y"
+end
+
+function EditorTextUtils.shouldAutoTriggerCompletions(text, cursorPos)
+    text = text or ""
+    cursorPos = clampCursor(text, cursorPos)
+
+    local lineStart = findLineStart(text, cursorPos)
+    local linePrefix = text:sub(lineStart, cursorPos - 1)
+
+    if linePrefix:match("^%s*$") then
+        return false
+    end
+
+    if linePrefix:match("[%a_][%w_]*$") then
+        return true
+    end
+
+    return false
+end
+
+function EditorTextUtils.extractCompletionLabel(item)
+    if type(item) == "table" then
+        local label = item.label
+        if type(label) == "string" and label ~= "" then
+            return label
+        end
+        return nil
+    end
+
+    if type(item) == "string" and item ~= "" then
+        return item
+    end
+
+    return nil
+end
+
+function EditorTextUtils.resolveCompletionLabel(completions, activeIndex)
+    if type(completions) ~= "table" then
+        return nil
+    end
+
+    local function labelAt(index)
+        if type(index) ~= "number" then
+            return nil
+        end
+        index = math.floor(index)
+        if index < 1 then
+            return nil
+        end
+        return EditorTextUtils.extractCompletionLabel(completions[index])
+    end
+
+    local activeLabel = labelAt(activeIndex)
+    if activeLabel then
+        return activeLabel
+    end
+
+    return labelAt(1)
+end
+
+function EditorTextUtils.computeCompletionReplacementRange(text, cursorPos)
+    text = text or ""
+    cursorPos = clampCursor(text, cursorPos)
+
+    local before = text:sub(1, cursorPos - 1)
+    local prefix = before:match("([%a_][%w_]*)$") or ""
+
+    local startPos = cursorPos - #prefix
+    local endPos = cursorPos
+
+    return startPos, endPos
+end
+
+function EditorTextUtils.shouldShowCompletionInfo(lastMouseMoveAt, shownAtOrNow, nowOrThreshold, thresholdSeconds)
+    if type(lastMouseMoveAt) ~= "number" then
+        return false
+    end
+
+    local shownAt = nil
+    local now = nil
+    local threshold = nil
+
+    if type(thresholdSeconds) == "number" then
+        shownAt = shownAtOrNow
+        now = nowOrThreshold
+        threshold = thresholdSeconds
+    else
+        now = shownAtOrNow
+        threshold = nowOrThreshold
+    end
+
+    now = type(now) == "number" and now or os.clock()
+    threshold = type(threshold) == "number" and threshold or 0.25
+
+    if type(shownAt) == "number" and lastMouseMoveAt < shownAt then
+        return false
+    end
+
+    return (now - lastMouseMoveAt) <= threshold
+end
+
+function EditorTextUtils.computeCompletionReplacementRange(text, cursorPos)
+    text = text or ""
+    cursorPos = clampCursor(text, cursorPos)
+
+    local before = text:sub(1, cursorPos - 1)
+    local prefix = before:match("([%a_][%w_]*)$") or ""
+
+    local startPos = cursorPos - #prefix
+    local endPos = cursorPos
+
+    return startPos, endPos
 end
 
 return EditorTextUtils
