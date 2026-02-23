@@ -270,6 +270,38 @@ return function(describe, it, expect)
             expect(endPos):toBe(#text + 1)
         end)
 
+        it("uses anchored completion replacement range when cursor stays in anchor", function()
+            local text = "Console.Wri"
+            local cursor = #text + 1
+            local startPos, endPos = TextUtils.resolveCompletionReplacementRange(text, cursor, 9, #text + 1)
+            expect(startPos):toBe(9)
+            expect(endPos):toBe(#text + 1)
+        end)
+
+        it("falls back to cursor-derived range when cursor drifts away from anchor", function()
+            local text = "Console.Wri"
+            local cursor = 3
+            local startPos, endPos = TextUtils.resolveCompletionReplacementRange(text, cursor, 9, #text + 1)
+            expect(startPos):toBe(1)
+            expect(endPos):toBe(3)
+        end)
+
+        it("falls back to cursor-derived range when anchored range is invalid", function()
+            local text = "Console.Wri"
+            local cursor = #text + 1
+            local startPos, endPos = TextUtils.resolveCompletionReplacementRange(text, cursor, 12, 9)
+            expect(startPos):toBe(9)
+            expect(endPos):toBe(#text + 1)
+        end)
+
+        it("falls back to cursor-derived range when anchored range is out of bounds", function()
+            local text = "Console.Wri"
+            local cursor = #text + 1
+            local startPos, endPos = TextUtils.resolveCompletionReplacementRange(text, cursor, 0, 999)
+            expect(startPos):toBe(9)
+            expect(endPos):toBe(#text + 1)
+        end)
+
         it("ctrl-delete removes a single word segment", function()
             local text = "alpha beta"
             local newText, newCursor, changed = TextUtils.deleteNextWordSegment(text, 1)

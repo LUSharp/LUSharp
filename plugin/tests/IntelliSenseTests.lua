@@ -410,6 +410,40 @@ class Foo {
             expect(hasLabel(completions, "Anchored")):toBe(true)
         end)
 
+        it("shows hover docs for local inferred from GetService generic", function()
+            local source = "var players = game.GetService<Players>(); players"
+            local hoverPos = #source - 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("variable")
+            expect(info.label):toBe("players")
+            expect(info.detail):toContain("Players")
+            expect(info.documentation):toContain("Roblox")
+            expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
+        end)
+
+        it("shows hover docs for local inferred from template call", function()
+            local source = "var part = Factory.Create<Part>(); part"
+            local hoverPos = #source - 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("variable")
+            expect(info.label):toBe("part")
+            expect(info.detail):toContain("Part")
+            expect(info.documentation):toContain("Roblox")
+            expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Part")
+        end)
+
+        it("shows method hover signature with params and return type", function()
+            local source = "var part = Factory.Create<Part>(); part.FindFirstChild"
+            local hoverPos = source:find("FindFirstChild", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("method")
+            expect(info.detail):toContain("FindFirstChild(")
+            expect(info.detail):toContain("->")
+        end)
+
         it("provides built-in Roblox type documentation on hover", function()
             local source = "Part"
             local info = IntelliSense.getHoverInfo(source, 2, nil)
