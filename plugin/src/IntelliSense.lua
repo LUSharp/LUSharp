@@ -692,6 +692,10 @@ local function getRobloxTypeDocumentation(typeName, fullName, typeInfo)
         table.insert(lines, "Members: " .. tostring(#resolvedTypeInfo.members))
     end
 
+    if rootName ~= "" then
+        table.insert(lines, "Docs: https://create.roblox.com/docs/reference/engine/classes/" .. rootName)
+    end
+
     return table.concat(lines, "\n")
 end
 
@@ -707,7 +711,20 @@ end
 local function memberDetail(member)
     if member.kind == "method" then
         local returnType = displayTypeName(member.returnType or "Void")
-        return string.format("method %s -> %s", member.name, returnType)
+        local params = {}
+
+        if type(member.parameters) == "table" then
+            for index, param in ipairs(member.parameters) do
+                local paramType = displayTypeName(param.type or "Object")
+                local paramName = tostring(param.name or "")
+                if paramName == "" then
+                    paramName = "arg" .. tostring(index)
+                end
+                table.insert(params, string.format("%s %s", paramType, paramName))
+            end
+        end
+
+        return string.format("method %s(%s) -> %s", member.name, table.concat(params, ", "), returnType)
     end
 
     if member.kind == "property" or member.kind == "field" or member.kind == "event" then
@@ -1750,11 +1767,33 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
 
     local localType = symbolTypes[identifier]
     if localType then
+        local resolvedLocalType = resolveType(localType) or resolveType(TypeDatabase.aliases[localType] or localType)
+        local resolvedLocalFullName = tostring((resolvedLocalType and resolvedLocalType.fullName) or localType)
+
+        local detail = "variable : " .. displayTypeName(localType)
+        if resolvedLocalFullName ~= "" then
+            local resolvedDisplay = displayTypeName(resolvedLocalFullName)
+            if resolvedDisplay ~= "" and resolvedDisplay ~= displayTypeName(localType) then
+                detail = detail .. " (" .. resolvedDisplay .. ")"
+            end
+        end
+
+        local namespace = tostring((resolvedLocalType and resolvedLocalType.namespace) or "")
+        local rootName = displayTypeName(localType):match("^([%a_][%w_]*)") or displayTypeName(localType)
+        local isRobloxType = ROBLOX_TYPE_DOCS[rootName] ~= nil
+            or namespace:find("^LUSharpAPI%.Runtime%.STL") ~= nil
+            or resolvedLocalFullName:find("^LUSharpAPI%.Runtime%.STL") ~= nil
+
+        local documentation = nil
+        if isRobloxType then
+            documentation = getRobloxTypeDocumentation(localType, resolvedLocalFullName, resolvedLocalType)
+        end
+
         return {
             label = identifier,
             kind = "variable",
-            detail = "variable : " .. displayTypeName(localType),
-            documentation = nil,
+            detail = detail,
+            documentation = documentation,
         }
     end
 

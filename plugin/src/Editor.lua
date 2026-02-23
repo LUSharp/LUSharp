@@ -1002,6 +1002,9 @@ function Editor.new(pluginObject, options)
     self._hoverRequestToken = 0
     self._nextHoverPollAt = 0
     self._lastMouseMoveAt = 0
+    self._latestHoverSample = nil
+    self._lastHoverProbeAt = 0
+    self._lastHoverProbeSource = nil
     self._completionShownAt = 0
     self._activeCompletionIndex = nil
     self._completionAnchorStart = nil
@@ -1329,6 +1332,13 @@ function Editor.new(pluginObject, options)
         self._hoverRequestToken = (self._hoverRequestToken or 0) + 1
         local token = self._hoverRequestToken
 
+        self._latestHoverSample = {
+            cursorPos = cursorPos,
+            anchorPos = screenPosition,
+            sampledAt = os.clock(),
+            requestToken = token,
+        }
+
         task.delay(HOVER_REQUEST_DELAY_SECONDS, function()
             if self._hoverRequestToken ~= token then
                 return
@@ -1339,7 +1349,20 @@ function Editor.new(pluginObject, options)
                 return
             end
 
-            local latestCursorPos, latestAnchorPos, latestSource = resolveHoverCursorFromCandidates(self)
+            local latestCursorPos = nil
+            local latestAnchorPos = nil
+            local latestSource = nil
+
+            local latestSample = self._latestHoverSample
+            if type(latestSample) == "table" and latestSample.requestToken == token and type(latestSample.cursorPos) == "number" then
+                latestCursorPos = latestSample.cursorPos
+                latestAnchorPos = latestSample.anchorPos
+                latestSource = "mouse-sample"
+            end
+
+            if not latestCursorPos then
+                latestCursorPos, latestAnchorPos, latestSource = resolveHoverCursorFromCandidates(self)
+            end
 
             if not latestCursorPos then
                 setHoverDebug(self, "Hover: waiting mouse")
@@ -1348,6 +1371,9 @@ function Editor.new(pluginObject, options)
             end
 
             setHoverDebug(self, string.format("Hover: probing @%d (%s)", latestCursorPos, tostring(latestSource or "mouse")))
+
+            self._lastHoverProbeAt = os.clock()
+            self._lastHoverProbeSource = "mouse"
 
             local info = self.onRequestHoverInfo and self.onRequestHoverInfo(latestCursorPos)
             if type(info) == "table" then
@@ -1373,9 +1399,34 @@ function Editor.new(pluginObject, options)
         if now < (self._nextHoverPollAt or 0) then
             return
         end
+
+        local latestSample = self._latestHoverSample
+        if type(latestSample) == "table" and type(latestSample.sampledAt) == "number" then
+            local sampleAge = now - latestSample.sampledAt
+            if sampleAge <= HOVER_REQUEST_DELAY_SECONDS then
+                return
+            end
+        end
+
+        if self._lastHoverProbeSource == "mouse" and type(self._lastHoverProbeAt) == "number" then
+            if (now - self._lastHoverProbeAt) < HOVER_POLL_INTERVAL_SECONDS then
+                return
+            end
+        end
+
         self._nextHoverPollAt = now + HOVER_POLL_INTERVAL_SECONDS
 
-        local cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCandidates(self)
+        local cursorPos = nil
+        local anchorPos = nil
+        local sourceLabel = nil
+
+        if type(latestSample) == "table" and type(latestSample.cursorPos) == "number" and type(latestSample.sampledAt) == "number" and (now - latestSample.sampledAt) <= HOVER_POLL_INTERVAL_SECONDS then
+            cursorPos = latestSample.cursorPos
+            anchorPos = latestSample.anchorPos
+            sourceLabel = "mouse-sample"
+        else
+            cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCandidates(self)
+        end
 
         if not cursorPos then
             setHoverDebug(self, "Hover: waiting mouse")
@@ -1384,6 +1435,9 @@ function Editor.new(pluginObject, options)
         end
 
         setHoverDebug(self, string.format("Hover: probing @%d (%s)", cursorPos, tostring(sourceLabel or "mouse")))
+
+        self._lastHoverProbeAt = now
+        self._lastHoverProbeSource = "poll"
 
         local info = self.onRequestHoverInfo(cursorPos)
         if type(info) == "table" then
@@ -1472,6 +1526,7 @@ function Editor.new(pluginObject, options)
                 if label then
                     local beforeText = textBox.Text
                     local beforeCursor = textBox.CursorPosition
+                    local beforeSelection = textBox.SelectionStart
 
                     task.defer(function()
                         if self.textBox and self.textBox.Parent then
@@ -1479,8 +1534,14 @@ function Editor.new(pluginObject, options)
                                 self._pendingAutoIndent = nil
                                 self._suppressTextChange = true
                                 self.textBox.Text = beforeText
+                            end
+
+                            if self.textBox.CursorPosition ~= beforeCursor then
                                 self.textBox.CursorPosition = beforeCursor
-                                self.textBox.SelectionStart = -1
+                            end
+
+                            if self.textBox.SelectionStart ~= beforeSelection then
+                                self.textBox.SelectionStart = beforeSelection
                             end
 
                             self:_applyCompletion(label)
@@ -1506,6 +1567,7 @@ function Editor.new(pluginObject, options)
                 if label then
                     local beforeText = textBox.Text
                     local beforeCursor = textBox.CursorPosition
+                    local beforeSelection = textBox.SelectionStart
 
                     task.defer(function()
                         if self.textBox and self.textBox.Parent then
@@ -1513,8 +1575,14 @@ function Editor.new(pluginObject, options)
                                 self._pendingAutoIndent = nil
                                 self._suppressTextChange = true
                                 self.textBox.Text = beforeText
+                            end
+
+                            if self.textBox.CursorPosition ~= beforeCursor then
                                 self.textBox.CursorPosition = beforeCursor
-                                self.textBox.SelectionStart = -1
+                            end
+
+                            if self.textBox.SelectionStart ~= beforeSelection then
+                                self.textBox.SelectionStart = beforeSelection
                             end
 
                             self:_applyCompletion(label)
@@ -1828,9 +1896,13 @@ function Editor:_applyCompletion(label)
     local startPos = nil
     local endPos = nil
 
-    if self._completionAnchorStart and self._completionAnchorEnd and self._completionAnchorText == text then
-        startPos = self._completionAnchorStart
-        endPos = self._completionAnchorEnd
+    if self._completionAnchorText == text then
+        startPos, endPos = EditorTextUtils.resolveCompletionReplacementRange(
+            text,
+            cursor,
+            self._completionAnchorStart,
+            self._completionAnchorEnd
+        )
     else
         startPos, endPos = EditorTextUtils.computeCompletionReplacementRange(text, cursor)
     end

@@ -396,6 +396,31 @@ function EditorTextUtils.computeCompletionReplacementRange(text, cursorPos)
     return startPos, endPos
 end
 
+function EditorTextUtils.resolveCompletionReplacementRange(text, cursorPos, anchorStart, anchorEnd)
+    text = text or ""
+
+    local fallbackStart, fallbackEnd = EditorTextUtils.computeCompletionReplacementRange(text, cursorPos)
+
+    if type(anchorStart) ~= "number" or type(anchorEnd) ~= "number" then
+        return fallbackStart, fallbackEnd
+    end
+
+    anchorStart = math.floor(anchorStart)
+    anchorEnd = math.floor(anchorEnd)
+
+    local maxPos = #text + 1
+    if anchorStart < 1 or anchorEnd < 1 or anchorStart > maxPos or anchorEnd > maxPos or anchorStart > anchorEnd then
+        return fallbackStart, fallbackEnd
+    end
+
+    local clampedCursor = clampCursor(text, cursorPos)
+    if clampedCursor < anchorStart or clampedCursor > anchorEnd then
+        return fallbackStart, fallbackEnd
+    end
+
+    return anchorStart, anchorEnd
+end
+
 function EditorTextUtils.shouldShowCompletionInfo(lastMouseMoveAt, shownAtOrNow, nowOrThreshold, thresholdSeconds)
     if type(lastMouseMoveAt) ~= "number" then
         return false
@@ -422,19 +447,6 @@ function EditorTextUtils.shouldShowCompletionInfo(lastMouseMoveAt, shownAtOrNow,
     end
 
     return (now - lastMouseMoveAt) <= threshold
-end
-
-function EditorTextUtils.computeCompletionReplacementRange(text, cursorPos)
-    text = text or ""
-    cursorPos = clampCursor(text, cursorPos)
-
-    local before = text:sub(1, cursorPos - 1)
-    local prefix = before:match("([%a_][%w_]*)$") or ""
-
-    local startPos = cursorPos - #prefix
-    local endPos = cursorPos
-
-    return startPos, endPos
 end
 
 return EditorTextUtils
