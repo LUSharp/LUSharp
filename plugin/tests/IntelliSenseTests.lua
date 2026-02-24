@@ -1,4 +1,6 @@
 local IntelliSense = require("../src/IntelliSense")
+local Lexer = require("../src/Lexer")
+local Parser = require("../src/Parser")
 
 local function hasLabel(completions, label)
     for _, item in ipairs(completions or {}) do
@@ -16,6 +18,11 @@ local function firstByLabel(completions, label)
         end
     end
     return nil
+end
+
+local function parseSource(source)
+    local tokens = Lexer.tokenize(source)
+    return Parser.parse(tokens)
 end
 
 local function run(describe, it, expect)
@@ -111,12 +118,158 @@ class Foo {
             expect(hasLabel(completions, "Collections")):toBe(true)
         end)
 
+        it("keeps namespace/type members in namespace chain context", function()
+            local source = "System."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "Collections")):toBe(true)
+            expect(hasLabel(completions, "Console")):toBe(true)
+            expect(hasLabel(completions, "print")):toBe(false)
+        end)
+
+        it("suppresses non-declaration suggestions while declaring class name", function()
+            local source = "class "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "Main")):toBe(true)
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions while declaring value name", function()
+            local source = "int "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions for generic list declaration-name context", function()
+            local source = "List<int> "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions for generic dictionary declaration-name context", function()
+            local source = "Dictionary<string,int> "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions for nullable declaration-name context", function()
+            local source = "string? "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions for array declaration-name context", function()
+            local source = "int[] "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions for custom type declaration-name context", function()
+            local source = "MyCustomType "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("suppresses unrelated suggestions for namespaced custom type declaration-name context", function()
+            local source = "MyNamespace.MyType "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("keeps member completion in declaration initializer expression context", function()
+            local source = "var players = game."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "GetService")):toBe(true)
+        end)
+
+        it("keeps member completion in typed declaration initializer expression context", function()
+            local source = "List<int> players = game."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "GetService")):toBe(true)
+        end)
+
         it("returns generic collection types under System.Collections.Generic", function()
             local source = "System.Collections.Generic."
             local completions = IntelliSense.getCompletions(source, #source + 1, nil)
 
             expect(hasLabel(completions, "List")):toBe(true)
             expect(hasLabel(completions, "Dictionary")):toBe(true)
+        end)
+
+        it("restricts using-directive root suggestions to namespaces", function()
+            local source = "using "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(#completions > 0):toBe(true)
+            expect(hasLabel(completions, "System")):toBe(true)
+
+            for _, item in ipairs(completions) do
+                expect(item.kind):toBe("namespace")
+            end
+
+            expect(hasLabel(completions, "String")):toBe(false)
+            expect(hasLabel(completions, "print")):toBe(false)
+            expect(hasLabel(completions, "class")):toBe(false)
+        end)
+
+        it("restricts using-directive nested suggestions to namespaces", function()
+            local source = "using System."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(#completions > 0):toBe(true)
+            expect(hasLabel(completions, "Collections")):toBe(true)
+
+            for _, item in ipairs(completions) do
+                expect(item.kind):toBe("namespace")
+            end
+
+            expect(hasLabel(completions, "Console")):toBe(false)
+            expect(hasLabel(completions, "String")):toBe(false)
+            expect(hasLabel(completions, "Int32")):toBe(false)
+        end)
+
+        it("surfaces includable LUSharpAPI namespaces in using directives", function()
+            local source = "using LUSharpAPI.Runtime.STL."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+
+            expect(hasLabel(completions, "Classes")):toBe(true)
+        end)
+
+        it("filters already-included namespaces even when prior using lacks semicolon", function()
+            local source = "using System\nusing "
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "System")):toBe(false)
+        end)
+
+        it("filters already-included nested namespaces when prior using lacks semicolon", function()
+            local source = "using System.Collections\nusing System."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "Collections")):toBe(false)
         end)
 
         it("accepts context options without changing baseline results", function()
@@ -223,6 +376,93 @@ class Foo {
             expect(diagnostics[1].length):toBe(5)
         end)
 
+        it("normalizes malformed diagnostics to stable non-zero clamped ranges", function()
+            local parseResult = {
+                diagnostics = {
+                    {
+                        severity = "warning",
+                        message = "Unexpected token in class body: [",
+                        line = 0,
+                        column = 0,
+                        endLine = -3,
+                        endColumn = -8,
+                        length = 0,
+                    },
+                },
+            }
+
+            local diagnostics = IntelliSense.getDiagnostics(parseResult)
+            local first = diagnostics[1]
+
+            expect(#diagnostics):toBe(1)
+            expect(first.severity):toBe("warning")
+            expect(first.message):toBe("Unexpected token in class body: [")
+            expect(first.line):toBe(1)
+            expect(first.column):toBe(1)
+            expect(first.endLine):toBe(1)
+            expect(first.endColumn):toBe(2)
+            expect(first.length):toBe(1)
+            expect(first.endColumn > first.column):toBe(true)
+        end)
+
+        it("normalizes inverted spans while preserving severity and message", function()
+            local parseResult = {
+                diagnostics = {
+                    {
+                        severity = "error",
+                        message = "Expected punctuation ')'",
+                        line = 3,
+                        column = 12,
+                        endLine = 3,
+                        endColumn = 9,
+                        length = -4,
+                    },
+                },
+            }
+
+            local diagnostics = IntelliSense.getDiagnostics(parseResult)
+            local first = diagnostics[1]
+
+            expect(#diagnostics):toBe(1)
+            expect(first.severity):toBe("error")
+            expect(first.message):toBe("Expected punctuation ')'")
+            expect(first.line):toBe(3)
+            expect(first.column):toBe(12)
+            expect(first.endLine):toBe(3)
+            expect(first.endColumn > first.column):toBe(true)
+            expect(first.length):toBe(1)
+        end)
+
+        it("carries severity and message through parser diagnostics for invalid constructs", function()
+            local parseResultError = parseSource("class Foo { void M( { }")
+            local diagnosticsError = IntelliSense.getDiagnostics(parseResultError)
+            expect(#diagnosticsError > 0):toBe(true)
+            expect(diagnosticsError[1].severity):toBe("error")
+            expect(diagnosticsError[1].message:find("Expected", 1, true) ~= nil):toBe(true)
+            expect(diagnosticsError[1].length >= 1):toBe(true)
+            expect(diagnosticsError[1].line >= 1):toBe(true)
+            expect(diagnosticsError[1].column >= 1):toBe(true)
+            expect(diagnosticsError[1].endLine >= diagnosticsError[1].line):toBe(true)
+
+            local parseResultWarning = parseSource("class C { [ }")
+            local diagnosticsWarning = IntelliSense.getDiagnostics(parseResultWarning)
+            expect(#diagnosticsWarning > 0):toBe(true)
+
+            local sawUnexpectedWarning = false
+            for _, diagnostic in ipairs(diagnosticsWarning) do
+                if diagnostic.severity == "warning" and diagnostic.message:find("Unexpected token", 1, true) ~= nil then
+                    sawUnexpectedWarning = true
+                    expect(diagnostic.length >= 1):toBe(true)
+                    expect(diagnostic.line >= 1):toBe(true)
+                    expect(diagnostic.column >= 1):toBe(true)
+                    expect(diagnostic.endLine >= diagnostic.line):toBe(true)
+                    break
+                end
+            end
+
+            expect(sawUnexpectedWarning):toBe(true)
+        end)
+
         it("supports manual symbol type caching", function()
             IntelliSense.resetSymbolTable()
             expect(IntelliSense.setSymbolType("player", "Player")):toBe(true)
@@ -286,6 +526,16 @@ class Foo {
             expect(info.label):toBe("GameEntry")
             expect(info.kind):toBe("method")
             expect(info.detail):toContain("void")
+        end)
+
+        it("prefers declaration method name over parameter type at method boundary", function()
+            local source = "class Main { public void OnPlayerJoined(Player p) { } }"
+            local boundaryPos = source:find("OnPlayerJoined", 1, true) + #"OnPlayerJoined"
+            local info = IntelliSense.getHoverInfo(source, boundaryPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toNotBeNil()
+            expect(info.label):toBe("OnPlayerJoined")
+            expect(info.kind):toBe("method")
+            expect(info.detail):toContain("OnPlayerJoined(Player p)")
         end)
 
         it("prefers method name over return type when hovering declaration gap", function()
@@ -395,6 +645,27 @@ class Foo {
             expect(info):toBeNil()
         end)
 
+        it("does not show hover info when cursor is on a closing brace line", function()
+            local source = "class Main {\n    public void GameEntry() { }\n    }"
+            local hoverPos = source:find("    }", 1, true) + 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info after trailing newline following class closing brace", function()
+            local source = "using LUSharpAPI.Runtime.STL;\nclass Main {\n}\n"
+            local hoverPos = #source + 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info when cursor is on an empty line", function()
+            local source = "class Main {\n\n    public void GameEntry() { }\n}"
+            local hoverPos = source:find("\n\n", 1, true) + 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
         it("recovers nearby method hover when cursor is on whitespace before opening brace", function()
             local source = "class Main { public void GameEntry() { } }"
             local hoverPos = source:find(") {", 1, true) + 1
@@ -410,6 +681,18 @@ class Foo {
             expect(hasLabel(completions, "Anchored")):toBe(true)
         end)
 
+        it("uses inferred template local type for member suggestions from chained generic call", function()
+            local source = "var part = Factories.Scene.Create<Part>(); part."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "Anchored")):toBe(true)
+        end)
+
+        it("keeps chained generic local inference generic across non-Part types", function()
+            local source = "var players = Services.Registry.Create<Players>(); players."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "PlayerAdded")):toBe(true)
+        end)
+
         it("shows hover docs for local inferred from GetService generic", function()
             local source = "var players = game.GetService<Players>(); players"
             local hoverPos = #source - 2
@@ -418,6 +701,20 @@ class Foo {
             expect(info.kind):toBe("variable")
             expect(info.label):toBe("players")
             expect(info.detail):toContain("Players")
+            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Services.Players")
+            expect(info.documentation):toContain("Roblox")
+            expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
+        end)
+
+        it("shows hover docs for local inferred from GetService string call", function()
+            local source = "var players = game.GetService(\"Players\"); players"
+            local hoverPos = #source - 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("variable")
+            expect(info.label):toBe("players")
+            expect(info.detail):toContain("Players")
+            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Services.Players")
             expect(info.documentation):toContain("Roblox")
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
         end)
@@ -430,6 +727,7 @@ class Foo {
             expect(info.kind):toBe("variable")
             expect(info.label):toBe("part")
             expect(info.detail):toContain("Part")
+            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Classes.Instance.PVInstance.Part")
             expect(info.documentation):toContain("Roblox")
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Part")
         end)
@@ -441,13 +739,24 @@ class Foo {
             expect(info):toNotBeNil()
             expect(info.kind):toBe("method")
             expect(info.detail):toContain("FindFirstChild(")
-            expect(info.detail):toContain("->")
+            expect(info.detail):toContain("String name")
+            expect(info.detail):toContain("-> Instance")
         end)
 
         it("provides built-in Roblox type documentation on hover", function()
             local source = "Part"
             local info = IntelliSense.getHoverInfo(source, 2, nil)
             expect(info):toNotBeNil()
+            expect(info.kind):toBe("type")
+            expect(info.documentation):toContain("Roblox")
+        end)
+
+        it("returns type hover when hovering declaration type token", function()
+            local source = "Part p;"
+            local hoverPos = source:find("Part", 1, true) + 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toNotBeNil()
+            expect(info.label):toBe("Part")
             expect(info.kind):toBe("type")
             expect(info.documentation):toContain("Roblox")
         end)

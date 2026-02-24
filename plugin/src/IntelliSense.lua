@@ -208,6 +208,8 @@ end
 local DEFAULT_VISIBLE_SERVICE_SET = toLowerSet(DEFAULT_VISIBLE_SERVICES)
 
 local SERVICE_NAMES = nil
+local USING_NAMESPACE_NAMES = nil
+
 local function getServiceNames()
     if SERVICE_NAMES then
         return SERVICE_NAMES
@@ -358,13 +360,13 @@ local function getIdentifierRangeAt(source, cursorPos)
     local char = source:sub(index, index)
 
     if not char:match("[%w_]") then
-        local nextIndex = math.max(1, math.min(index + 1, #source))
-        if source:sub(nextIndex, nextIndex):match("[%w_]") then
-            index = nextIndex
+        local prevIndex = math.max(1, math.min(index - 1, #source))
+        if source:sub(prevIndex, prevIndex):match("[%w_]") then
+            index = prevIndex
         else
-            local prevIndex = math.max(1, math.min(index - 1, #source))
-            if source:sub(prevIndex, prevIndex):match("[%w_]") then
-                index = prevIndex
+            local nextIndex = math.max(1, math.min(index + 1, #source))
+            if source:sub(nextIndex, nextIndex):match("[%w_]") then
+                index = nextIndex
             else
                 return nil
             end
@@ -533,6 +535,34 @@ local function parseGenericTypeSuffix(tokens, startIndex)
     return table.concat(parts, ""), j
 end
 
+local function inferGenericReturnTypeFromCall(tokens, startIndex)
+    local tok = tokens[startIndex]
+    if not tok or not (tok.type == "identifier" or tok.type == "keyword") then
+        return nil
+    end
+
+    local i = startIndex
+    while tokens[i + 1] and tokens[i + 1].type == "punctuation" and tokens[i + 1].value == "."
+        and tokens[i + 2] and (tokens[i + 2].type == "identifier" or tokens[i + 2].type == "keyword") do
+        i += 2
+    end
+
+    if not (tokens[i + 1] and tokens[i + 1].type == "operator" and tokens[i + 1].value == "<") then
+        return nil
+    end
+
+    local genericType, afterGenericIndex = parseGenericTypeSuffix(tokens, i + 2)
+    if genericType
+        and tokens[afterGenericIndex] and tokens[afterGenericIndex].type == "operator" and tokens[afterGenericIndex].value == ">"
+        and tokens[afterGenericIndex + 1] and tokens[afterGenericIndex + 1].type == "punctuation" and tokens[afterGenericIndex + 1].value == "(" then
+        return genericType
+    end
+
+    return nil
+end
+
+local unquoteStringTokenValue
+
 local function inferVarTypeFromInitializer(tokens, startIndex)
     local tok = tokens[startIndex]
     if not tok then
@@ -544,30 +574,14 @@ local function inferVarTypeFromInitializer(tokens, startIndex)
         return typeName
     end
 
-    if tok.type == "identifier"
-        and tokens[startIndex + 1] and tokens[startIndex + 1].type == "punctuation" and tokens[startIndex + 1].value == "."
-        and tokens[startIndex + 2] and tokens[startIndex + 2].type == "identifier"
-        and tokens[startIndex + 3] and tokens[startIndex + 3].type == "operator" and tokens[startIndex + 3].value == "<" then
-        local genericType, afterGenericIndex = parseGenericTypeSuffix(tokens, startIndex + 4)
-        if genericType
-            and tokens[afterGenericIndex] and tokens[afterGenericIndex].type == "operator" and tokens[afterGenericIndex].value == ">"
-            and tokens[afterGenericIndex + 1] and tokens[afterGenericIndex + 1].type == "punctuation" and tokens[afterGenericIndex + 1].value == "(" then
-            return genericType
-        end
+    local genericReturnType = inferGenericReturnTypeFromCall(tokens, startIndex)
+    if genericReturnType then
+        return genericReturnType
     end
 
     if tok.type == "identifier" and tok.value == "game"
         and tokens[startIndex + 1] and tokens[startIndex + 1].type == "punctuation" and tokens[startIndex + 1].value == "."
         and tokens[startIndex + 2] and tokens[startIndex + 2].type == "identifier" and tokens[startIndex + 2].value == "GetService" then
-
-        if tokens[startIndex + 3] and tokens[startIndex + 3].type == "operator" and tokens[startIndex + 3].value == "<" then
-            local genericType, afterGenericIndex = parseGenericTypeSuffix(tokens, startIndex + 4)
-            if genericType
-                and tokens[afterGenericIndex] and tokens[afterGenericIndex].type == "operator" and tokens[afterGenericIndex].value == ">"
-                and tokens[afterGenericIndex + 1] and tokens[afterGenericIndex + 1].type == "punctuation" and tokens[afterGenericIndex + 1].value == "(" then
-                return genericType
-            end
-        end
 
         if tokens[startIndex + 3] and tokens[startIndex + 3].type == "punctuation" and tokens[startIndex + 3].value == "("
             and tokens[startIndex + 4] and (tokens[startIndex + 4].type == "string" or tokens[startIndex + 4].type == "interpolated_string") then
@@ -855,6 +869,170 @@ local function getNamespaceCompletions(left)
     return sortAndLimit(result, 150)
 end
 
+local function addNamespaceWithParents(out, seen, namespaceName)
+    if type(namespaceName) ~= "string" then
+        return
+    end
+
+    local cleaned = tostring(namespaceName):gsub("^%s+", ""):gsub("%s+$", "")
+    if cleaned == "" then
+        return
+    end
+
+    local current = ""
+    for segment in cleaned:gmatch("[%a_][%w_]*") do
+        if current == "" then
+            current = segment
+        else
+            current = current .. "." .. segment
+        end
+
+        local key = string.lower(current)
+        if not seen[key] then
+            seen[key] = true
+            table.insert(out, current)
+        end
+    end
+end
+
+local function getUsingNamespaceNames()
+    if USING_NAMESPACE_NAMES then
+        return USING_NAMESPACE_NAMES
+    end
+
+    local out = {}
+    local seen = {}
+
+    for namespaceName, members in pairs(DOTNET_NAMESPACE_MEMBERS) do
+        addNamespaceWithParents(out, seen, namespaceName)
+
+        for _, member in ipairs(members or {}) do
+            if member.kind == "namespace" then
+                local documentation = member.documentation or ""
+                addNamespaceWithParents(out, seen, documentation)
+                addNamespaceWithParents(out, seen, namespaceName .. "." .. tostring(member.label or ""))
+            end
+        end
+    end
+
+    for _, typeInfo in pairs(TypeDatabase.types or {}) do
+        addNamespaceWithParents(out, seen, typeInfo.namespace)
+    end
+
+    table.sort(out, function(a, b)
+        return string.lower(a) < string.lower(b)
+    end)
+
+    USING_NAMESPACE_NAMES = out
+    return out
+end
+
+local function parseUsingDirectivePath(left)
+    local line = tostring(left or ""):match("([^\n]*)$") or ""
+    if line:match("^%s*using%s*$") then
+        return "", nil, ""
+    end
+
+    local path = line:match("^%s*using%s+([%a_][%w_%.]*)%s*$")
+    if not path then
+        return nil
+    end
+
+    if path:sub(-1) == "." then
+        return path, path:sub(1, -2), ""
+    end
+
+    local namespacePath, memberPrefix = path:match("^(.*)%.([%a_][%w_]*)$")
+    if namespacePath then
+        return path, namespacePath, memberPrefix
+    end
+
+    return path, nil, path
+end
+
+local function extractIncludedUsingNamespaces(source, left)
+    local result = {}
+    local beforeCursor = tostring(left or "")
+
+    local currentLineStart = 1
+    for newlinePos in beforeCursor:gmatch("()\n") do
+        currentLineStart = newlinePos + 1
+    end
+
+    local previousLinesSource = tostring(source or ""):sub(1, math.max(0, currentLineStart - 1))
+    for line in (previousLinesSource .. "\n"):gmatch("([^\n]*)\n") do
+        local namespaceName = line:match("^%s*using%s+([%a_][%w_%.]*)%s*;?%s*$")
+        if namespaceName then
+            result[string.lower(namespaceName)] = true
+        end
+    end
+
+    return result
+end
+
+local function getUsingNamespaceCompletions(source, left)
+    local path, namespacePath, memberPrefix = parseUsingDirectivePath(left)
+    if path == nil then
+        return nil
+    end
+
+    local result = {}
+    local seen = {}
+    local seenChildren = {}
+    local includedNamespaces = extractIncludedUsingNamespaces(source, left)
+    local normalizedPrefix = string.lower(memberPrefix or "")
+    local namespaceNames = getUsingNamespaceNames()
+
+    local function maybeAddNamespace(label, fullName)
+        local lowerLabel = string.lower(label)
+        local lowerFullName = string.lower(tostring(fullName or label or ""))
+        if seenChildren[lowerLabel] then
+            return
+        end
+
+        if includedNamespaces[lowerFullName] then
+            return
+        end
+
+        if normalizedPrefix ~= "" and string.sub(lowerLabel, 1, #normalizedPrefix) ~= normalizedPrefix then
+            return
+        end
+
+        seenChildren[lowerLabel] = true
+        addUniqueCompletion(result, seen, makeCompletion(label, "namespace", "namespace", fullName))
+    end
+
+    if namespacePath == nil then
+        for _, fullName in ipairs(namespaceNames) do
+            local root = fullName:match("^([%a_][%w_]*)")
+            if root then
+                maybeAddNamespace(root, root)
+            end
+        end
+
+        return sortAndLimit(result, 150)
+    end
+
+    local baseLower = string.lower(namespacePath)
+    local childPrefix = namespacePath .. "."
+    local childPrefixLower = string.lower(childPrefix)
+
+    for _, fullName in ipairs(namespaceNames) do
+        local fullNameLower = string.lower(fullName)
+        if string.sub(fullNameLower, 1, #childPrefixLower) == childPrefixLower then
+            local remainder = fullName:sub(#childPrefix + 1)
+            local child = remainder:match("^([%a_][%w_]*)")
+            if child then
+                maybeAddNamespace(child, namespacePath .. "." .. child)
+            end
+        elseif fullNameLower == baseLower then
+            -- Keep exact namespace valid but do not emit itself as a child.
+        end
+    end
+
+    return sortAndLimit(result, 150)
+end
+
 local function getKeywordCompletions(prefix)
     local result = {}
     local seen = {}
@@ -993,7 +1171,7 @@ local function objectExpressionBeforeDot(left)
     return left:match("([%a_][%w_]*)%.%w*$")
 end
 
-local function unquoteStringTokenValue(value)
+unquoteStringTokenValue = function(value)
     value = tostring(value or "")
     if value:sub(1, 2) == '@"' then
         value = value:sub(3)
@@ -1329,6 +1507,169 @@ local function getDeclarationNameCompletions(left, prefix)
     return result
 end
 
+local COMPLETION_DECLARATION_MODIFIERS = {
+    ["public"] = true,
+    ["private"] = true,
+    ["protected"] = true,
+    ["internal"] = true,
+    ["static"] = true,
+    ["readonly"] = true,
+    ["const"] = true,
+    ["virtual"] = true,
+    ["override"] = true,
+    ["abstract"] = true,
+    ["sealed"] = true,
+    ["partial"] = true,
+    ["async"] = true,
+}
+
+local DECLARATION_CONTEXT_BOUNDARY_PUNCT = {
+    [";"] = true,
+    ["{"] = true,
+    ["}"] = true,
+    ["("] = true,
+    [","] = true,
+}
+
+local function getLastNonEofIndex(tokens)
+    local i = #tokens
+    while i >= 1 and tokens[i] and tokens[i].type == "eof" do
+        i -= 1
+    end
+
+    return i
+end
+
+local function looksLikeCustomTypeName(typeName)
+    local normalized = normalizeTypeName(typeName)
+    if not normalized then
+        return false
+    end
+
+    if not normalized:match("^[%a_][%w_%.]*$") then
+        return false
+    end
+
+    local terminalName = normalized:match("([%a_][%w_]*)$") or normalized
+    local leadingChar = terminalName:sub(1, 1)
+    return leadingChar:match("%u") ~= nil
+end
+
+local function isTypeLikeDeclarationName(typeName)
+    local normalized = normalizeTypeName(typeName)
+    if not normalized then
+        return false
+    end
+
+    if TYPE_KEYWORDS[normalized] then
+        return true
+    end
+
+    if resolveType(typeName) or resolveType(normalized) then
+        return true
+    end
+
+    for _, baseType in ipairs(DOTNET_BASE_TYPES) do
+        if baseType.alias == normalized then
+            return true
+        end
+    end
+
+    if looksLikeCustomTypeName(normalized) then
+        return true
+    end
+
+    return false
+end
+
+local function findDeclarationTypeStart(tokens, typeEndIndex)
+    if typeEndIndex == nil or typeEndIndex < 1 then
+        return nil
+    end
+
+    local bestStartIndex = nil
+
+    for startIndex = typeEndIndex, 1, -1 do
+        local token = tokens[startIndex]
+        if token and (token.type == "identifier" or token.type == "keyword") then
+            local parsedType, nextIndex = parseGenericTypeSuffix(tokens, startIndex)
+            if parsedType and nextIndex and (nextIndex - 1) == typeEndIndex then
+                if isTypeLikeDeclarationName(parsedType) then
+                    bestStartIndex = startIndex
+                end
+            end
+        end
+    end
+
+    return bestStartIndex
+end
+
+local function isValueDeclarationNameContext(left, tokens)
+    if type(left) ~= "string" or left == "" then
+        return false
+    end
+
+    local lastIndex = getLastNonEofIndex(tokens)
+    if lastIndex < 1 then
+        return false
+    end
+
+    local typeStartIndex = nil
+    local endsWithWhitespace = left:match("%s$") ~= nil
+
+    if endsWithWhitespace then
+        typeStartIndex = findDeclarationTypeStart(tokens, lastIndex)
+    else
+        local nameToken = tokens[lastIndex]
+        if not nameToken or nameToken.type ~= "identifier" then
+            return false
+        end
+
+        typeStartIndex = findDeclarationTypeStart(tokens, lastIndex - 1)
+    end
+
+    if typeStartIndex == nil or typeStartIndex < 1 then
+        return false
+    end
+
+    local contextIndex = typeStartIndex - 1
+    while contextIndex >= 1 do
+        local contextToken = tokens[contextIndex]
+        if contextToken and contextToken.type == "keyword" and COMPLETION_DECLARATION_MODIFIERS[contextToken.value] then
+            contextIndex -= 1
+        else
+            break
+        end
+    end
+
+    if contextIndex < 1 then
+        return true
+    end
+
+    local contextToken = tokens[contextIndex]
+    if contextToken and contextToken.type == "punctuation" and DECLARATION_CONTEXT_BOUNDARY_PUNCT[contextToken.value] then
+        return true
+    end
+
+    return false
+end
+
+local function determineCompletionMode(left, tokens, declarationNameCompletions)
+    if isClassDeclarationNameContext(left) or isMainEntryMethodNameContext(left) then
+        if #declarationNameCompletions > 0 then
+            return "declaration_name"
+        end
+
+        return "suppress"
+    end
+
+    if isValueDeclarationNameContext(left, tokens) then
+        return "suppress"
+    end
+
+    return "default"
+end
+
 local function findCallContext(source, cursorPos)
     local left = source:sub(1, cursorPos - 1)
     local tokens = Lexer.tokenize(left)
@@ -1458,6 +1799,13 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     end
 
     do
+        local usingNamespaceCompletions = getUsingNamespaceCompletions(source, left)
+        if usingNamespaceCompletions ~= nil then
+            return usingNamespaceCompletions
+        end
+    end
+
+    do
         local namespaceCompletions = getNamespaceCompletions(left)
         if namespaceCompletions then
             return namespaceCompletions
@@ -1470,6 +1818,15 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     end
 
     local declarationNameCompletions = getDeclarationNameCompletions(left, prefix)
+    local completionMode = determineCompletionMode(left, tokens, declarationNameCompletions)
+    if completionMode == "declaration_name" then
+        return declarationNameCompletions
+    end
+
+    if completionMode == "suppress" then
+        return {}
+    end
+
     local localCompletions = getLocalCompletions(symbolTypes, prefix)
     local keywordCompletions = getKeywordCompletions(prefix)
     local globalCompletions = getGlobalCompletions(prefix)
@@ -1547,6 +1904,40 @@ local function inferCurrentBaseType(beforeIdentifier)
     return nil
 end
 
+local function getLineTextAtCursor(source, cursorPos)
+    if type(source) ~= "string" or source == "" then
+        return nil
+    end
+
+    local index = math.max(1, math.min(cursorPos or 1, #source + 1))
+    local lineStart = 1
+
+    if index > 1 then
+        local prefix = source:sub(1, index - 1)
+        local lastNewline = prefix:match(".*()\n")
+        if lastNewline then
+            lineStart = lastNewline + 1
+        end
+    end
+
+    local lineEnd = source:find("\n", index, true)
+    if not lineEnd then
+        lineEnd = #source + 1
+    end
+
+    return source:sub(lineStart, lineEnd - 1)
+end
+
+local function isWhitespaceOnlyLineAtCursor(source, cursorPos)
+    local lineText = getLineTextAtCursor(source, cursorPos)
+    return type(lineText) == "string" and lineText:match("^%s*$") ~= nil
+end
+
+local function isStructuralOnlyLineAtCursor(source, cursorPos)
+    local lineText = getLineTextAtCursor(source, cursorPos)
+    return type(lineText) == "string" and lineText:match("^%s*[%{%}]%s*$") ~= nil
+end
+
 local function shouldSuppressHoverAtCursor(source, cursorPos)
     if type(source) ~= "string" or source == "" then
         return false
@@ -1556,6 +1947,14 @@ local function shouldSuppressHoverAtCursor(source, cursorPos)
     local char = source:sub(index, index)
 
     if HOVER_SUPPRESSED_STRUCTURAL_CHARS[char] then
+        return true
+    end
+
+    if isWhitespaceOnlyLineAtCursor(source, cursorPos) then
+        return true
+    end
+
+    if isStructuralOnlyLineAtCursor(source, cursorPos) then
         return true
     end
 
@@ -1572,6 +1971,25 @@ local function buildDeclarationMethodSignature(beforeIdentifier, methodName, tra
     end
 
     return string.format("%s %s%s", declarationPrefix, methodName, parameters)
+end
+
+local function buildTypeHoverInfo(identifier)
+    local typeInfo = resolveType(identifier)
+    if not typeInfo then
+        local typeFullName = TypeDatabase.aliases[identifier] or identifier
+        typeInfo = TypeDatabase.types[typeFullName]
+    end
+
+    if not typeInfo then
+        return nil
+    end
+
+    return {
+        label = identifier,
+        kind = "type",
+        detail = tostring(typeInfo.kind or "type"),
+        documentation = getRobloxTypeDocumentation(identifier, typeInfo.fullName or identifier, typeInfo),
+    }
 end
 
 local function inferDeclarationHover(identifier, trailingText, beforeTrimmed, beforeIdentifier)
@@ -1747,7 +2165,7 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
     local trailingText = source:sub(endIndex + 1)
 
     if trailingText:match("^%s*%(") then
-        local returnType = beforeTrimmed:match("([%a_][%w_%.<>%?%[%]]*)%s+$")
+        local returnType = beforeIdentifier:match("([%a_][%w_%.<>%?%[%]]*)%s+$")
         local normalizedReturnType = string.lower(tostring(returnType or ""))
 
         if returnType and not DECLARATION_NON_RETURN_KEYWORDS[normalizedReturnType] then
@@ -1757,6 +2175,14 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
                 detail = buildDeclarationMethodSignature(beforeIdentifier, identifier, trailingText),
                 documentation = nil,
             }
+        end
+    end
+
+    local declaredNameCandidate = trailingText:match("^%s+([%a_][%w_]*)%s*[%=;,%}]")
+    if declaredNameCandidate then
+        local typeHover = buildTypeHoverInfo(identifier)
+        if typeHover then
+            return typeHover
         end
     end
 
@@ -1770,11 +2196,12 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
         local resolvedLocalType = resolveType(localType) or resolveType(TypeDatabase.aliases[localType] or localType)
         local resolvedLocalFullName = tostring((resolvedLocalType and resolvedLocalType.fullName) or localType)
 
-        local detail = "variable : " .. displayTypeName(localType)
+        local localDisplayType = displayTypeName(localType)
+        local detail = "variable : " .. localDisplayType
         if resolvedLocalFullName ~= "" then
             local resolvedDisplay = displayTypeName(resolvedLocalFullName)
-            if resolvedDisplay ~= "" and resolvedDisplay ~= displayTypeName(localType) then
-                detail = detail .. " (" .. resolvedDisplay .. ")"
+            if resolvedDisplay ~= "" and resolvedDisplay ~= localDisplayType then
+                detail = detail .. " (" .. resolvedLocalFullName .. ")"
             end
         end
 
@@ -1807,15 +2234,9 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
         }
     end
 
-    local typeFullName = TypeDatabase.aliases[identifier] or identifier
-    local typeInfo = TypeDatabase.types[typeFullName]
-    if typeInfo then
-        return {
-            label = identifier,
-            kind = "type",
-            detail = tostring(typeInfo.kind or "type"),
-            documentation = getRobloxTypeDocumentation(identifier, typeInfo.fullName or typeFullName, typeInfo),
-        }
+    local typeHover = buildTypeHoverInfo(identifier)
+    if typeHover then
+        return typeHover
     end
 
     if DOTNET_NAMESPACE_MEMBERS[identifier] ~= nil then
@@ -1859,17 +2280,17 @@ function IntelliSense.getHoverInfo(source, cursorPos, opts)
         local radius = math.max(1, math.floor(tonumber(opts.nearbyRadius) or 24))
 
         for delta = 1, radius do
-            local rightPos = cursorPos + delta
-            if rightPos <= sourceLength + 1 then
-                info = resolveHoverInfoAtPosition(source, rightPos, opts)
+            local leftPos = cursorPos - delta
+            if leftPos >= 1 then
+                info = resolveHoverInfoAtPosition(source, leftPos, opts)
                 if info then
                     return info
                 end
             end
 
-            local leftPos = cursorPos - delta
-            if leftPos >= 1 then
-                info = resolveHoverInfoAtPosition(source, leftPos, opts)
+            local rightPos = cursorPos + delta
+            if rightPos <= sourceLength + 1 then
+                info = resolveHoverInfoAtPosition(source, rightPos, opts)
                 if info then
                     return info
                 end
@@ -1921,6 +2342,27 @@ function IntelliSense.getParameterHints(source, cursorPos)
     }
 end
 
+local function toIntegerOrNil(value)
+    if type(value) ~= "number" then
+        return nil
+    end
+
+    if value ~= value then
+        return nil
+    end
+
+    return math.floor(value)
+end
+
+local function clampPositiveInt(value, fallback)
+    local intValue = toIntegerOrNil(value)
+    if intValue == nil then
+        intValue = toIntegerOrNil(fallback) or 1
+    end
+
+    return math.max(1, intValue)
+end
+
 function IntelliSense.getDiagnostics(parseResult)
     local diagnostics = {}
 
@@ -1929,11 +2371,47 @@ function IntelliSense.getDiagnostics(parseResult)
     end
 
     for _, diagnostic in ipairs(parseResult.diagnostics or {}) do
-        local startLine = diagnostic.line or 1
-        local startColumn = diagnostic.column or 1
-        local length = diagnostic.length
-        if type(length) ~= "number" then
-            length = math.max(1, ((diagnostic.endColumn or startColumn + 1) - startColumn))
+        local startLine = clampPositiveInt(diagnostic.line, 1)
+        local startColumn = clampPositiveInt(diagnostic.column, 1)
+
+        local rawLength = toIntegerOrNil(diagnostic.length)
+        local lengthFromField = nil
+        if rawLength and rawLength > 0 then
+            lengthFromField = rawLength
+        end
+
+        local endLine = clampPositiveInt(diagnostic.endLine, startLine)
+        local endColumn = toIntegerOrNil(diagnostic.endColumn)
+
+        if endColumn == nil then
+            if lengthFromField and endLine == startLine then
+                endColumn = startColumn + lengthFromField
+            else
+                endColumn = startColumn + 1
+            end
+        end
+
+        endColumn = math.max(1, endColumn)
+
+        if endLine < startLine then
+            endLine = startLine
+        end
+
+        if endLine == startLine and endColumn <= startColumn then
+            if lengthFromField then
+                endColumn = startColumn + lengthFromField
+            else
+                endColumn = startColumn + 1
+            end
+        end
+
+        local length = nil
+        if endLine == startLine then
+            length = math.max(1, endColumn - startColumn)
+        elseif lengthFromField then
+            length = lengthFromField
+        else
+            length = 1
         end
 
         table.insert(diagnostics, {
@@ -1941,9 +2419,9 @@ function IntelliSense.getDiagnostics(parseResult)
             message = diagnostic.message or "",
             line = startLine,
             column = startColumn,
-            endLine = diagnostic.endLine or startLine,
-            endColumn = diagnostic.endColumn or (startColumn + math.max(1, math.floor(length))),
-            length = math.max(1, math.floor(length)),
+            endLine = endLine,
+            endColumn = endColumn,
+            length = length,
             code = diagnostic.code,
         })
     end

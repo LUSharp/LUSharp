@@ -15,6 +15,7 @@ local StudioService = game:GetService("StudioService")
 local UserInputService = game:GetService("UserInputService")
 
 local ScriptManager = requireModule("ScriptManager")
+local ProjectViewStatus = requireModule("ProjectViewStatus")
 
 local ProjectView = {}
 ProjectView.__index = ProjectView
@@ -24,6 +25,9 @@ local ROW_HEIGHT = 24
 local INDENT_WIDTH = 16
 local MARKER_WIDTH = 16
 local MARKER_SIZE = 12
+local STATUS_LABEL_WIDTH = 140
+local STATUS_ICON_SIZE = 14
+local STATUS_ICON_PADDING = 6
 
 local function isLuSharpScript(instance)
     return instance
@@ -754,9 +758,28 @@ function ProjectView:_appendNode(instance, depth)
     labelButton.TextColor3 = isScript and Color3.fromRGB(142, 206, 255) or Color3.fromRGB(225, 225, 225)
     labelButton.Parent = row
 
+    local status = self.statusByScript[instance]
+    local statusLabelRightInset = 0
+    local statusIconImage = isScript and ProjectViewStatus.getStatusIconImage(status) or nil
+
+    local statusIcon = Instance.new("ImageLabel")
+    statusIcon.Name = "StatusIcon"
+    statusIcon.Size = UDim2.new(0, STATUS_ICON_SIZE, 0, STATUS_ICON_SIZE)
+    statusIcon.Position = UDim2.new(1, -(STATUS_ICON_SIZE + STATUS_ICON_PADDING), 0.5, -math.floor(STATUS_ICON_SIZE / 2))
+    statusIcon.BackgroundTransparency = 1
+    statusIcon.BorderSizePixel = 0
+    statusIcon.Active = true
+    statusIcon.Visible = statusIconImage ~= nil
+    statusIcon.Image = statusIconImage or ""
+    statusIcon.Parent = row
+
+    if statusIcon.Visible then
+        statusLabelRightInset = STATUS_ICON_SIZE + STATUS_ICON_PADDING * 2
+    end
+
     local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(0, 140, 1, 0)
-    statusLabel.Position = UDim2.new(1, -140, 0, 0)
+    statusLabel.Size = UDim2.new(0, STATUS_LABEL_WIDTH, 1, 0)
+    statusLabel.Position = UDim2.new(1, -(STATUS_LABEL_WIDTH + statusLabelRightInset), 0, 0)
     statusLabel.BackgroundTransparency = 1
     statusLabel.BorderSizePixel = 0
     statusLabel.Font = Enum.Font.SourceSans
@@ -831,6 +854,7 @@ function ProjectView:_appendNode(instance, depth)
     hookRightClick(labelButton)
     hookRightClick(arrow)
     hookRightClick(statusLabel)
+    hookRightClick(statusIcon)
     hookRightClick(marker)
 
     table.insert(self._rowConnections, labelButton.MouseEnter:Connect(function()

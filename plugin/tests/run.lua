@@ -80,6 +80,7 @@ local testFiles = {
     "IntelliSenseTests",
     "EditorTextUtilsTests",
     "ScriptManagerTests",
+    "ProjectViewStatusTests",
 }
 
 for _, name in ipairs(testFiles) do

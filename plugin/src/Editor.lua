@@ -2,6 +2,7 @@ local UserInputService = game:GetService("UserInputService")
 local TextService = game:GetService("TextService")
 local RunService = game:GetService("RunService")
 local GuiService = game:GetService("GuiService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local function requireModule(name)
     if typeof(script) == "Instance" and script.Parent then
@@ -24,7 +25,9 @@ local LARGE_SOURCE_WORK_LIMIT = 30000
 local MAX_RENDERED_ERROR_SQUIGGLES = 120
 local HOVER_REQUEST_DELAY_SECONDS = 0.18
 local HOVER_POLL_INTERVAL_SECONDS = 0.2
-local COMPLETION_INFO_MOUSE_INTENT_WINDOW = 0.25
+local HOVER_EDGE_TOLERANCE_PIXELS = 3
+local HOVER_TYPING_SUPPRESS_SECONDS = 0.25
+local COMPLETION_ACCEPT_ACTION_NAME = "LUSharpEditorCompletionAccept"
 
 local cursorPositionFromScreenPoint
 
@@ -120,11 +123,14 @@ local function updateStatus(self)
         text = string.format("%s | Ln %d, Col %d", self.fileName, line, col)
     end
 
-    if self.options and self.options.showHoverDebug == true then
-        local hoverDebug = tostring(self.hoverDebugText or "")
-        if hoverDebug ~= "" then
-            text = text .. " | " .. hoverDebug
-        end
+    local keyDebug = tostring(self.keyDebugText or "")
+    if keyDebug ~= "" then
+        text = text .. " | " .. keyDebug
+    end
+
+    local hoverDebug = tostring(self.hoverDebugText or "")
+    if hoverDebug ~= "" then
+        text = text .. " | " .. hoverDebug
     end
 
     self.statusLabel.Text = text
@@ -138,6 +144,72 @@ local function setHoverDebug(self, message)
 
     self.hoverDebugText = nextMessage
     updateStatus(self)
+end
+
+local function setKeyDebug(self, message)
+    local nextMessage = tostring(message or "")
+    if self.keyDebugText == nextMessage then
+        return
+    end
+
+    self.keyDebugText = nextMessage
+    updateStatus(self)
+end
+
+local function updateModifierCache(self, keyCode, isDown)
+    if keyCode == Enum.KeyCode.LeftControl or keyCode == Enum.KeyCode.RightControl then
+        self._ctrlModifierDown = isDown == true
+    elseif keyCode == Enum.KeyCode.LeftAlt or keyCode == Enum.KeyCode.RightAlt then
+        self._altModifierDown = isDown == true
+    end
+end
+
+local function isCtrlModifierDown(self)
+    return self._ctrlModifierDown == true
+        or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+end
+
+local function isAltModifierDown(self)
+    return self._altModifierDown == true
+        or UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)
+end
+
+local function readInputModifierState(inputObject, modifierKey)
+    if not inputObject or not modifierKey then
+        return nil
+    end
+
+    local ok, value = pcall(function()
+        return inputObject:IsModifierKeyDown(modifierKey)
+    end)
+
+    if ok and type(value) == "boolean" then
+        return value
+    end
+
+    return nil
+end
+
+local function resolveCtrlModifierDown(self, inputObject)
+    local value = readInputModifierState(inputObject, Enum.ModifierKey and Enum.ModifierKey.Ctrl or nil)
+    if type(value) == "boolean" then
+        self._ctrlModifierDown = value
+        return value
+    end
+
+    return isCtrlModifierDown(self)
+end
+
+local function resolveAltModifierDown(self, inputObject)
+    local value = readInputModifierState(inputObject, Enum.ModifierKey and Enum.ModifierKey.Alt or nil)
+    if type(value) == "boolean" then
+        self._altModifierDown = value
+        return value
+    end
+
+    return isAltModifierDown(self)
 end
 
 local function formatOutsideEditorDebug(self)
@@ -157,6 +229,14 @@ local function isValidMousePoint(point)
     local x = tonumber(point.X)
     local y = tonumber(point.Y)
     return x ~= nil and y ~= nil and x >= 0 and y >= 0
+end
+
+local function formatDebugPoint(point)
+    if not isValidMousePoint(point) then
+        return "?,?"
+    end
+
+    return string.format("%d,%d", math.floor(point.X), math.floor(point.Y))
 end
 
 local function rememberMousePosition(self, point)
@@ -208,6 +288,25 @@ local function getHoverAnchorScreenPosition(self)
     return Vector2.new(0, 0)
 end
 
+local function resolveHoverCursorFromCaret(self)
+    local textBox = self and self.textBox
+    if not textBox then
+        return nil, nil, nil
+    end
+
+    local source = textBox.Text or ""
+    local maxCursor = #source + 1
+    local cursorPos = tonumber(textBox.CursorPosition)
+    if type(cursorPos) ~= "number" then
+        return nil, nil, nil
+    end
+
+    cursorPos = math.floor(cursorPos)
+    cursorPos = math.clamp(cursorPos, 1, maxCursor)
+
+    return cursorPos, getHoverAnchorScreenPosition(self), "caret"
+end
+
 local function resolveHoverCursorFromCandidates(self)
     local candidates = {}
     local seen = {}
@@ -228,7 +327,20 @@ local function resolveHoverCursorFromCandidates(self)
         table.insert(candidates, { label = label, point = Vector2.new(point.X, point.Y) })
     end
 
+    -- InputChanged coordinates can be local-space in some Studio/plugin paths.
+    -- Prefer transformed variants first, then global preferred, and raw last.
+    local rawInputPoint = self and self._lastInputMousePosition
+    if rawInputPoint and self and self.root and self.root.AbsolutePosition then
+        local rootPos = self.root.AbsolutePosition
+        addCandidate("input+root", Vector2.new(rootPos.X + rawInputPoint.X, rootPos.Y + rawInputPoint.Y))
+    end
+    if rawInputPoint and self and self.codeContainer and self.codeContainer.AbsolutePosition then
+        local codePos = self.codeContainer.AbsolutePosition
+        addCandidate("input+code", Vector2.new(codePos.X + rawInputPoint.X, codePos.Y + rawInputPoint.Y))
+    end
+
     addCandidate("preferred", getPreferredMousePosition(self))
+    addCandidate("inputRaw", rawInputPoint)
 
     if self and self._pluginMouse then
         local pluginPoint = Vector2.new(self._pluginMouse.X, self._pluginMouse.Y)
@@ -421,24 +533,31 @@ end
 
 local function getCompletionKindVisual(kind)
     local key = string.lower(tostring(kind or "symbol"))
+    key = key:gsub("[%s_%-]", "")
 
-    local map = {
-        class = { text = "C", color = Color3.fromRGB(78, 201, 176) },
-        struct = { text = "S", color = Color3.fromRGB(156, 220, 254) },
-        type = { text = "T", color = Color3.fromRGB(78, 201, 176) },
-        namespace = { text = "N", color = Color3.fromRGB(201, 201, 201) },
-        enum = { text = "E", color = Color3.fromRGB(181, 206, 168) },
-        method = { text = "M", color = Color3.fromRGB(220, 220, 170) },
-        constructor = { text = "M", color = Color3.fromRGB(220, 220, 170) },
-        property = { text = "P", color = Color3.fromRGB(156, 220, 254) },
-        field = { text = "F", color = Color3.fromRGB(156, 220, 254) },
-        event = { text = "E", color = Color3.fromRGB(255, 198, 109) },
-        variable = { text = "V", color = Color3.fromRGB(214, 186, 125) },
-        service = { text = "S", color = Color3.fromRGB(134, 223, 168) },
-        keyword = { text = "K", color = Color3.fromRGB(197, 134, 192) },
+    local colors = {
+        class = Color3.fromRGB(78, 201, 176),
+        struct = Color3.fromRGB(156, 220, 254),
+        type = Color3.fromRGB(78, 201, 176),
+        namespace = Color3.fromRGB(201, 201, 201),
+        enum = Color3.fromRGB(181, 206, 168),
+        enumitem = Color3.fromRGB(181, 206, 168),
+        method = Color3.fromRGB(220, 220, 170),
+        constructor = Color3.fromRGB(220, 220, 170),
+        property = Color3.fromRGB(156, 220, 254),
+        field = Color3.fromRGB(156, 220, 254),
+        event = Color3.fromRGB(255, 198, 109),
+        variable = Color3.fromRGB(214, 186, 125),
+        localvariable = Color3.fromRGB(214, 186, 125),
+        service = Color3.fromRGB(134, 223, 168),
+        keyword = Color3.fromRGB(197, 134, 192),
     }
 
-    return map[key] or { text = "•", color = Color3.fromRGB(200, 200, 200) }
+    return {
+        image = EditorTextUtils.getCompletionKindIcon(kind),
+        text = EditorTextUtils.getHoverKindBadgeText(kind),
+        color = colors[key] or Color3.fromRGB(200, 200, 200),
+    }
 end
 
 local function clearLayerChildren(layer)
@@ -486,13 +605,46 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
     local lineStarts = buildLineStarts(source)
 
     local function isInside(pointX, pointY)
-        return pointX >= containerPos.X
-            and pointY >= containerPos.Y
-            and pointX <= (containerPos.X + containerSize.X)
-            and pointY <= (containerPos.Y + containerSize.Y)
+        return pointX >= (containerPos.X - HOVER_EDGE_TOLERANCE_PIXELS)
+            and pointY >= (containerPos.Y - HOVER_EDGE_TOLERANCE_PIXELS)
+            and pointX <= (containerPos.X + containerSize.X + HOVER_EDGE_TOLERANCE_PIXELS)
+            and pointY <= (containerPos.Y + containerSize.Y + HOVER_EDGE_TOLERANCE_PIXELS)
     end
 
     local function resolveAtPoint(pointX, pointY)
+        local minX = containerPos.X
+        local minY = containerPos.Y
+        local maxX = containerPos.X + containerSize.X
+        local maxY = containerPos.Y + containerSize.Y
+
+        if pointX < minX then
+            if (minX - pointX) <= HOVER_EDGE_TOLERANCE_PIXELS then
+                pointX = minX
+            else
+                return nil
+            end
+        elseif pointX > maxX then
+            if (pointX - maxX) <= HOVER_EDGE_TOLERANCE_PIXELS then
+                pointX = maxX
+            else
+                return nil
+            end
+        end
+
+        if pointY < minY then
+            if (minY - pointY) <= HOVER_EDGE_TOLERANCE_PIXELS then
+                pointY = minY
+            else
+                return nil
+            end
+        elseif pointY > maxY then
+            if (pointY - maxY) <= HOVER_EDGE_TOLERANCE_PIXELS then
+                pointY = maxY
+            else
+                return nil
+            end
+        end
+
         local x = (pointX - containerPos.X) + canvas.X
         local y = (pointY - containerPos.Y) + canvas.Y
 
@@ -509,10 +661,12 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
         local nextLineStart = lineStarts[line + 1]
         local lineEndExclusive = nextLineStart and (nextLineStart - 1) or (sourceLength + 1)
         local lineLength = math.max(0, lineEndExclusive - lineStart)
+        local lineText = lineLength > 0 and source:sub(lineStart, lineEndExclusive - 1) or ""
 
         local charWidth = math.max(1, self._charWidth or 8)
-        local column = math.floor((x / charWidth) + 1)
-        column = math.clamp(column, 1, lineLength + 1)
+        local column = EditorTextUtils.resolveCursorColumnFromX(lineText, x, charWidth, function(prefixText)
+            return TextService:GetTextSize(prefixText, self.options.textSize, Enum.Font.Code, Vector2.new(100000, 100000)).X
+        end)
 
         local index = lineStart + column - 1
         return math.clamp(index, 1, sourceLength + 1)
@@ -542,7 +696,7 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
     end
 
     self._lastHoverOutsideDebug = string.format(
-        "(mouse %d,%d | box %d,%d..%d,%d | inset %d,%d)",
+        "(mouse %d,%d | box %d,%d..%d,%d | inset %d,%d | tol %d)",
         math.floor(rawX),
         math.floor(rawY),
         math.floor(containerPos.X),
@@ -550,7 +704,8 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
         math.floor(containerPos.X + containerSize.X),
         math.floor(containerPos.Y + containerSize.Y),
         math.floor(insetX),
-        math.floor(insetY)
+        math.floor(insetY),
+        HOVER_EDGE_TOLERANCE_PIXELS
     )
 
     return nil
@@ -989,14 +1144,23 @@ function Editor.new(pluginObject, options)
     self._updateSelectionHighlight = updateSelectionHighlight
     updateSelectionHighlight()
 
-    table.insert(self._connections, textBox:GetPropertyChangedSignal("SelectionStart"):Connect(updateSelectionHighlight))
-    table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(updateSelectionHighlight))
+    table.insert(self._connections, textBox:GetPropertyChangedSignal("SelectionStart"):Connect(function()
+        updateSelectionHighlight()
+        self._lastSelectionStart = textBox.SelectionStart
+        self:_syncCompletionActiveCaretSnapshot()
+    end))
+    table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(function()
+        updateSelectionHighlight()
+        self._lastSelectionStart = textBox.SelectionStart
+        self:_syncCompletionActiveCaretSnapshot()
+    end))
 
     self._caretBlinkToken = 0
     self._charWidth = measureCharWidth(self.options.textSize, Enum.Font.Code)
     self._suppressTextChange = false
     self._lastText = textBox.Text
     self._lastCursorPos = textBox.CursorPosition
+    self._lastSelectionStart = textBox.SelectionStart
     self._pendingAutoIndent = nil
     self._completionRequestToken = 0
     self._hoverRequestToken = 0
@@ -1010,8 +1174,17 @@ function Editor.new(pluginObject, options)
     self._completionAnchorStart = nil
     self._completionAnchorEnd = nil
     self._completionAnchorText = nil
+    self._completionActiveCursor = nil
+    self._completionActiveSelection = nil
+    self._completionPointerInside = false
+    self._pendingCompletionAccept = nil
+    self._pendingWordDelete = nil
+    self._skipNextCompletionAcceptKey = nil
+    self._skipNextWordDeleteKey = nil
     self._refreshToken = 0
     self._deferNextSuppressedRefresh = false
+    self._ctrlModifierDown = false
+    self._altModifierDown = false
 
     local caret = Instance.new("Frame")
     caret.Name = "Caret"
@@ -1022,7 +1195,7 @@ function Editor.new(pluginObject, options)
     caret.Parent = codeContainer
     self.caret = caret
 
-    local completionFrame = Instance.new("Frame")
+    local completionFrame = Instance.new("ScrollingFrame")
     completionFrame.Name = "Completions"
     completionFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
     completionFrame.BorderSizePixel = 0
@@ -1030,6 +1203,11 @@ function Editor.new(pluginObject, options)
     completionFrame.Size = UDim2.new(0, 240, 0, 0)
     completionFrame.Visible = false
     completionFrame.ZIndex = 20
+    completionFrame.ScrollBarThickness = 6
+    completionFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+    completionFrame.ScrollingEnabled = true
+    completionFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    completionFrame.CanvasPosition = Vector2.new(0, 0)
     completionFrame.Parent = root
     self.completionFrame = completionFrame
 
@@ -1049,16 +1227,14 @@ function Editor.new(pluginObject, options)
     completionInfoFrame.Parent = root
     self.completionInfoFrame = completionInfoFrame
 
-    local completionInfoIcon = Instance.new("TextLabel")
+    local completionInfoIcon = Instance.new("ImageLabel")
     completionInfoIcon.Name = "Icon"
     completionInfoIcon.Size = UDim2.new(0, 24, 0, 24)
     completionInfoIcon.Position = UDim2.new(0, 8, 0, 8)
     completionInfoIcon.BackgroundColor3 = Color3.fromRGB(66, 66, 66)
     completionInfoIcon.BorderSizePixel = 0
-    completionInfoIcon.Font = Enum.Font.SourceSansBold
-    completionInfoIcon.TextSize = 14
-    completionInfoIcon.TextColor3 = Color3.fromRGB(230, 230, 230)
-    completionInfoIcon.Text = "•"
+    completionInfoIcon.Image = EditorTextUtils.getCompletionKindIcon("class")
+    completionInfoIcon.ScaleType = Enum.ScaleType.Fit
     completionInfoIcon.ZIndex = completionInfoFrame.ZIndex + 1
     completionInfoIcon.Parent = completionInfoFrame
     self.completionInfoIcon = completionInfoIcon
@@ -1122,11 +1298,17 @@ function Editor.new(pluginObject, options)
     self.hoverInfoText = hoverInfoText
 
     table.insert(self._connections, textBox:GetPropertyChangedSignal("Text"):Connect(function()
+        self._lastTypedAt = os.clock()
+
+        local pendingCompletionAccept = self._pendingCompletionAccept
+        local pendingWordDelete = self._pendingWordDelete
+
         if self._suppressTextChange then
             self._suppressTextChange = false
             self._pendingAutoIndent = nil
             self._lastText = textBox.Text
             self._lastCursorPos = textBox.CursorPosition
+            self._lastSelectionStart = textBox.SelectionStart
 
             local deferRefresh = self._deferNextSuppressedRefresh
             self._deferNextSuppressedRefresh = false
@@ -1145,8 +1327,156 @@ function Editor.new(pluginObject, options)
             return
         end
 
+        if type(pendingWordDelete) == "table" then
+            local age = os.clock() - (tonumber(pendingWordDelete.createdAt) or 0)
+            if age > 0 and age <= 0.6 and textBox.Text ~= tostring(pendingWordDelete.beforeText or "") then
+                local beforeText = tostring(pendingWordDelete.beforeText or "")
+                local beforeCursor = tonumber(pendingWordDelete.beforeCursor)
+                local beforeSelection = tonumber(pendingWordDelete.beforeSelection)
+                local _fixStartPos, fixRemovedText, fixInsertedText = findSingleSplice(beforeText, textBox.Text)
+                local hadSelection = beforeSelection ~= nil and beforeSelection ~= -1 and beforeCursor ~= nil and beforeSelection ~= beforeCursor
+                local shouldRepairWordDelete = EditorTextUtils.shouldRepairWordDelete(
+                    pendingWordDelete.keyCode,
+                    hadSelection,
+                    fixRemovedText,
+                    fixInsertedText,
+                    pendingWordDelete.shortcutDetected == true
+                )
+
+                if shouldRepairWordDelete then
+                    local expectedText, expectedCursor, expectedSelection, changed
+                    if pendingWordDelete.keyCode == Enum.KeyCode.Backspace then
+                        expectedText, expectedCursor, expectedSelection, changed = EditorTextUtils.computeCtrlBackspaceEdit(beforeText, beforeCursor, beforeSelection)
+                    else
+                        expectedText, expectedCursor, expectedSelection, changed = EditorTextUtils.computeCtrlDeleteEdit(beforeText, beforeCursor, beforeSelection)
+                    end
+
+                    if changed and (textBox.Text ~= expectedText or textBox.CursorPosition ~= expectedCursor or textBox.SelectionStart ~= expectedSelection) then
+                        self._pendingWordDelete = nil
+                        self._pendingAutoIndent = nil
+                        self._suppressTextChange = true
+                        textBox.Text = expectedText
+                        textBox.CursorPosition = expectedCursor
+                        textBox.SelectionStart = expectedSelection
+                        setKeyDebug(self, string.format("WordFix repair key=%s", tostring(pendingWordDelete.keyCode)))
+                        return
+                    end
+                end
+            elseif age > 0.6 then
+                self._pendingWordDelete = nil
+            end
+        end
+
         local prevText = self._lastText or ""
         local prevCursor = self._lastCursorPos
+        local prevSelection = self._lastSelectionStart
+
+        local completionVisibleNow = self.completionFrame and self.completionFrame.Visible
+        local completionCandidatesNow = type(self._visibleCompletions) == "table" and #self._visibleCompletions > 0
+        if (completionVisibleNow or completionCandidatesNow) and prevText ~= textBox.Text then
+            local _acceptStartPos, _acceptRemovedText, acceptInsertedText = findSingleSplice(prevText, textBox.Text)
+            local isEnterInsert = acceptInsertedText == "\n"
+            local isTabInsert = acceptInsertedText == "\t" or acceptInsertedText == self.options.tabText
+
+            if isEnterInsert or isTabInsert then
+                local label = self:_getFirstCompletionLabel()
+                if type(label) == "string" and label ~= "" then
+                    local baseText = self._completionAnchorText
+                    if type(baseText) ~= "string" then
+                        baseText = prevText
+                    end
+
+                    local targetCursor = self._completionAnchorEnd
+                    if type(targetCursor) ~= "number" then
+                        targetCursor = self._completionActiveCursor
+                    end
+                    if type(targetCursor) ~= "number" then
+                        targetCursor = prevCursor
+                    end
+
+                    local targetSelection = self._completionActiveSelection
+                    if type(targetSelection) ~= "number" then
+                        targetSelection = targetCursor
+                    end
+
+                    self._pendingCompletionAccept = nil
+                    self._pendingAutoIndent = nil
+                    self._suppressTextChange = true
+                    textBox.Text = baseText
+
+                    if type(targetCursor) == "number" then
+                        textBox.CursorPosition = targetCursor
+                    end
+
+                    if type(targetSelection) == "number" then
+                        textBox.SelectionStart = targetSelection
+                    end
+
+                    local insertedDebug = isEnterInsert and "\\n" or "\\t"
+                    setKeyDebug(self, string.format("TextFix accept insert=%s label=%s cursor=%s", insertedDebug, tostring(label), tostring(targetCursor)))
+                    self:_applyCompletion(label, targetCursor)
+                    self:hideCompletions()
+                    self:focus()
+                    return
+                end
+            end
+        end
+
+        if type(pendingCompletionAccept) == "table" then
+            local age = os.clock() - (tonumber(pendingCompletionAccept.createdAt) or 0)
+            if age > 0 and age <= 0.6 and textBox.Text ~= tostring(pendingCompletionAccept.beforeText or "") then
+                local baseText = self._completionAnchorText
+                if type(baseText) ~= "string" then
+                    baseText = tostring(pendingCompletionAccept.beforeText or "")
+                end
+                local _sPos, _removedText, insertedText = findSingleSplice(baseText, textBox.Text)
+                local keyCode = pendingCompletionAccept.keyCode
+                local looksLikeTabInsert = keyCode == Enum.KeyCode.Tab and (insertedText == "\t" or insertedText == self.options.tabText)
+                local looksLikeEnterInsert = (keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter) and insertedText == "\n"
+                local shouldForceAccept = looksLikeTabInsert or looksLikeEnterInsert
+
+                local label = pendingCompletionAccept.label
+                if shouldForceAccept and type(label) == "string" and label ~= "" then
+                    self._pendingCompletionAccept = nil
+                    self._pendingAutoIndent = nil
+                    self._suppressTextChange = true
+                    textBox.Text = baseText
+
+                    local targetCursor = self._completionAnchorEnd
+                    if type(targetCursor) ~= "number" then
+                        targetCursor = pendingCompletionAccept.activeCursor
+                    end
+                    if type(targetCursor) ~= "number" then
+                        targetCursor = pendingCompletionAccept.beforeCursor
+                    end
+                    if type(targetCursor) == "number" then
+                        textBox.CursorPosition = targetCursor
+                    end
+
+                    local targetSelection = self._completionActiveSelection
+                    if type(targetSelection) ~= "number" then
+                        targetSelection = pendingCompletionAccept.activeSelection
+                    end
+                    if type(targetSelection) ~= "number" then
+                        targetSelection = pendingCompletionAccept.beforeSelection
+                    end
+                    if type(targetSelection) ~= "number" then
+                        targetSelection = targetCursor
+                    end
+                    if type(targetSelection) == "number" then
+                        textBox.SelectionStart = targetSelection
+                    end
+
+                    setKeyDebug(self, string.format("KeyFix fallback-accept key=%s label=%s cursor=%s", tostring(keyCode), tostring(label), tostring(targetCursor)))
+                    self:_applyCompletion(label, targetCursor)
+                    self:hideCompletions()
+                    self:focus()
+                    return
+                end
+            elseif age > 0.6 then
+                self._pendingCompletionAccept = nil
+            end
+        end
 
         local skipEditorTransforms = self._skipEditorTransformsOnce == true
         if skipEditorTransforms then
@@ -1189,6 +1519,7 @@ function Editor.new(pluginObject, options)
         if not pendingIndent then
             self._lastText = textBox.Text
             self._lastCursorPos = textBox.CursorPosition
+            self._lastSelectionStart = textBox.SelectionStart
         end
 
         refresh(self)
@@ -1268,14 +1599,17 @@ function Editor.new(pluginObject, options)
 
                     self._lastText = textBox.Text
                     self._lastCursorPos = textBox.CursorPosition
+            self._lastSelectionStart = textBox.SelectionStart
                 end
             else
                 self._pendingAutoIndent = nil
                 self._lastText = textBox.Text
                 self._lastCursorPos = textBox.CursorPosition
+            self._lastSelectionStart = textBox.SelectionStart
             end
         elseif not self._pendingAutoIndent then
             self._lastCursorPos = textBox.CursorPosition
+            self._lastSelectionStart = textBox.SelectionStart
         end
 
         updateStatus(self)
@@ -1295,6 +1629,130 @@ function Editor.new(pluginObject, options)
         stopCaretBlink(self)
     end))
 
+    self._completionAcceptActionName = COMPLETION_ACCEPT_ACTION_NAME
+    ContextActionService:UnbindAction(self._completionAcceptActionName)
+    ContextActionService:BindActionAtPriority(self._completionAcceptActionName, function(_actionName, inputState, inputObject)
+        if inputState ~= Enum.UserInputState.Begin then
+            return Enum.ContextActionResult.Pass
+        end
+
+        if not self.textBox or not self.textBox.Parent then
+            return Enum.ContextActionResult.Pass
+        end
+
+        local keyCode = inputObject and inputObject.KeyCode or nil
+        local isCompletionAcceptKey = keyCode == Enum.KeyCode.Tab or keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter
+        local ctrlDown = resolveCtrlModifierDown(self, inputObject)
+        local altDown = resolveAltModifierDown(self, inputObject)
+        local isWordDeleteShortcut = EditorTextUtils.isWordDeleteShortcut(keyCode, ctrlDown, altDown)
+
+        if not isCompletionAcceptKey and not isWordDeleteShortcut then
+            return Enum.ContextActionResult.Pass
+        end
+
+        self:hideHoverInfo()
+
+        if isWordDeleteShortcut then
+            if not self.textBox:IsFocused() then
+                return Enum.ContextActionResult.Pass
+            end
+
+            local beforeText = self.textBox.Text
+            local beforeCursor = self.textBox.CursorPosition
+            local beforeSelection = self.textBox.SelectionStart
+
+            local nextText, nextCursor, nextSelection, changed
+            if keyCode == Enum.KeyCode.Backspace then
+                nextText, nextCursor, nextSelection, changed = EditorTextUtils.computeCtrlBackspaceEdit(beforeText, beforeCursor, beforeSelection)
+            else
+                nextText, nextCursor, nextSelection, changed = EditorTextUtils.computeCtrlDeleteEdit(beforeText, beforeCursor, beforeSelection)
+            end
+
+            if changed then
+                self._pendingAutoIndent = nil
+
+                if self.textBox.Text ~= nextText then
+                    self._suppressTextChange = true
+                    self.textBox.Text = nextText
+                end
+
+                if self.textBox.CursorPosition ~= nextCursor then
+                    self.textBox.CursorPosition = nextCursor
+                end
+
+                if self.textBox.SelectionStart ~= nextSelection then
+                    self.textBox.SelectionStart = nextSelection
+                end
+            end
+
+            self._skipNextWordDeleteKey = keyCode
+            setKeyDebug(self, string.format("KeyCAS word-delete key=%s ctrl=%s alt=%s changed=%s", tostring(keyCode), tostring(ctrlDown), tostring(altDown), tostring(changed)))
+            return Enum.ContextActionResult.Sink
+        end
+
+        local completionVisible = self.completionFrame and self.completionFrame.Visible
+        local completionCount = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
+        local shouldConsumeCompletion = EditorTextUtils.shouldConsumeCompletionAcceptInput(keyCode, completionVisible, completionCount)
+
+        setKeyDebug(self, string.format("KeyCAS key=%s focus=%s vis=%s cnt=%d consume=%s", tostring(keyCode), tostring(self.textBox:IsFocused()), tostring(completionVisible), completionCount, tostring(shouldConsumeCompletion)))
+
+        if not self.textBox:IsFocused() and not shouldConsumeCompletion then
+            return Enum.ContextActionResult.Pass
+        end
+
+        if keyCode == Enum.KeyCode.Tab and not completionVisible and completionCount == 0 and self.options.intellisenseEnabled ~= false and self.onRequestCompletions then
+            local cursorPos = self.textBox.CursorPosition
+            if type(cursorPos) ~= "number" or cursorPos < 1 then
+                cursorPos = #self.textBox.Text + 1
+            end
+
+            local before = self.textBox.Text:sub(1, math.max(0, cursorPos - 1))
+            local canRequest = before:match("[%a_][%w_]*$") or before:match("%.[%a_][%w_]*$") or before:match("%.$")
+            if canRequest then
+                local requestedCompletions = self.onRequestCompletions()
+                completionVisible = self.completionFrame and self.completionFrame.Visible
+                completionCount = (type(requestedCompletions) == "table" and #requestedCompletions or 0)
+                if completionCount == 0 then
+                    completionCount = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
+                end
+            end
+        end
+
+        if EditorTextUtils.shouldConsumeCompletionAcceptInput(keyCode, completionVisible, completionCount) then
+            if self:_acceptActiveCompletionFromKeyboard() then
+                setKeyDebug(self, string.format("KeyCAS accept key=%s", tostring(keyCode)))
+                self._skipNextCompletionAcceptKey = keyCode
+                self._pendingCompletionAccept = nil
+                return Enum.ContextActionResult.Sink
+            end
+
+            local pendingLabel = self:_getFirstCompletionLabel()
+            self._pendingCompletionAccept = {
+                keyCode = keyCode,
+                createdAt = os.clock(),
+                beforeText = self.textBox.Text,
+                beforeCursor = self.textBox.CursorPosition,
+                beforeSelection = self.textBox.SelectionStart,
+                activeCursor = self._completionActiveCursor,
+                activeSelection = self._completionActiveSelection,
+                label = pendingLabel,
+            }
+            setKeyDebug(self, string.format("KeyCAS pending key=%s label=%s", tostring(keyCode), tostring(pendingLabel)))
+            return Enum.ContextActionResult.Pass
+        end
+
+        if keyCode == Enum.KeyCode.Tab then
+            insertAtCursor(self.textBox, self.options.tabText)
+            self:hideCompletions()
+            updateCaretPosition(self)
+            self.textBox:CaptureFocus()
+            self._skipNextCompletionAcceptKey = keyCode
+            return Enum.ContextActionResult.Sink
+        end
+
+        return Enum.ContextActionResult.Pass
+    end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Tab, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.Delete, Enum.KeyCode.Backspace)
+
     table.insert(self._connections, UserInputService.InputChanged:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseMovement then
             return
@@ -1313,21 +1771,35 @@ function Editor.new(pluginObject, options)
             return
         end
 
-        local screenPosition = rememberMousePosition(self, input.Position)
-        if not screenPosition then
-            setHoverDebug(self, "Hover: waiting mouse")
+        local suppressHover = EditorTextUtils.shouldSuppressHoverInfo(
+            self.completionFrame and self.completionFrame.Visible,
+            self._lastTypedAt,
+            os.clock(),
+            HOVER_TYPING_SUPPRESS_SECONDS
+        )
+        if suppressHover then
             self:hideHoverInfo()
             return
         end
 
-        local cursorPos = cursorPositionFromScreenPoint(self, screenPosition)
-        if not cursorPos then
+        local rawInputPosition = input.Position
+        if isValidMousePoint(rawInputPosition) then
+            self._lastInputMousePosition = Vector2.new(rawInputPosition.X, rawInputPosition.Y)
+            rememberMousePosition(self, rawInputPosition)
+        end
+
+        local cursorPos, screenPosition, sampleSource = resolveHoverCursorFromCaret(self)
+        if not cursorPos or not screenPosition then
+            cursorPos, screenPosition, sampleSource = resolveHoverCursorFromCandidates(self)
+        end
+
+        if not cursorPos or not screenPosition then
             setHoverDebug(self, formatOutsideEditorDebug(self))
             self:hideHoverInfo()
             return
         end
 
-        setHoverDebug(self, string.format("Hover: probing @%d", cursorPos))
+        setHoverDebug(self, string.format("Hover: sample src=%s mouse=%s -> cursor=%d", tostring(sampleSource or "?"), formatDebugPoint(screenPosition), cursorPos))
 
         self._hoverRequestToken = (self._hoverRequestToken or 0) + 1
         local token = self._hoverRequestToken
@@ -1337,6 +1809,7 @@ function Editor.new(pluginObject, options)
             anchorPos = screenPosition,
             sampledAt = os.clock(),
             requestToken = token,
+            source = sampleSource,
         }
 
         task.delay(HOVER_REQUEST_DELAY_SECONDS, function()
@@ -1349,6 +1822,17 @@ function Editor.new(pluginObject, options)
                 return
             end
 
+            local suppressHover = EditorTextUtils.shouldSuppressHoverInfo(
+                self.completionFrame and self.completionFrame.Visible,
+                self._lastTypedAt,
+                os.clock(),
+                HOVER_TYPING_SUPPRESS_SECONDS
+            )
+            if suppressHover then
+                self:hideHoverInfo()
+                return
+            end
+
             local latestCursorPos = nil
             local latestAnchorPos = nil
             local latestSource = nil
@@ -1357,29 +1841,33 @@ function Editor.new(pluginObject, options)
             if type(latestSample) == "table" and latestSample.requestToken == token and type(latestSample.cursorPos) == "number" then
                 latestCursorPos = latestSample.cursorPos
                 latestAnchorPos = latestSample.anchorPos
-                latestSource = "mouse-sample"
+                latestSource = tostring(latestSample.source or "mouse-sample")
             end
 
             if not latestCursorPos then
-                latestCursorPos, latestAnchorPos, latestSource = resolveHoverCursorFromCandidates(self)
+                latestCursorPos, latestAnchorPos, latestSource = resolveHoverCursorFromCaret(self)
+                if not latestCursorPos then
+                    latestCursorPos, latestAnchorPos, latestSource = resolveHoverCursorFromCandidates(self)
+                end
             end
 
             if not latestCursorPos then
-                setHoverDebug(self, "Hover: waiting mouse")
+                setHoverDebug(self, formatOutsideEditorDebug(self))
                 self:hideHoverInfo()
                 return
             end
 
-            setHoverDebug(self, string.format("Hover: probing @%d (%s)", latestCursorPos, tostring(latestSource or "mouse")))
+            setHoverDebug(self, string.format("Hover: request cursor=%d src=%s anchor=%s", latestCursorPos, tostring(latestSource or "mouse"), formatDebugPoint(latestAnchorPos)))
 
             self._lastHoverProbeAt = os.clock()
             self._lastHoverProbeSource = "mouse"
 
             local info = self.onRequestHoverInfo and self.onRequestHoverInfo(latestCursorPos)
             if type(info) == "table" then
+                setHoverDebug(self, string.format("Hover: hit label=%s kind=%s cursor=%d", tostring(info.label or "?"), tostring(info.kind or "?"), latestCursorPos))
                 self:_showHoverInfo(info, latestAnchorPos or getHoverAnchorScreenPosition(self))
             else
-                setHoverDebug(self, string.format("Hover: miss @%d", latestCursorPos))
+                setHoverDebug(self, string.format("Hover: miss cursor=%d src=%s", latestCursorPos, tostring(latestSource or "mouse")))
                 self:hideHoverInfo()
             end
         end)
@@ -1396,6 +1884,18 @@ function Editor.new(pluginObject, options)
         end
 
         local now = os.clock()
+
+        local suppressHover = EditorTextUtils.shouldSuppressHoverInfo(
+            self.completionFrame and self.completionFrame.Visible,
+            self._lastTypedAt,
+            now,
+            HOVER_TYPING_SUPPRESS_SECONDS,
+            self.textBox and self.textBox:IsFocused()
+        )
+        if suppressHover then
+            self:hideHoverInfo()
+            return
+        end
         if now < (self._nextHoverPollAt or 0) then
             return
         end
@@ -1425,31 +1925,43 @@ function Editor.new(pluginObject, options)
             anchorPos = latestSample.anchorPos
             sourceLabel = "mouse-sample"
         else
-            cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCandidates(self)
+            cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCaret(self)
+            if not cursorPos then
+                cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCandidates(self)
+            end
         end
 
         if not cursorPos then
-            setHoverDebug(self, "Hover: waiting mouse")
+            setHoverDebug(self, formatOutsideEditorDebug(self))
             self:hideHoverInfo()
             return
         end
 
-        setHoverDebug(self, string.format("Hover: probing @%d (%s)", cursorPos, tostring(sourceLabel or "mouse")))
+        setHoverDebug(self, string.format("Hover: poll cursor=%d src=%s anchor=%s", cursorPos, tostring(sourceLabel or "mouse"), formatDebugPoint(anchorPos)))
 
         self._lastHoverProbeAt = now
         self._lastHoverProbeSource = "poll"
 
         local info = self.onRequestHoverInfo(cursorPos)
         if type(info) == "table" then
+            setHoverDebug(self, string.format("Hover: poll-hit label=%s kind=%s cursor=%d", tostring(info.label or "?"), tostring(info.kind or "?"), cursorPos))
             self:_showHoverInfo(info, anchorPos or getHoverAnchorScreenPosition(self))
         else
-            setHoverDebug(self, string.format("Hover: miss @%d", cursorPos))
+            setHoverDebug(self, string.format("Hover: poll-miss cursor=%d src=%s", cursorPos, tostring(sourceLabel or "mouse")))
             self:hideHoverInfo()
         end
     end))
 
     table.insert(self._connections, UserInputService.InputBegan:Connect(function(input, _gameProcessed)
+        updateModifierCache(self, input.KeyCode, true)
+
         local completionVisibleNow = self.completionFrame and self.completionFrame.Visible
+        local completionCountNow = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
+
+        if input.KeyCode == Enum.KeyCode.Tab or input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
+            setKeyDebug(self, string.format("KeyIB key=%s focus=%s vis=%s cnt=%d", tostring(input.KeyCode), tostring(textBox:IsFocused()), tostring(completionVisibleNow), completionCountNow))
+        end
+
         if not textBox:IsFocused() then
             local isCompletionAcceptKey = input.KeyCode == Enum.KeyCode.Tab or input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter
             if not completionVisibleNow or not isCompletionAcceptKey then
@@ -1459,8 +1971,26 @@ function Editor.new(pluginObject, options)
 
         self:hideHoverInfo()
 
-        local ctrlDown = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
-        local altDown = UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt) or UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)
+        if input.KeyCode == Enum.KeyCode.Tab or input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
+            if self._skipNextCompletionAcceptKey == input.KeyCode then
+                self._skipNextCompletionAcceptKey = nil
+                return
+            end
+        end
+
+        local ctrlDown = resolveCtrlModifierDown(self, input)
+        local altDown = resolveAltModifierDown(self, input)
+
+        if input.KeyCode == Enum.KeyCode.Backspace or input.KeyCode == Enum.KeyCode.Delete then
+            self._pendingWordDelete = {
+                keyCode = input.KeyCode,
+                createdAt = os.clock(),
+                beforeText = textBox.Text,
+                beforeCursor = textBox.CursorPosition,
+                beforeSelection = textBox.SelectionStart,
+                shortcutDetected = EditorTextUtils.isWordDeleteShortcut(input.KeyCode, ctrlDown, altDown),
+            }
+        end
 
         if EditorTextUtils.isUndoRedoShortcut(input.KeyCode, ctrlDown, altDown) then
             self._skipEditorTransformsOnce = true
@@ -1471,8 +2001,54 @@ function Editor.new(pluginObject, options)
                 if self.textBox and self.textBox.Parent then
                     self._lastText = self.textBox.Text
                     self._lastCursorPos = self.textBox.CursorPosition
+                    self._lastSelectionStart = self.textBox.SelectionStart
                     updateStatus(self)
                     updateCaretPosition(self)
+                end
+            end)
+            return
+        end
+
+        local isWordDeleteShortcut = EditorTextUtils.isWordDeleteShortcut(input.KeyCode, ctrlDown, altDown)
+        if isWordDeleteShortcut and self._skipNextWordDeleteKey == input.KeyCode then
+            self._skipNextWordDeleteKey = nil
+            return
+        end
+
+        if isWordDeleteShortcut then
+            local beforeText = textBox.Text
+            local beforeCursor = textBox.CursorPosition
+            local beforeSelection = textBox.SelectionStart
+
+            task.defer(function()
+                if not self.textBox or not self.textBox.Parent or not self.textBox:IsFocused() then
+                    return
+                end
+
+                local nextText, nextCursor, nextSelection, changed
+                if input.KeyCode == Enum.KeyCode.Backspace then
+                    nextText, nextCursor, nextSelection, changed = EditorTextUtils.computeCtrlBackspaceEdit(beforeText, beforeCursor, beforeSelection)
+                else
+                    nextText, nextCursor, nextSelection, changed = EditorTextUtils.computeCtrlDeleteEdit(beforeText, beforeCursor, beforeSelection)
+                end
+
+                if changed then
+                    self._pendingAutoIndent = nil
+
+                    if self.textBox.Text ~= nextText then
+                        self._suppressTextChange = true
+                        self.textBox.Text = nextText
+                    end
+
+                    if self.textBox.CursorPosition ~= nextCursor then
+                        self.textBox.CursorPosition = nextCursor
+                    end
+
+                    if self.textBox.SelectionStart ~= nextSelection then
+                        self.textBox.SelectionStart = nextSelection
+                    end
+
+                    setKeyDebug(self, string.format("KeyIB word-delete fallback key=%s", tostring(input.KeyCode)))
                 end
             end)
             return
@@ -1501,6 +2077,35 @@ function Editor.new(pluginObject, options)
             end
         end
 
+        if input.KeyCode == Enum.KeyCode.Down or input.KeyCode == Enum.KeyCode.Up then
+            local completionVisible = self.completionFrame and self.completionFrame.Visible
+            local completionCount = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
+            if completionVisible and completionCount > 0 then
+                local direction = input.KeyCode == Enum.KeyCode.Down and 1 or -1
+                local nextIndex = EditorTextUtils.resolveNextCompletionIndex(self._activeCompletionIndex, completionCount, direction)
+                self:_setActiveCompletionIndex(nextIndex)
+                self:_showActiveCompletionInfo()
+
+                local activeCursor = self._completionActiveCursor
+                local activeSelection = self._completionActiveSelection
+
+                task.defer(function()
+                    if not self.textBox or not self.textBox.Parent then
+                        return
+                    end
+
+                    if type(activeCursor) == "number" and self.textBox.CursorPosition ~= activeCursor then
+                        self.textBox.CursorPosition = activeCursor
+                    end
+
+                    if type(activeSelection) == "number" and self.textBox.SelectionStart ~= activeSelection then
+                        self.textBox.SelectionStart = activeSelection
+                    end
+                end)
+                return
+            end
+        end
+
         if input.KeyCode == Enum.KeyCode.Tab then
             local completionVisible = self.completionFrame and self.completionFrame.Visible
             local completionCandidates = self._visibleCompletions and #self._visibleCompletions > 0
@@ -1522,36 +2127,24 @@ function Editor.new(pluginObject, options)
             end
 
             if completionVisible or completionCandidates then
-                local label = EditorTextUtils.resolveCompletionLabel(requestedCompletions, self._activeCompletionIndex) or self:_getFirstCompletionLabel()
-                if label then
-                    local beforeText = textBox.Text
-                    local beforeCursor = textBox.CursorPosition
-                    local beforeSelection = textBox.SelectionStart
-
-                    task.defer(function()
-                        if self.textBox and self.textBox.Parent then
-                            if self.textBox.Text ~= beforeText then
-                                self._pendingAutoIndent = nil
-                                self._suppressTextChange = true
-                                self.textBox.Text = beforeText
-                            end
-
-                            if self.textBox.CursorPosition ~= beforeCursor then
-                                self.textBox.CursorPosition = beforeCursor
-                            end
-
-                            if self.textBox.SelectionStart ~= beforeSelection then
-                                self.textBox.SelectionStart = beforeSelection
-                            end
-
-                            self:_applyCompletion(label)
-                            self:hideCompletions()
-                            self:focus()
-                        end
-                    end)
+                if self:_acceptActiveCompletionFromKeyboard() then
+                    setKeyDebug(self, "KeyIB tab-accept")
+                    self._pendingCompletionAccept = nil
                     return
                 end
-                return
+
+                local pendingLabel = self:_getFirstCompletionLabel()
+                self._pendingCompletionAccept = {
+                    keyCode = input.KeyCode,
+                    createdAt = os.clock(),
+                    beforeText = textBox.Text,
+                    beforeCursor = textBox.CursorPosition,
+                    beforeSelection = textBox.SelectionStart,
+                    activeCursor = self._completionActiveCursor,
+                    activeSelection = self._completionActiveSelection,
+                    label = pendingLabel,
+                }
+                setKeyDebug(self, string.format("KeyIB tab-pending label=%s", tostring(pendingLabel)))
             end
 
             insertAtCursor(textBox, self.options.tabText)
@@ -1563,65 +2156,25 @@ function Editor.new(pluginObject, options)
             local completionCandidates = self._visibleCompletions and #self._visibleCompletions > 0
 
             if completionVisible or completionCandidates then
-                local label = self:_getFirstCompletionLabel()
-                if label then
-                    local beforeText = textBox.Text
-                    local beforeCursor = textBox.CursorPosition
-                    local beforeSelection = textBox.SelectionStart
-
-                    task.defer(function()
-                        if self.textBox and self.textBox.Parent then
-                            if self.textBox.Text ~= beforeText then
-                                self._pendingAutoIndent = nil
-                                self._suppressTextChange = true
-                                self.textBox.Text = beforeText
-                            end
-
-                            if self.textBox.CursorPosition ~= beforeCursor then
-                                self.textBox.CursorPosition = beforeCursor
-                            end
-
-                            if self.textBox.SelectionStart ~= beforeSelection then
-                                self.textBox.SelectionStart = beforeSelection
-                            end
-
-                            self:_applyCompletion(label)
-                            self:hideCompletions()
-                            self:focus()
-                        end
-                    end)
+                if self:_acceptActiveCompletionFromKeyboard() then
+                    setKeyDebug(self, "KeyIB enter-accept")
+                    self._pendingCompletionAccept = nil
                     return
                 end
+
+                local pendingLabel = self:_getFirstCompletionLabel()
+                self._pendingCompletionAccept = {
+                    keyCode = input.KeyCode,
+                    createdAt = os.clock(),
+                    beforeText = textBox.Text,
+                    beforeCursor = textBox.CursorPosition,
+                    beforeSelection = textBox.SelectionStart,
+                    activeCursor = self._completionActiveCursor,
+                    activeSelection = self._completionActiveSelection,
+                    label = pendingLabel,
+                }
+                setKeyDebug(self, string.format("KeyIB enter-pending label=%s", tostring(pendingLabel)))
             end
-        elseif input.KeyCode == Enum.KeyCode.Delete and (ctrlDown or altDown) then
-            local beforeText = textBox.Text
-            local beforeCursor = textBox.CursorPosition
-            local beforeSelection = textBox.SelectionStart
-
-            task.defer(function()
-                if not self.textBox or not self.textBox.Parent or not self.textBox:IsFocused() then
-                    return
-                end
-
-                local nextText, nextCursor, nextSelection, changed = EditorTextUtils.computeCtrlDeleteEdit(beforeText, beforeCursor, beforeSelection)
-
-                if changed then
-                    self._pendingAutoIndent = nil
-
-                    if self.textBox.Text ~= nextText then
-                        self._suppressTextChange = true
-                        self.textBox.Text = nextText
-                    end
-
-                    if self.textBox.CursorPosition ~= nextCursor then
-                        self.textBox.CursorPosition = nextCursor
-                    end
-
-                    if self.textBox.SelectionStart ~= nextSelection then
-                        self.textBox.SelectionStart = nextSelection
-                    end
-                end
-            end)
         elseif input.KeyCode == Enum.KeyCode.F1 then
             requestCompletions(false)
         elseif input.KeyCode == Enum.KeyCode.Period and ctrlDown then
@@ -1629,6 +2182,10 @@ function Editor.new(pluginObject, options)
         elseif input.KeyCode == Enum.KeyCode.Space and ctrlDown then
             requestCompletions(true)
         end
+    end))
+
+    table.insert(self._connections, UserInputService.InputEnded:Connect(function(input)
+        updateModifierCache(self, input.KeyCode, false)
     end))
 
     table.insert(self._connections, widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
@@ -1684,6 +2241,11 @@ end
 
 function Editor:setOnRequestHoverInfo(callback)
     self.onRequestHoverInfo = callback
+    if callback then
+        setHoverDebug(self, "Hover: provider attached")
+    else
+        setHoverDebug(self, "Hover: provider cleared")
+    end
 end
 
 function Editor:hideHoverInfo()
@@ -1696,6 +2258,18 @@ end
 
 function Editor:_showHoverInfo(info, screenPosition)
     if not self.hoverInfoFrame or not self.hoverInfoIcon or not self.hoverInfoText or not self.root then
+        return
+    end
+
+    local suppressHover = EditorTextUtils.shouldSuppressHoverInfo(
+        self.completionFrame and self.completionFrame.Visible,
+        self._lastTypedAt,
+        os.clock(),
+        HOVER_TYPING_SUPPRESS_SECONDS,
+        self.textBox and self.textBox:IsFocused()
+    )
+    if suppressHover then
+        self.hoverInfoFrame.Visible = false
         return
     end
 
@@ -1748,6 +2322,9 @@ function Editor:hideCompletions()
     self._completionAnchorStart = nil
     self._completionAnchorEnd = nil
     self._completionAnchorText = nil
+    self._completionActiveCursor = nil
+    self._completionActiveSelection = nil
+    self._completionPointerInside = false
     self._visibleCompletions = nil
 
     if self.completionInfoFrame then
@@ -1772,6 +2349,11 @@ function Editor:hideCompletions()
     end
 
     self.completionFrame.Size = UDim2.new(0, 240, 0, 0)
+
+    if self.completionFrame:IsA("ScrollingFrame") then
+        self.completionFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+        self.completionFrame.CanvasPosition = Vector2.new(0, 0)
+    end
 end
 
 function Editor:_getFirstCompletionLabel()
@@ -1825,6 +2407,74 @@ function Editor:_setActiveCompletionIndex(index)
             end
         end
     end
+
+    if not self._activeCompletionIndex then
+        return
+    end
+
+    if self.completionFrame and self.completionFrame:IsA("ScrollingFrame") then
+        local row = self._completionRows[self._activeCompletionIndex]
+        if row and row.Parent then
+            local frame = self.completionFrame
+            local framePosY = frame.AbsolutePosition.Y
+            local rowPosY = row.AbsolutePosition.Y
+            local currentScrollY = frame.CanvasPosition.Y
+
+            local rowTop = currentScrollY + (rowPosY - framePosY)
+            local rowBottom = rowTop + row.AbsoluteSize.Y
+
+            local viewportTop = currentScrollY
+            local viewportBottom = viewportTop + frame.AbsoluteSize.Y
+
+            local targetScrollY = currentScrollY
+            if rowTop < viewportTop then
+                targetScrollY = rowTop
+            elseif rowBottom > viewportBottom then
+                targetScrollY = rowBottom - frame.AbsoluteSize.Y
+            end
+
+            local maxCanvasY = math.max(0, frame.CanvasSize.Y.Offset - frame.AbsoluteSize.Y)
+            targetScrollY = math.clamp(targetScrollY, 0, maxCanvasY)
+
+            if targetScrollY ~= currentScrollY then
+                frame.CanvasPosition = Vector2.new(0, targetScrollY)
+            end
+        end
+    end
+end
+
+function Editor:_getActiveCompletionEntry()
+    local items = self._visibleCompletions
+    if type(items) ~= "table" then
+        return nil, nil, nil
+    end
+
+    local index = self._activeCompletionIndex
+    if type(index) ~= "number" then
+        return nil, nil, nil
+    end
+
+    index = math.floor(index)
+    if index < 1 then
+        return nil, nil, nil
+    end
+
+    local item = items[index]
+    if not item then
+        return nil, nil, nil
+    end
+
+    local rowButton = self._completionRows and self._completionRows[index] or nil
+    return item, rowButton, index
+end
+
+function Editor:_showActiveCompletionInfo()
+    local item, rowButton = self:_getActiveCompletionEntry()
+    if item and rowButton then
+        self:_showCompletionInfo(item, rowButton)
+    elseif self.completionInfoFrame then
+        self.completionInfoFrame.Visible = false
+    end
 end
 
 function Editor:_showCompletionInfo(item, rowButton)
@@ -1838,8 +2488,7 @@ function Editor:_showCompletionInfo(item, rowButton)
     local documentation = tostring((item and item.documentation) or "")
 
     local visual = getCompletionKindVisual(kind)
-    self.completionInfoIcon.Text = visual.text
-    self.completionInfoIcon.TextColor3 = visual.color
+    self.completionInfoIcon.Image = visual.image
 
     local lines = { label }
     if detail ~= "" then
@@ -1889,7 +2538,69 @@ function Editor:setDiagnostics(diagnostics)
     refresh(self)
 end
 
-function Editor:_applyCompletion(label)
+function Editor:_syncCompletionActiveCaretSnapshot()
+    if not self.textBox or not self.completionFrame or not self.completionFrame.Visible then
+        return
+    end
+
+    if type(self._visibleCompletions) ~= "table" or #self._visibleCompletions == 0 then
+        return
+    end
+
+    if self._completionPointerInside == true then
+        return
+    end
+
+    self._completionActiveCursor = self.textBox.CursorPosition
+    self._completionActiveSelection = self.textBox.SelectionStart
+end
+
+function Editor:_acceptActiveCompletionFromKeyboard()
+    if not self.textBox or not self.textBox.Parent then
+        return false
+    end
+
+    self._pendingAutoIndent = nil
+
+    local label = self:_getFirstCompletionLabel()
+    if type(label) ~= "string" or label == "" then
+        return false
+    end
+
+    local anchorText = self._completionAnchorText
+    if type(anchorText) == "string" and self.textBox.Text ~= anchorText then
+        self._suppressTextChange = true
+        self.textBox.Text = anchorText
+    end
+
+    local activeCursor = self._completionAnchorEnd
+    if type(activeCursor) ~= "number" then
+        activeCursor = self._completionActiveCursor
+    end
+    if type(activeCursor) ~= "number" then
+        activeCursor = self.textBox.CursorPosition
+    end
+
+    local activeSelection = self._completionActiveSelection
+    if type(activeSelection) ~= "number" then
+        activeSelection = self.textBox.SelectionStart
+    end
+
+    if type(activeCursor) == "number" and self.textBox.CursorPosition ~= activeCursor then
+        self.textBox.CursorPosition = activeCursor
+    end
+
+    if type(activeSelection) == "number" and self.textBox.SelectionStart ~= activeSelection then
+        self.textBox.SelectionStart = activeSelection
+    end
+
+    self:_applyCompletion(label, activeCursor)
+    self:hideCompletions()
+    self:focus()
+    return true
+end
+
+function Editor:_applyCompletion(label, activeCursorPos)
     local text = self.textBox.Text
     local cursor = self.textBox.CursorPosition
 
@@ -1901,7 +2612,8 @@ function Editor:_applyCompletion(label)
             text,
             cursor,
             self._completionAnchorStart,
-            self._completionAnchorEnd
+            self._completionAnchorEnd,
+            activeCursorPos
         )
     else
         startPos, endPos = EditorTextUtils.computeCompletionReplacementRange(text, cursor)
@@ -1928,9 +2640,18 @@ function Editor:showCompletions(items)
     self._completionAnchorStart = anchorStart
     self._completionAnchorEnd = anchorEnd
     self._completionAnchorText = self.textBox.Text
+    self._completionActiveCursor = self.textBox.CursorPosition
+    self._completionActiveSelection = self.textBox.SelectionStart
 
-    local maxItems = math.min(#items, 8)
-    self.completionFrame.Size = UDim2.new(0, 240, 0, (maxItems * 22) + (maxItems - 1) * 2 + 4)
+    local totalItems = #items
+    local viewportItems = EditorTextUtils.getCompletionViewportCount(totalItems, 8)
+    self.completionFrame.Size = UDim2.new(0, 240, 0, (viewportItems * 22) + math.max(0, viewportItems - 1) * 2 + 4)
+
+    if self.completionFrame:IsA("ScrollingFrame") then
+        local canvasHeight = (totalItems * 22) + math.max(0, totalItems - 1) * 2 + 4
+        self.completionFrame.CanvasSize = UDim2.new(0, 0, 0, canvasHeight)
+        self.completionFrame.CanvasPosition = Vector2.new(0, 0)
+    end
 
     do
         local caret = self.caret
@@ -1980,17 +2701,21 @@ function Editor:showCompletions(items)
 
     self._completionShownAt = os.clock()
     self.completionFrame.Visible = true
+    self._completionPointerInside = false
 
-    for i = 1, maxItems do
+    table.insert(self._completionConnections, self.completionFrame.MouseEnter:Connect(function()
+        self._completionPointerInside = true
+    end))
+
+    table.insert(self._completionConnections, self.completionFrame.MouseLeave:Connect(function()
+        self._completionPointerInside = false
+    end))
+
+    for i = 1, totalItems do
         local item = items[i]
         local label = item and item.label or nil
         if type(label) ~= "string" or label == "" then
             label = tostring(item)
-        end
-
-        local detail = item and item.detail or nil
-        if type(detail) ~= "string" then
-            detail = ""
         end
 
         local visual = getCompletionKindVisual(item and item.kind)
@@ -2009,22 +2734,20 @@ function Editor:showCompletions(items)
         button.Parent = self.completionFrame
         table.insert(self._completionRows, button)
 
-        local icon = Instance.new("TextLabel")
+        local icon = Instance.new("ImageLabel")
         icon.Name = "Icon"
         icon.Size = UDim2.new(0, 20, 0, 18)
         icon.Position = UDim2.new(0, 2, 0.5, -9)
         icon.BackgroundColor3 = Color3.fromRGB(66, 66, 66)
         icon.BorderSizePixel = 0
-        icon.Font = Enum.Font.SourceSansBold
-        icon.TextSize = 12
-        icon.TextColor3 = visual.color
-        icon.Text = visual.text
+        icon.Image = visual.image
+        icon.ScaleType = Enum.ScaleType.Fit
         icon.ZIndex = button.ZIndex + 1
         icon.Parent = button
 
         local labelText = Instance.new("TextLabel")
         labelText.Name = "Label"
-        labelText.Size = UDim2.new(1, -112, 1, 0)
+        labelText.Size = UDim2.new(1, -30, 1, 0)
         labelText.Position = UDim2.new(0, 26, 0, 0)
         labelText.BackgroundTransparency = 1
         labelText.BorderSizePixel = 0
@@ -2036,42 +2759,48 @@ function Editor:showCompletions(items)
         labelText.ZIndex = button.ZIndex + 1
         labelText.Parent = button
 
-        local detailText = Instance.new("TextLabel")
-        detailText.Name = "Detail"
-        detailText.Size = UDim2.new(0, 86, 1, 0)
-        detailText.Position = UDim2.new(1, -88, 0, 0)
-        detailText.BackgroundTransparency = 1
-        detailText.BorderSizePixel = 0
-        detailText.Font = Enum.Font.SourceSans
-        detailText.TextSize = 13
-        detailText.TextXAlignment = Enum.TextXAlignment.Right
-        detailText.TextColor3 = Color3.fromRGB(170, 170, 170)
-        detailText.Text = detail
-        detailText.ZIndex = button.ZIndex + 1
-        detailText.Parent = button
 
         table.insert(self._completionConnections, button.Activated:Connect(function()
             self:_setActiveCompletionIndex(i)
-            self:_applyCompletion(label)
-            self:hideCompletions()
-            self:focus()
+
+            local beforeText = self.textBox.Text
+            local activeCursor = self._completionActiveCursor
+            if type(activeCursor) ~= "number" then
+                activeCursor = self.textBox.CursorPosition
+            end
+
+            local activeSelection = self._completionActiveSelection
+            if type(activeSelection) ~= "number" then
+                activeSelection = self.textBox.SelectionStart
+            end
+
+            task.defer(function()
+                if self.textBox and self.textBox.Parent then
+                    if self.textBox.Text ~= beforeText then
+                        self._pendingAutoIndent = nil
+                        self._suppressTextChange = true
+                        self.textBox.Text = beforeText
+                    end
+
+                    if type(activeCursor) == "number" and self.textBox.CursorPosition ~= activeCursor then
+                        self.textBox.CursorPosition = activeCursor
+                    end
+
+                    if type(activeSelection) == "number" and self.textBox.SelectionStart ~= activeSelection then
+                        self.textBox.SelectionStart = activeSelection
+                    end
+
+                    self:_applyCompletion(label, activeCursor)
+                    self:hideCompletions()
+                    self:focus()
+                end
+            end)
         end))
 
         table.insert(self._completionConnections, button.MouseEnter:Connect(function()
+            self._completionPointerInside = true
             self:_setActiveCompletionIndex(i)
-
-            local shouldShow = EditorTextUtils.shouldShowCompletionInfo(
-                self._lastMouseMoveAt,
-                self._completionShownAt,
-                os.clock(),
-                COMPLETION_INFO_MOUSE_INTENT_WINDOW
-            )
-
-            if shouldShow then
-                self:_showCompletionInfo(item, button)
-            elseif self.completionInfoFrame then
-                self.completionInfoFrame.Visible = false
-            end
+            self:_showCompletionInfo(item, button)
         end))
 
         table.insert(self._completionConnections, button.InputChanged:Connect(function(input)
@@ -2080,30 +2809,18 @@ function Editor:showCompletions(items)
             end
 
             self:_setActiveCompletionIndex(i)
-
-            local now = os.clock()
-            local shouldShow = EditorTextUtils.shouldShowCompletionInfo(
-                self._lastMouseMoveAt,
-                self._completionShownAt,
-                now,
-                COMPLETION_INFO_MOUSE_INTENT_WINDOW
-            )
-
-            if shouldShow then
-                self:_showCompletionInfo(item, button)
-            elseif self.completionInfoFrame then
-                self.completionInfoFrame.Visible = false
-            end
+            self:_showCompletionInfo(item, button)
         end))
 
         table.insert(self._completionConnections, button.MouseLeave:Connect(function()
-            if self.completionInfoFrame then
-                self.completionInfoFrame.Visible = false
+            if self._completionPointerInside then
+                self:_showActiveCompletionInfo()
             end
         end))
     end
 
     self:_setActiveCompletionIndex(1)
+    self:_showActiveCompletionInfo()
 end
 
 function Editor:applySettings(settings)
@@ -2250,6 +2967,11 @@ function Editor:destroy()
     self:hideCompletions()
     self:hideHoverInfo()
     stopCaretBlink(self)
+
+    if self._completionAcceptActionName then
+        ContextActionService:UnbindAction(self._completionAcceptActionName)
+        self._completionAcceptActionName = nil
+    end
 
     for _, connection in ipairs(self._connections) do
         connection:Disconnect()
