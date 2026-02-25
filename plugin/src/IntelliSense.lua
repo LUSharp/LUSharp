@@ -2092,6 +2092,46 @@ local function inferDeclarationHover(identifier, trailingText, beforeTrimmed, be
         }
     end
 
+    if beforeTrimmed:match("var$") and trailingText:match("^%s*=") then
+        local initializerSource = trailingText:match("^%s*=%s*(.+)")
+        if initializerSource and initializerSource ~= "" then
+            local initializerTokens = Lexer.tokenize(initializerSource)
+            local inferredType = inferVarTypeFromInitializer(initializerTokens, 1)
+            if inferredType then
+                local resolvedInferredType = resolveType(inferredType)
+                    or resolveType(TypeDatabase.aliases[inferredType] or inferredType)
+                local resolvedInferredFullName = tostring((resolvedInferredType and resolvedInferredType.fullName) or inferredType)
+
+                local inferredDisplayType = displayTypeName(inferredType)
+                local detail = "variable : " .. inferredDisplayType
+                if resolvedInferredFullName ~= "" then
+                    local resolvedDisplay = displayTypeName(resolvedInferredFullName)
+                    if resolvedDisplay ~= "" and resolvedDisplay ~= inferredDisplayType then
+                        detail = detail .. " (" .. resolvedInferredFullName .. ")"
+                    end
+                end
+
+                local namespace = tostring((resolvedInferredType and resolvedInferredType.namespace) or "")
+                local rootName = inferredDisplayType:match("^([%a_][%w_]*)") or inferredDisplayType
+                local isRobloxType = ROBLOX_TYPE_DOCS[rootName] ~= nil
+                    or namespace:find("^LUSharpAPI%.Runtime%.STL") ~= nil
+                    or resolvedInferredFullName:find("^LUSharpAPI%.Runtime%.STL") ~= nil
+
+                local documentation = nil
+                if isRobloxType then
+                    documentation = getRobloxTypeDocumentation(inferredType, resolvedInferredFullName, resolvedInferredType)
+                end
+
+                return {
+                    label = identifier,
+                    kind = "variable",
+                    detail = detail,
+                    documentation = documentation,
+                }
+            end
+        end
+    end
+
     local declaredType = nil
     local declaredName = nil
 

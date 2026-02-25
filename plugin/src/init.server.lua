@@ -5,7 +5,13 @@ local Selection = game:GetService("Selection")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local ENABLE_DEV_MODULE_ROOT = false
+
 local function getDevModuleRoot()
+    if not ENABLE_DEV_MODULE_ROOT then
+        return nil
+    end
+
     if not RunService:IsStudio() then
         return nil
     end
@@ -20,6 +26,7 @@ local function getDevModuleRoot()
 end
 
 local DEV_MODULE_ROOT = getDevModuleRoot()
+warn("[LUSharp SelDbg] init-server-loaded[v4] devRoot=" .. tostring(DEV_MODULE_ROOT ~= nil))
 
 local function requireModule(name)
     if DEV_MODULE_ROOT then
@@ -203,6 +210,7 @@ local settingsValues = settings:get()
 local editor = Editor.new(plugin, {
     fileName = "<untitled.cs>",
 })
+warn("[LUSharp SelDbg] editor-created")
 local projectView = ProjectView.new(plugin)
 
 editor:applySettings(settingsValues)

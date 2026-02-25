@@ -323,6 +323,7 @@ return function(describe, it, expect)
             expect(shouldSuppress):toBe(false)
         end)
 
+
         it("computes completion replacement range for identifier suffix", function()
             local text = "Console.Wri"
             local cursor = #text + 1
@@ -572,14 +573,46 @@ return function(describe, it, expect)
             expect(TextUtils.isWordDeleteShortcut("Backspace", false, true)):toBe(false)
         end)
 
+        it("sanitizes selection for ctrl-delete word shortcut", function()
+            local selection = TextUtils.sanitizeWordDeleteSelection(20, 1, "Delete", true, false)
+            expect(selection):toBe(-1)
+        end)
+
+        it("sanitizes selection for ctrl-backspace word shortcut", function()
+            local selection = TextUtils.sanitizeWordDeleteSelection(20, 1, "Backspace", true, false)
+            expect(selection):toBe(-1)
+        end)
+
+        it("keeps selection for non-word-delete shortcuts", function()
+            local selection = TextUtils.sanitizeWordDeleteSelection(20, 1, "Delete", false, false)
+            expect(selection):toBe(1)
+        end)
+
+        it("treats matching selection splice as active selection", function()
+            expect(TextUtils.isSelectionDeleteSplice(20, 1, 1)):toBe(true)
+        end)
+
+        it("treats mismatched selection splice as stale selection", function()
+            expect(TextUtils.isSelectionDeleteSplice(20, 1, 12)):toBe(false)
+        end)
+
+        it("ignores missing or collapsed selection", function()
+            expect(TextUtils.isSelectionDeleteSplice(20, -1, 20)):toBe(false)
+            expect(TextUtils.isSelectionDeleteSplice(20, 20, 20)):toBe(false)
+        end)
+
         it("repairs suspicious newline-spanning deletes without selection", function()
             expect(TextUtils.shouldRepairWordDelete("Backspace", false, "entire line\n", "", false)):toBe(true)
             expect(TextUtils.shouldRepairWordDelete("Delete", false, "\nwhole line", "", false)):toBe(true)
         end)
 
-        it("does not repair multi-char non-newline delete without shortcut confirmation", function()
+        it("does not repair multi-char non-newline backspace delete without shortcut confirmation", function()
             expect(TextUtils.shouldRepairWordDelete("Backspace", false, "wholetoken", "", false)):toBe(false)
-            expect(TextUtils.shouldRepairWordDelete("Delete", false, "abc", "", false)):toBe(false)
+        end)
+
+        it("repairs suspicious multi-char non-newline delete without shortcut confirmation", function()
+            expect(TextUtils.shouldRepairWordDelete("Delete", false, "game.GetService(\"Players\");", "", false)):toBe(true)
+            expect(TextUtils.shouldRepairWordDelete("Delete", false, "abc", "", false)):toBe(true)
         end)
 
         it("does not repair normal single-char delete or selection deletes", function()
@@ -592,9 +625,20 @@ return function(describe, it, expect)
             expect(TextUtils.shouldRepairWordDelete("Backspace", false, "x", "", true)):toBe(true)
         end)
 
-        it("does not repair shortcut delete when native path already removed a token", function()
+        it("does not repair shortcut backspace when native path already removed a token", function()
             expect(TextUtils.shouldRepairWordDelete("Backspace", false, "Players", "", true)):toBe(false)
-            expect(TextUtils.shouldRepairWordDelete("Delete", false, "game", "", true)):toBe(false)
+        end)
+
+        it("repairs shortcut delete when native path removed a whole expression tail", function()
+            expect(TextUtils.shouldRepairWordDelete("Delete", false, "game.GetService(\"Players\");", "", true)):toBe(true)
+        end)
+
+        it("repairs shortcut delete when native path already removed a token", function()
+            expect(TextUtils.shouldRepairWordDelete("Delete", false, "game", "", true)):toBe(true)
+        end)
+
+        it("does not repair shortcut delete when native path removed only semicolon", function()
+            expect(TextUtils.shouldRepairWordDelete("Delete", false, ";", "", true)):toBe(false)
         end)
 
         it("does not repair shortcut delete when there was an active selection", function()
@@ -671,6 +715,732 @@ return function(describe, it, expect)
             local line = "\ta"
             expect(TextUtils.resolveCursorColumnFromX(line, 3.9, 8, measure)):toBe(2)
             expect(TextUtils.resolveCursorColumnFromX(line, 4.6, 8, measure)):toBe(3)
+        end)
+
+        it("selects string segment on smart double-click", function()
+            local source = "print(\"hello world from luasharp\");"
+            local cursorPos = source:find("world", 1, true) + 2
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("world")
+        end)
+
+        it("expands smart double-click inside string to full line", function()
+            local source = "print(\"hello world\");\nnextLine();"
+            local cursorPos = source:find("world", 1, true) + 1
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, true)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("print(\"hello world\");")
+        end)
+
+        it("does not apply smart double-click selection on punctuation", function()
+            local source = "var players = game.GetService(\"Players\");"
+            local cursorPos = source:find("=", 1, true)
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toBeNil()
+            expect(endPosExclusive):toBeNil()
+        end)
+
+        it("selects left identifier when cursor is inside game in member chain", function()
+            local source = "var players = game.GetService(\"Workspace\");"
+            local cursorPos = source:find("game", 1, true) + 1
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("game")
+        end)
+
+        it("selects method identifier when cursor is inside GetService", function()
+            local source = "var players = game.GetService(\"Workspace\");"
+            local cursorPos = source:find("GetService", 1, true) + 3
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("GetService")
+        end)
+
+        it("expands to full line when expand mode is requested", function()
+            local source = "var svc = game.GetService(\"Workspace\");"
+            local cursorPos = source:find("GetService", 1, true) + 4
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, true)
+
+            expect(startPos):toBe(1)
+            expect(endPosExclusive):toBe(#source + 1)
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe(source)
+        end)
+
+        it("expands method declaration click to full line in expand mode", function()
+            local source = "public void OnPlayerJoined(Players p)"
+            local cursorPos = source:find("OnPlayerJoined", 1, true) + 2
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, true)
+
+            expect(startPos):toBe(1)
+            expect(endPosExclusive):toBe(#source + 1)
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe(source)
+        end)
+
+        it("selects string inner text Workspace without quotes", function()
+            local source = "var players = game.GetService(\"Workspace\");"
+            local cursorPos = source:find("Workspace", 1, true) + 2
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("Workspace")
+        end)
+
+        it("selects identifier before index accessor", function()
+            local source = "data[0] = 3"
+            local cursorPos = source:find("data", 1, true) + 2
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("data")
+        end)
+
+        it("does not select token when cursor lands on dot separator", function()
+            local source = "var svc = game.GetService(\"Workspace\");"
+            local dotPos = source:find(".", source:find("game", 1, true), true)
+
+            expect(dotPos):toNotBeNil()
+
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, dotPos, false)
+
+            expect(startPos):toBeNil()
+            expect(endPosExclusive):toBeNil()
+        end)
+
+        it("does not force identifier expansion when cursor lands on interpolated string quote boundary", function()
+            local source = "Console.WriteLine($\"{p.Name} has joined the game!\");"
+            local quotePos = source:find("\"", source:find("WriteLine", 1, true), true)
+
+            expect(quotePos):toNotBeNil()
+
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, quotePos, false)
+
+            expect(startPos):toBeNil()
+            expect(endPosExclusive):toBeNil()
+        end)
+
+        it("selects identifier token inside interpolation expression", function()
+            local source = "Console.WriteLine($\"{p.Name} has joined the game!\");"
+            local namePos = source:find("Name", 1, true)
+
+            expect(namePos):toNotBeNil()
+
+            local cursorPos = namePos + 1
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursorPos, false)
+
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("Name")
+        end)
+
+        it("respects custom stop characters at quote boundary", function()
+            local source = "Console.WriteLine($\"{p.Name} has joined the game!\");"
+            local quotePos = source:find("\"", source:find("$\"", 1, true), true)
+            local stopChars = {
+                ["\""] = true,
+                ["{"] = true,
+                ["}"] = true,
+                ["$"] = true,
+                ["("] = true,
+                [")"] = true,
+                ["."] = true,
+                [":"] = true,
+                [","] = true,
+                [";"] = true,
+            }
+
+            expect(quotePos):toNotBeNil()
+
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, quotePos, false, stopChars)
+
+            expect(startPos):toBeNil()
+            expect(endPosExclusive):toBeNil()
+        end)
+
+        it("suppresses duplicate primary mouse down events within age and cursor thresholds", function()
+            local shouldIgnore = TextUtils.shouldIgnoreDuplicatePrimaryMouseDown(10.0, 42, 10.01, 42, 0.03, 1)
+            expect(shouldIgnore):toBe(true)
+        end)
+
+        it("does not suppress primary mouse down events outside dedupe age threshold", function()
+            local shouldIgnore = TextUtils.shouldIgnoreDuplicatePrimaryMouseDown(10.0, 42, 10.05, 42, 0.03, 1)
+            expect(shouldIgnore):toBe(false)
+        end)
+
+        it("does not suppress primary mouse down events beyond cursor delta threshold", function()
+            local shouldIgnore = TextUtils.shouldIgnoreDuplicatePrimaryMouseDown(10.0, 42, 10.01, 45, 0.03, 1)
+            expect(shouldIgnore):toBe(false)
+        end)
+
+        it("treats slower repeat click as valid smart double-click within relaxed window", function()
+            local isDouble = TextUtils.isSmartDoubleClick(10.85, 10.0, 200, 202, 0.9, 24)
+            expect(isDouble):toBe(true)
+        end)
+
+        it("does not treat delayed repeat click as smart double-click outside relaxed window", function()
+            local isDouble = TextUtils.isSmartDoubleClick(11.20, 10.0, 200, 202, 0.9, 24)
+            expect(isDouble):toBe(false)
+        end)
+
+        it("expands double-click cycle when third click stays within expanded cursor delta", function()
+            local shouldExpand = TextUtils.shouldExpandSmartDoubleClickCycle(
+                11.40,
+                214,
+                { cursorPos = 202, lastAt = 10.0, expandToLine = false },
+                1.5,
+                12
+            )
+            expect(shouldExpand):toBe(true)
+        end)
+
+        it("does not expand double-click cycle when third click cursor delta is too large", function()
+            local shouldExpand = TextUtils.shouldExpandSmartDoubleClickCycle(
+                11.40,
+                230,
+                { cursorPos = 202, lastAt = 10.0, expandToLine = false },
+                1.5,
+                12
+            )
+            expect(shouldExpand):toBe(false)
+        end)
+
+        it("promotes slow third click to expand cycle when prior double-click exists", function()
+            local shouldPromote = TextUtils.shouldPromoteSmartDoubleClickCycleExpand(
+                44.60,
+                365,
+                { cursorPos = 365, lastAt = 42.566, expandToLine = false, pending = nil },
+                2.4,
+                12
+            )
+            expect(shouldPromote):toBe(true)
+        end)
+
+        it("resolves second click in streak to word mode", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.85,
+                200,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                1.3,
+                2.4,
+                12
+            )
+
+            expect(clickState.count):toBe(2)
+            expect(clickState.mode):toBe("word")
+            expect(clickState.inSequence):toBe(true)
+        end)
+
+        it("ignores duplicate source event after first click", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.02,
+                200,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                1.3,
+                2.4,
+                12,
+                2,
+                0.05,
+                2
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("ignores duplicate source event after second click", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.02,
+                200,
+                { at = 10.0, cursorPos = 200, count = 2 },
+                1.3,
+                2.4,
+                12,
+                2,
+                0.05,
+                2
+            )
+
+            expect(clickState.count):toBe(2)
+            expect(clickState.mode):toBe("word")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("resolves third click in streak to line mode inside burst window", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.95,
+                200,
+                { at = 10.7, cursorPos = 200, count = 2, burstStartAt = 10.5 },
+                1.3,
+                2.4,
+                12,
+                2
+            )
+
+            expect(clickState.count):toBe(3)
+            expect(clickState.mode):toBe("line")
+            expect(clickState.inSequence):toBe(true)
+        end)
+
+        it("does not promote word to line when third click drifts to another token", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                12.90,
+                209,
+                { at = 10.85, cursorPos = 201, count = 2 },
+                1.3,
+                2.4,
+                12,
+                2
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("resets click streak when slower third click exceeds line window", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                13.80,
+                200,
+                { at = 10.85, cursorPos = 200, count = 2 },
+                1.3,
+                2.4,
+                12
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("resets click streak after line-mode click before starting new sequence", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.20,
+                200,
+                { at = 10.0, cursorPos = 200, count = 3 },
+                1.3,
+                2.4,
+                12
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("requires cadence tighter than grace window for second click", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                11.05,
+                200,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                0.9,
+                2.0,
+                12
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("does not apply second-click grace when cursor drift is large", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.90,
+                214,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                0.75,
+                0.5,
+                24,
+                2
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("allows slower second click inside grace window even when base window is tighter", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.90,
+                200,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                0.75,
+                0.5,
+                24,
+                2
+            )
+
+            expect(clickState.count):toBe(2)
+            expect(clickState.mode):toBe("word")
+            expect(clickState.inSequence):toBe(true)
+        end)
+
+        it("accepts semi-slow second click inside widened double-click window", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.72,
+                200,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                0.75,
+                0.5,
+                12,
+                2
+            )
+
+            expect(clickState.count):toBe(2)
+            expect(clickState.mode):toBe("word")
+            expect(clickState.inSequence):toBe(true)
+        end)
+
+        it("accepts second click after line jump when cursor delta stays in max threshold", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.42,
+                218,
+                { at = 10.0, cursorPos = 200, count = 1 },
+                0.75,
+                0.5,
+                24,
+                2
+            )
+
+            expect(clickState.count):toBe(2)
+            expect(clickState.mode):toBe("word")
+            expect(clickState.inSequence):toBe(true)
+        end)
+
+        it("does not promote to line when click burst exceeds short window", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                11.55,
+                200,
+                { at = 10.9, cursorPos = 200, count = 2, burstStartAt = 10.0 },
+                0.5,
+                2.0,
+                12,
+                2
+            )
+
+            expect(clickState.count):toBe(1)
+            expect(clickState.mode):toBe("character")
+            expect(clickState.inSequence):toBe(false)
+        end)
+
+        it("promotes to line when click burst stays inside short window", function()
+            local clickState = TextUtils.resolveSmartSelectionClickState(
+                10.45,
+                200,
+                { at = 10.3, cursorPos = 200, count = 2, burstStartAt = 10.0 },
+                0.5,
+                2.0,
+                12,
+                2
+            )
+
+            expect(clickState.count):toBe(3)
+            expect(clickState.mode):toBe("line")
+            expect(clickState.inSequence):toBe(true)
+        end)
+
+        it("does not promote slow third click when cycle is already expanded", function()
+            local shouldPromote = TextUtils.shouldPromoteSmartDoubleClickCycleExpand(
+                44.60,
+                365,
+                { cursorPos = 365, lastAt = 42.566, expandToLine = true, pending = nil },
+                2.4,
+                12
+            )
+            expect(shouldPromote):toBe(false)
+        end)
+
+        it("does not promote slow third click while cycle apply is still pending", function()
+            local shouldPromote = TextUtils.shouldPromoteSmartDoubleClickCycleExpand(
+                44.60,
+                365,
+                { cursorPos = 365, lastAt = 42.566, expandToLine = false, pending = true },
+                2.4,
+                12
+            )
+            expect(shouldPromote):toBe(false)
+        end)
+
+        it("resolves line mode selection range including newline", function()
+            local source = "public void A()\npublic void B()"
+            local startPos, endPosExclusive = TextUtils.resolveSelectionRangeForMode(source, 8, "line", nil, true)
+
+            expect(startPos):toBe(1)
+            expect(endPosExclusive):toBe(17)
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("public void A()\n")
+        end)
+
+        it("expands drag selection by full lines in line mode", function()
+            local source = "line1\nline2\nline3"
+            local anchorStart, anchorEndExclusive = TextUtils.resolveSelectionRangeForMode(source, 2, "line", nil, true)
+            local dragStart, dragEndExclusive = TextUtils.resolveDragSelectionForMode(
+                source,
+                anchorStart,
+                anchorEndExclusive,
+                14,
+                "line",
+                nil,
+                true
+            )
+
+            expect(dragStart):toBe(1)
+            expect(dragEndExclusive):toBe(#source + 1)
+            expect(source:sub(dragStart, dragEndExclusive - 1)):toBe(source)
+        end)
+
+        it("expands drag selection by full words in word mode", function()
+            local source = "OnPlayerJoined(Players p)"
+            local stopChars = { ["("] = true, [")"] = true, [" "] = true }
+            local anchorStart, anchorEndExclusive = TextUtils.resolveSelectionRangeForMode(source, 3, "word", stopChars, false)
+            local dragStart, dragEndExclusive = TextUtils.resolveDragSelectionForMode(
+                source,
+                anchorStart,
+                anchorEndExclusive,
+                20,
+                "word",
+                stopChars,
+                false
+            )
+
+            expect(source:sub(dragStart, dragEndExclusive - 1)):toBe("OnPlayerJoined(Players")
+        end)
+
+        it("suppresses caret hover cursor when selection is active", function()
+            local shouldUseCaret = TextUtils.shouldUseCaretHoverCursor(180, 160)
+            expect(shouldUseCaret):toBe(false)
+        end)
+
+        it("resolves hover cursor from active selection start", function()
+            local hoverCursor = TextUtils.resolveHoverCursorFromSelection(203, 213, 441)
+            expect(hoverCursor):toBe(203)
+        end)
+
+        it("does not resolve hover cursor from collapsed selection", function()
+            local hoverCursor = TextUtils.resolveHoverCursorFromSelection(213, 213, 441)
+            expect(hoverCursor):toBe(nil)
+        end)
+
+        it("allows caret hover cursor when selection is collapsed", function()
+            local shouldUseCaret = TextUtils.shouldUseCaretHoverCursor(180, 180)
+            expect(shouldUseCaret):toBe(true)
+        end)
+
+        it("rejects preferred selection cursor when text length is zero", function()
+            local cursor = TextUtils.resolvePreferredSelectionCursor(1, 1, 0, true)
+            expect(cursor):toBeNil()
+        end)
+
+        it("validates smart selection cycle id before deferred apply", function()
+            local shouldApply = TextUtils.shouldApplySmartSelectionForCycle({ id = 4 }, 5)
+            expect(shouldApply):toBe(false)
+
+            local shouldApplyMatching = TextUtils.shouldApplySmartSelectionForCycle({ id = 5 }, 5)
+            expect(shouldApplyMatching):toBe(true)
+        end)
+
+        it("rejects stale character normalization token", function()
+            local shouldApply = TextUtils.shouldApplyCharacterNormalization(4, 5)
+            expect(shouldApply):toBe(false)
+        end)
+
+        it("accepts matching character normalization token", function()
+            local shouldApply = TextUtils.shouldApplyCharacterNormalization(5, 5)
+            expect(shouldApply):toBe(true)
+        end)
+
+        it("rejects cached caret hover sample when selection is active", function()
+            local shouldUseSample = TextUtils.shouldUseCachedHoverSample("caret", 180, 160)
+            expect(shouldUseSample):toBe(false)
+        end)
+
+        it("allows cached non-caret hover sample when selection is active", function()
+            local shouldUseSample = TextUtils.shouldUseCachedHoverSample("mouse-sample", 180, 160)
+            expect(shouldUseSample):toBe(true)
+        end)
+
+        it("normalizes character click when native selection is active", function()
+            local shouldNormalize = TextUtils.shouldNormalizeCharacterClickSelection(1, 441, 208, false)
+            expect(shouldNormalize):toBe(true)
+        end)
+
+        it("does not normalize character click when shift is held", function()
+            local shouldNormalize = TextUtils.shouldNormalizeCharacterClickSelection(1, 441, 208, true)
+            expect(shouldNormalize):toBe(false)
+        end)
+
+        it("does not normalize character click when selection is collapsed", function()
+            local shouldNormalize = TextUtils.shouldNormalizeCharacterClickSelection(208, 208, 208, false)
+            expect(shouldNormalize):toBe(false)
+        end)
+
+        it("runs native retokenize fallback only inside recency window", function()
+            local shouldRun = TextUtils.shouldRunNativeRetokenizeFallback(10.40, 10.0, 120, 120, 0.5, 24)
+            expect(shouldRun):toBe(true)
+        end)
+
+        it("does not run native retokenize fallback when outside recency window", function()
+            local shouldRun = TextUtils.shouldRunNativeRetokenizeFallback(13.0, 10.0, 120, 120, 0.5, 24)
+            expect(shouldRun):toBe(false)
+        end)
+
+        it("does not run native retokenize fallback when cursor delta exceeds threshold", function()
+            local shouldRun = TextUtils.shouldRunNativeRetokenizeFallback(10.40, 10.0, 369, 360, 0.5, 4)
+            expect(shouldRun):toBe(false)
+        end)
+
+        it("prefers live cursor for selection when valid", function()
+            local cursor = TextUtils.resolvePreferredSelectionCursor(10, 20, 40)
+            expect(cursor):toBe(20)
+        end)
+
+        it("falls back to initial cursor when live cursor is invalid", function()
+            local cursor = TextUtils.resolvePreferredSelectionCursor(10, 200, 40)
+            expect(cursor):toBe(10)
+        end)
+
+        it("prefers initial cursor when explicitly requested", function()
+            local cursor = TextUtils.resolvePreferredSelectionCursor(10, 20, 40, true)
+            expect(cursor):toBe(10)
+        end)
+
+        it("falls back to live cursor when initial preference is invalid", function()
+            local cursor = TextUtils.resolvePreferredSelectionCursor(200, 20, 40, true)
+            expect(cursor):toBe(20)
+        end)
+
+        it("retokenize cursor prefers later valid candidate inside selection", function()
+            local source = "game.GetService(\"Workspace\");"
+            local servicePos = source:find("Service", 1, true)
+            local cursor = TextUtils.resolveRetokenizeCursorForSelection(
+                source,
+                1,
+                #source + 1,
+                { #source, servicePos },
+                { ["."] = true, ["("] = true, [")"] = true, ["\""] = true, [";"] = true }
+            )
+
+            expect(cursor):toBe(servicePos)
+        end)
+
+        it("retokenize cursor keeps explicit click identifier over earlier method-bias candidate", function()
+            local source = "var players = game.GetService(\"Workspace\");"
+            local selectedStart = source:find("game", 1, true)
+            local selectedEndExclusive = source:find(";", 1, true)
+            local clickCursor = selectedStart + 1
+            local methodBiasCursor = source:find("Service", 1, true)
+
+            local cursor = TextUtils.resolveRetokenizeCursorForSelection(
+                source,
+                selectedStart,
+                selectedEndExclusive,
+                { methodBiasCursor, clickCursor },
+                { ["."] = true, ["("] = true, [")"] = true, ["\""] = true, [";"] = true }
+            )
+
+            expect(cursor):toBe(clickCursor)
+        end)
+
+        it("retokenize cursor honors sparse preferred cursor list after leading nil", function()
+            local source = "game.GetService(\"Workspace\");"
+            local servicePos = source:find("Service", 1, true)
+
+            local cursor = TextUtils.resolveRetokenizeCursorForSelection(
+                source,
+                1,
+                #source + 1,
+                { nil, servicePos },
+                { ["."] = true, ["("] = true, [")"] = true, ["\""] = true, [";"] = true }
+            )
+
+            expect(cursor):toBe(servicePos)
+        end)
+
+        it("retokenize search range expands to line when preferred cursor is outside native selection", function()
+            local source = "var players = game.GetService(\"Workspace\");\nnextLine();"
+            local gameStart = source:find("game", 1, true)
+            local gameEndExclusive = gameStart + #("game")
+            local methodPos = source:find("GetService", 1, true)
+
+            local rangeStart, rangeEndExclusive = TextUtils.resolveRetokenizeSearchRange(
+                source,
+                gameStart,
+                gameEndExclusive,
+                { methodPos }
+            )
+
+            expect(rangeStart):toBe(1)
+            expect(rangeEndExclusive):toBe(source:find("\n", 1, true))
+        end)
+
+        it("retokenize cursor resolves to an identifier token when candidate lands on punctuation", function()
+            local source = "game.GetService(\"Workspace\");"
+            local stopChars = { ["."] = true, ["("] = true, [")"] = true, ["\""] = true, [";"] = true }
+            local cursor = TextUtils.resolveRetokenizeCursorForSelection(
+                source,
+                1,
+                #source + 1,
+                #source,
+                stopChars
+            )
+
+            expect(cursor):toNotBeNil()
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursor, false, stopChars)
+            expect(startPos):toNotBeNil()
+            expect(endPosExclusive):toNotBeNil()
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("Workspace")
+        end)
+
+        it("retokenize post-processing prefers right-side member when candidate is on dot separator", function()
+            local source = "game.GetService(\"Workspace\");"
+            local dotPos = source:find(".", 1, true)
+
+            expect(dotPos):toNotBeNil()
+
+            -- This covers retokenize recovery after an initial delimiter-adjacent cursor,
+            -- not direct dot-delimiter click behavior.
+            local cursor = TextUtils.resolveRetokenizeCursorForSelection(
+                source,
+                1,
+                #source + 1,
+                dotPos,
+                { ["."] = true, ["("] = true, [")"] = true, ["\""] = true, [";"] = true }
+            )
+
+            expect(cursor):toNotBeNil()
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursor, false, {
+                ["."] = true,
+                ["("] = true,
+                [")"] = true,
+                ["\""] = true,
+                [";"] = true,
+            })
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("GetService")
+        end)
+
+        it("finds method identifier cursor in call range", function()
+            local source = "game.GetService(\"Workspace\");"
+            local cursor = TextUtils.findMethodIdentifierCursorInRange(source, 1, #source + 1)
+
+            expect(cursor):toNotBeNil()
+            local startPos, endPosExclusive = TextUtils.computeStringDoubleClickSelection(source, cursor, false, { ["."] = true, ["("] = true, [")"] = true, ["\""] = true, [";"] = true })
+            expect(source:sub(startPos, endPosExclusive - 1)):toBe("GetService")
+        end)
+
+        it("returns nil method cursor when range has no call expression", function()
+            local source = "game.Workspace;"
+            local cursor = TextUtils.findMethodIdentifierCursorInRange(source, 1, #source + 1)
+            expect(cursor):toBeNil()
         end)
     end)
 end
