@@ -1,4 +1,4 @@
-# LUSharp
+# LUSharp - [Discord](https://discord.gg/c85RP2dzHY)
 
 **Write Roblox games in C# — transpiled to Luau.**
 
