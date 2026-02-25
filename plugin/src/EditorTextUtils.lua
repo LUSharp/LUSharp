@@ -475,6 +475,18 @@ function EditorTextUtils.sanitizeWordDeleteSelection(cursorPos, selectionStart, 
     return -1
 end
 
+function EditorTextUtils.resolveWordDeleteSelectionForDetect(rawSelectionStart, sanitizedSelectionStart, shortcutDetected)
+    if shortcutDetected == true then
+        return sanitizedSelectionStart
+    end
+
+    if type(rawSelectionStart) == "number" then
+        return rawSelectionStart
+    end
+
+    return sanitizedSelectionStart
+end
+
 function EditorTextUtils.isSelectionDeleteSplice(cursorPos, selectionStart, spliceStart)
     if type(cursorPos) ~= "number" or type(selectionStart) ~= "number" then
         return false
@@ -517,8 +529,10 @@ function EditorTextUtils.shouldRepairWordDelete(keyCode, hadSelection, removedTe
             return #removedText > 1
         end
 
-        -- Backspace repair stays conservative to avoid stale-cursor overcorrections.
-        return #removedText <= 1
+        -- Backspace should repair oversized native deletes when they include
+        -- punctuation/whitespace (expression tails, line wipes), while leaving
+        -- plain identifier-token deletes alone.
+        return #removedText <= 1 or removedText:find("[^%w_]", 1) ~= nil
     end
 
     -- Non-shortcut fallback: Delete can miss modifier-state and wipe expression tails.
@@ -527,8 +541,9 @@ function EditorTextUtils.shouldRepairWordDelete(keyCode, hadSelection, removedTe
         return #removedText > 1
     end
 
-    -- Backspace fallback remains strict: only newline-spanning corruption.
-    return removedText:find("\n", 1, true) ~= nil
+    -- Backspace fallback repairs any multi-char native delete without selection.
+    -- This normalizes Ctrl-state misses back to token-level behavior.
+    return #removedText > 1
 end
 
 function EditorTextUtils.resolveWordDeleteDirection(beforeCursor, afterCursor)

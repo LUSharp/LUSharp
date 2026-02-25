@@ -519,8 +519,15 @@ function Parser.parse(tokens, options)
             return { type = "identifier", name = tok.value }
         end
 
+        if check("eof") then
+            local tok = current()
+            addDiagnostic("error", "Expected expression", tok)
+            return { type = "unknown", value = tok.value }
+        end
+
         -- Fallback: skip the token and return a generic node
         local tok = advance()
+        addDiagnostic("error", "Unexpected token in expression", tok)
         return { type = "unknown", value = tok.value }
     end
 
@@ -799,7 +806,7 @@ function Parser.parse(tokens, options)
             if match("operator", "=") then
                 initializer = parseExpression()
             end
-            match("punctuation", ";")
+            expect("punctuation", ";")
             return { type = "local_var", name = name, varType = "var", initializer = initializer }
         end
 
@@ -1015,7 +1022,7 @@ function Parser.parse(tokens, options)
             if match("operator", "=") then
                 initializer = parseExpression()
             end
-            match("punctuation", ";")
+            expect("punctuation", ";")
             return { type = "local_var", name = name, varType = varType, initializer = initializer }
         end
 

@@ -3151,6 +3151,7 @@ local function createScope(parent)
     return {
         parent = parent,
         declared = {},
+        declaredTypes = {},
     }
 end
 
@@ -3161,6 +3162,31 @@ local function declareInScope(scope, allDeclared, name)
 
     scope.declared[name] = true
     allDeclared[name] = true
+end
+
+local function declareTypeInScope(scope, name, typeName)
+    if type(name) ~= "string" or name == "" then
+        return
+    end
+
+    if type(typeName) ~= "string" or typeName == "" or typeName == "var" then
+        return
+    end
+
+    scope.declaredTypes[name] = typeName
+end
+
+local function getDeclaredTypeInScope(scope, name)
+    local currentScope = scope
+    while currentScope do
+        local declaredType = currentScope.declaredTypes[name]
+        if type(declaredType) == "string" and declaredType ~= "" then
+            return declaredType
+        end
+        currentScope = currentScope.parent
+    end
+
+    return nil
 end
 
 local function isDeclaredInScope(scope, name)
@@ -3175,7 +3201,7 @@ local function isDeclaredInScope(scope, name)
     return false
 end
 
-local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, out, seedDeclaredNames)
+local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, out, seedDeclaredNames, seedDeclaredTypes)
     local allDeclared = {}
     local emitted = {}
     local nextSearchStartByName = {}
@@ -3337,8 +3363,156 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
         })
     end
 
+    local function reportInvalidSetAccessorIssue(memberName)
+        if type(memberName) ~= "string" or memberName == "" then
+            return
+        end
+
+        local key = "invalid_set_accessor::" .. memberName
+        if emitted[key] then
+            return
+        end
+        emitted[key] = true
+
+        local found = findIdentifierPosition(source, lineStarts, memberName, nextSearchStartByName[memberName], {
+            preferLast = true,
+        })
+        if found then
+            nextSearchStartByName[memberName] = found.nextStart
+        end
+
+        table.insert(out, {
+            severity = "error",
+            message = "The property or indexer '" .. memberName .. "' cannot be used in this context because the set accessor is invalid",
+            line = found and found.line or 1,
+            column = found and found.column or 1,
+            endLine = found and found.endLine or 1,
+            endColumn = found and found.endColumn or 2,
+            length = found and found.length or math.max(1, #memberName),
+            code = "semantic.invalid_set_accessor",
+        })
+    end
+
+    local inferExpressionType
     local walkExpression
     local walkStatements
+
+    inferExpressionType = function(expr, scope)
+        if type(expr) ~= "table" then
+            return nil
+        end
+
+        local exprType = expr.type
+        if exprType == "identifier" then
+            local declaredType = getDeclaredTypeInScope(scope, expr.name)
+            if declaredType then
+                return declaredType
+            end
+
+            local globalMember = findMemberInType("Globals", expr.name)
+            if globalMember then
+                if globalMember.kind == "method" then
+                    return globalMember.returnType
+                end
+                return globalMember.type
+            end
+
+            if resolveType(expr.name) then
+                return expr.name
+            end
+
+            return nil
+        end
+
+        if exprType == "member_access" or exprType == "null_conditional" then
+            local objectType = inferExpressionType(expr.object, scope)
+            if not objectType then
+                return nil
+            end
+
+            local member = findMemberInType(objectType, expr.member)
+            if not member then
+                return nil
+            end
+
+            if member.kind == "method" then
+                return member.returnType
+            end
+
+            return member.type
+        end
+
+        if exprType == "call" then
+            if type(expr.callee) ~= "table" then
+                return nil
+            end
+
+            if expr.callee.type == "member_access" or expr.callee.type == "null_conditional" then
+                local objectType = inferExpressionType(expr.callee.object, scope)
+                if not objectType then
+                    return nil
+                end
+
+                local method = findMemberInType(objectType, expr.callee.member)
+                if method and method.kind == "method" then
+                    return method.returnType
+                end
+                return nil
+            end
+
+            if expr.callee.type == "identifier" then
+                local method = findMemberInType("Globals", expr.callee.name)
+                if method and method.kind == "method" then
+                    return method.returnType
+                end
+            end
+
+            return nil
+        end
+
+        if exprType == "new" then
+            return expr.className
+        end
+
+        if exprType == "assignment" then
+            return inferExpressionType(expr.target, scope)
+        end
+
+        if exprType == "cast" then
+            return expr.targetType
+        end
+
+        return nil
+    end
+
+    local function validateAssignmentTarget(target, scope)
+        if type(target) ~= "table" then
+            return
+        end
+
+        local targetType = target.type
+        if targetType ~= "member_access" and targetType ~= "null_conditional" then
+            return
+        end
+
+        if type(target.member) ~= "string" or target.member == "" then
+            return
+        end
+
+        local objectType = inferExpressionType(target.object, scope)
+        if not objectType then
+            return
+        end
+
+        local member = findMemberInType(objectType, target.member)
+        if not member then
+            return
+        end
+
+        if member.kind == "property" and member.canWrite == false then
+            reportInvalidSetAccessorIssue(target.member)
+        end
+    end
 
     walkExpression = function(expr, scope)
         if type(expr) ~= "table" then
@@ -3358,6 +3532,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
         end
 
         if exprType == "assignment" then
+            validateAssignmentTarget(expr.target, scope)
             walkExpression(expr.target, scope)
             walkExpression(expr.value, scope)
             return
@@ -3464,6 +3639,12 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             if statementType == "local_var" then
                 walkExpression(statement.initializer, scope)
                 declareInScope(scope, allDeclared, statement.name)
+
+                local declaredType = statement.varType
+                if declaredType == "var" or declaredType == nil or declaredType == "" then
+                    declaredType = inferExpressionType(statement.initializer, scope)
+                end
+                declareTypeInScope(scope, statement.name, declaredType)
             elseif statementType == "expression_statement" then
                 walkExpression(statement.expression, scope)
             elseif statementType == "if" then
@@ -3479,6 +3660,12 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
                 if type(statement.init) == "table" and statement.init.type == "local_var" then
                     walkExpression(statement.init.initializer, loopScope)
                     declareInScope(loopScope, allDeclared, statement.init.name)
+
+                    local loopDeclaredType = statement.init.varType
+                    if loopDeclaredType == "var" or loopDeclaredType == nil or loopDeclaredType == "" then
+                        loopDeclaredType = inferExpressionType(statement.init.initializer, loopScope)
+                    end
+                    declareTypeInScope(loopScope, statement.init.name, loopDeclaredType)
                 else
                     walkExpression(statement.init, loopScope)
                 end
@@ -3489,6 +3676,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
                 local loopScope = createScope(scope)
                 walkExpression(statement.iterable, scope)
                 declareInScope(loopScope, allDeclared, statement.variable)
+                declareTypeInScope(loopScope, statement.variable, statement.varType)
                 walkStatements(statement.body, createScope(loopScope))
             elseif statementType == "while" then
                 walkExpression(statement.condition, scope)
@@ -3525,8 +3713,15 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
         end
     end
 
+    if type(seedDeclaredTypes) == "table" then
+        for name, typeName in pairs(seedDeclaredTypes) do
+            declareTypeInScope(methodScope, name, typeName)
+        end
+    end
+
     for _, parameter in ipairs(methodNode.parameters or {}) do
         declareInScope(methodScope, allDeclared, parameter.name)
+        declareTypeInScope(methodScope, parameter.name, parameter.type)
     end
 
     walkStatements(methodNode.body or {}, methodScope)
@@ -3542,13 +3737,16 @@ local function collectMethodScopeDiagnostics(parseResult, source)
 
     for _, classNode in ipairs(parseResult.classes or {}) do
         local classScopeNames = {}
+        local classScopeTypes = {}
 
         for _, field in ipairs(classNode.fields or {}) do
             classScopeNames[field.name] = true
+            classScopeTypes[field.name] = field.fieldType
         end
 
         for _, property in ipairs(classNode.properties or {}) do
             classScopeNames[property.name] = true
+            classScopeTypes[property.name] = property.propType
         end
 
         for _, method in ipairs(classNode.methods or {}) do
@@ -3569,7 +3767,7 @@ local function collectMethodScopeDiagnostics(parseResult, source)
                 body = methodNode.body,
             }
 
-            collectScopeDiagnosticsForMethod(shimMethod, source, lineStarts, diagnostics, classScopeNames)
+            collectScopeDiagnosticsForMethod(shimMethod, source, lineStarts, diagnostics, classScopeNames, classScopeTypes)
         end
     end
 

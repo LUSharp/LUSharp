@@ -36,6 +36,7 @@ local SMART_TRIPLE_CLICK_MAX_CURSOR_DELTA = 2
 local SMART_LINE_MODE_INCLUDE_TERMINATOR = true
 local SMART_PRIMARY_MOUSE_DEDUPE_SECONDS = 0.05
 local SMART_PRIMARY_MOUSE_DEDUPE_CURSOR_DELTA = 2
+local WORD_DELETE_SHORTCUT_GRACE_SECONDS = 0.8
 local SMART_DOUBLE_CLICK_STOP_CHARS = {
     ["\""] = true,
     ["'"] = true,
@@ -214,8 +215,14 @@ end
 local function updateModifierCache(self, keyCode, isDown)
     if keyCode == Enum.KeyCode.LeftControl or keyCode == Enum.KeyCode.RightControl then
         self._ctrlModifierDown = isDown == true
+        if isDown == true then
+            self._lastCtrlModifierDownAt = os.clock()
+        end
     elseif keyCode == Enum.KeyCode.LeftAlt or keyCode == Enum.KeyCode.RightAlt then
         self._altModifierDown = isDown == true
+        if isDown == true then
+            self._lastAltModifierDownAt = os.clock()
+        end
     end
 end
 
@@ -1279,6 +1286,8 @@ function Editor.new(pluginObject, options)
     self._deferNextSuppressedRefresh = false
     self._ctrlModifierDown = false
     self._altModifierDown = false
+    self._lastCtrlModifierDownAt = nil
+    self._lastAltModifierDownAt = nil
 
     warn("[LUSharp SelDbg] editor-init instrumentation-active")
 
@@ -1425,31 +1434,93 @@ function Editor.new(pluginObject, options)
 
         if type(pendingWordDelete) == "table" then
             local age = os.clock() - (tonumber(pendingWordDelete.createdAt) or 0)
-            if age > 0 and age <= 0.6 and textBox.Text ~= tostring(pendingWordDelete.beforeText or "") then
+            if age > 0 and age <= 0.6
+                and (
+                    textBox.Text ~= tostring(pendingWordDelete.beforeText or "")
+                    or textBox.Text ~= tostring(self._lastText or "")
+                ) then
                 local beforeText = tostring(pendingWordDelete.beforeText or "")
                 local beforeCursor = tonumber(pendingWordDelete.beforeCursor)
                 local beforeSelection = tonumber(pendingWordDelete.beforeSelection)
                 local rawBeforeSelection = tonumber(pendingWordDelete.rawBeforeSelection)
-                local _fixStartPos, fixRemovedText, fixInsertedText = findSingleSplice(beforeText, textBox.Text)
-                local selectionForDetect = rawBeforeSelection
-                if selectionForDetect == nil then
-                    selectionForDetect = beforeSelection
+                local nowAtRepair = os.clock()
+                local lastKnownText = tostring(self._lastText or "")
+                local lastKnownCursor = tonumber(self._lastCursorPos)
+
+                -- If pending snapshot was captured too late (already post-delete),
+                -- fall back to last known editor state from previous text cycle.
+                local pendingSnapshotLooksLate = (beforeText == textBox.Text)
+                    or (beforeText ~= "" and #beforeText < #textBox.Text)
+                local hasUsableLastKnownState = lastKnownText ~= ""
+                    and lastKnownText ~= textBox.Text
+                    and #lastKnownText >= #textBox.Text
+
+                if pendingSnapshotLooksLate and hasUsableLastKnownState then
+                    beforeText = lastKnownText
+
+                    local lateStartPos, lateRemovedText = findSingleSplice(beforeText, textBox.Text)
+                    local lateDirection = pendingWordDelete.keyCode == Enum.KeyCode.Backspace and "backward" or "forward"
+                    local inferredBeforeCursor = EditorTextUtils.resolveWordDeleteCursorFromSplice(lateStartPos, lateRemovedText, lateDirection)
+                    if type(inferredBeforeCursor) == "number" then
+                        beforeCursor = inferredBeforeCursor
+                    elseif type(lastKnownCursor) == "number" then
+                        beforeCursor = lastKnownCursor
+                    end
+
+                    -- Late-captured snapshots should never preserve stale selection anchors.
+                    rawBeforeSelection = -1
+                    beforeSelection = -1
+
+                    setKeyDebug(self, string.format("WordFix baseline=last-known key=%s", tostring(pendingWordDelete.keyCode)))
                 end
+
+                local _fixStartPos, fixRemovedText, fixInsertedText = findSingleSplice(beforeText, textBox.Text)
+                local ctrlRecentlyDown = type(self._lastCtrlModifierDownAt) == "number"
+                    and (nowAtRepair - self._lastCtrlModifierDownAt) <= WORD_DELETE_SHORTCUT_GRACE_SECONDS
+                local altRecentlyDown = type(self._lastAltModifierDownAt) == "number"
+                    and (nowAtRepair - self._lastAltModifierDownAt) <= WORD_DELETE_SHORTCUT_GRACE_SECONDS
+                local shortcutLikely = pendingWordDelete.shortcutDetected == true
+                    or isCtrlModifierDown(self)
+                    or isAltModifierDown(self)
+                    or ctrlRecentlyDown
+                    or altRecentlyDown
+                local hadRealSelectionBeforeKey = type(beforeCursor) == "number"
+                    and type(rawBeforeSelection) == "number"
+                    and rawBeforeSelection >= 1
+                    and rawBeforeSelection ~= beforeCursor
+                local forceTokenRepair = not hadRealSelectionBeforeKey
+                    and type(fixRemovedText) == "string"
+                    and #fixRemovedText > 1
+                    and (
+                        pendingWordDelete.keyCode == Enum.KeyCode.Backspace
+                        or pendingWordDelete.keyCode == Enum.KeyCode.Delete
+                    )
+
+                local repairSelection = beforeSelection
+                if shortcutLikely or forceTokenRepair then
+                    repairSelection = -1
+                end
+
+                local selectionForDetect = EditorTextUtils.resolveWordDeleteSelectionForDetect(
+                    rawBeforeSelection,
+                    repairSelection,
+                    shortcutLikely or forceTokenRepair
+                )
                 local hadSelection = EditorTextUtils.isSelectionDeleteSplice(beforeCursor, selectionForDetect, _fixStartPos)
                 local shouldRepairWordDelete = EditorTextUtils.shouldRepairWordDelete(
                     pendingWordDelete.keyCode,
                     hadSelection,
                     fixRemovedText,
                     fixInsertedText,
-                    pendingWordDelete.shortcutDetected == true
+                    shortcutLikely
                 )
 
                 if shouldRepairWordDelete then
                     local expectedText, expectedCursor, expectedSelection, changed
                     if pendingWordDelete.keyCode == Enum.KeyCode.Backspace then
-                        expectedText, expectedCursor, expectedSelection, changed = EditorTextUtils.computeCtrlBackspaceEdit(beforeText, beforeCursor, beforeSelection)
+                        expectedText, expectedCursor, expectedSelection, changed = EditorTextUtils.computeCtrlBackspaceEdit(beforeText, beforeCursor, repairSelection)
                     else
-                        expectedText, expectedCursor, expectedSelection, changed = EditorTextUtils.computeCtrlDeleteEdit(beforeText, beforeCursor, beforeSelection)
+                        expectedText, expectedCursor, expectedSelection, changed = EditorTextUtils.computeCtrlDeleteEdit(beforeText, beforeCursor, repairSelection)
                     end
 
                     if changed and (textBox.Text ~= expectedText or textBox.CursorPosition ~= expectedCursor or textBox.SelectionStart ~= expectedSelection) then
@@ -2449,9 +2520,51 @@ function Editor.new(pluginObject, options)
         setSelectionDebug(self, "SelDbg plugin-mouse-hook-missing", true)
     end
 
+    local function capturePendingWordDeleteSnapshot(keyCode, ctrlDown, altDown, source)
+        if keyCode ~= Enum.KeyCode.Backspace and keyCode ~= Enum.KeyCode.Delete then
+            return
+        end
+
+        if not textBox:IsFocused() then
+            return
+        end
+
+        local now = os.clock()
+        local existing = self._pendingWordDelete
+        if type(existing) == "table" and existing.keyCode == keyCode then
+            local existingAge = now - (tonumber(existing.createdAt) or 0)
+            if existingAge >= 0 and existingAge <= WORD_DELETE_SHORTCUT_GRACE_SECONDS then
+                return
+            end
+        end
+
+        local beforeCursor = textBox.CursorPosition
+        local rawBeforeSelection = textBox.SelectionStart
+
+        self._pendingWordDelete = {
+            keyCode = keyCode,
+            createdAt = now,
+            beforeText = textBox.Text,
+            beforeCursor = beforeCursor,
+            rawBeforeSelection = rawBeforeSelection,
+            beforeSelection = EditorTextUtils.sanitizeWordDeleteSelection(beforeCursor, rawBeforeSelection, keyCode, ctrlDown, altDown),
+            shortcutDetected = EditorTextUtils.isWordDeleteShortcut(keyCode, ctrlDown, altDown),
+            source = source,
+        }
+    end
+
     table.insert(self._connections, textBox.InputBegan:Connect(function(input, _gameProcessed)
+        updateModifierCache(self, input.KeyCode, true)
+
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             handlePrimaryMouseDown(input.Position, "textbox")
+            return
+        end
+
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            local ctrlDown = resolveCtrlModifierDown(self, input)
+            local altDown = resolveAltModifierDown(self, input)
+            capturePendingWordDeleteSnapshot(input.KeyCode, ctrlDown, altDown, "textbox")
         end
     end))
     setSelectionDebug(self, "SelDbg textbox-input-hook-attached", true)
@@ -2489,20 +2602,7 @@ function Editor.new(pluginObject, options)
         local ctrlDown = resolveCtrlModifierDown(self, input)
         local altDown = resolveAltModifierDown(self, input)
 
-        if input.KeyCode == Enum.KeyCode.Backspace or input.KeyCode == Enum.KeyCode.Delete then
-            local shortcutDetected = EditorTextUtils.isWordDeleteShortcut(input.KeyCode, ctrlDown, altDown)
-            local beforeCursor = textBox.CursorPosition
-            local rawBeforeSelection = textBox.SelectionStart
-            self._pendingWordDelete = {
-                keyCode = input.KeyCode,
-                createdAt = os.clock(),
-                beforeText = textBox.Text,
-                beforeCursor = beforeCursor,
-                rawBeforeSelection = rawBeforeSelection,
-                beforeSelection = EditorTextUtils.sanitizeWordDeleteSelection(beforeCursor, rawBeforeSelection, input.KeyCode, ctrlDown, altDown),
-                shortcutDetected = shortcutDetected,
-            }
-        end
+        capturePendingWordDeleteSnapshot(input.KeyCode, ctrlDown, altDown, "uis")
 
         if EditorTextUtils.isUndoRedoShortcut(input.KeyCode, ctrlDown, altDown) then
             self._skipEditorTransformsOnce = true

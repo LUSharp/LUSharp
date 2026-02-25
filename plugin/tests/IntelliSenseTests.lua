@@ -679,6 +679,65 @@ class Foo {
             expect(invalidExpressionStatementDiagnostic):toNotBeNil()
         end)
 
+        it("adds diagnostics for invalid set accessor usage on read-only properties", function()
+            local source = "class Main { void GameEntry() { var ad = new AdGui(); ad.Status = 1; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local invalidSetAccessorDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("property or indexer 'Status'", 1, true) ~= nil
+                    and message:find("set accessor is invalid", 1, true) ~= nil then
+                    invalidSetAccessorDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(invalidSetAccessorDiagnostic):toNotBeNil()
+        end)
+
+        it("adds diagnostics for incomplete compound assignments", function()
+            local source = "class Main { void GameEntry() { var playersService = game.GetService<Players>(); var l = playersService.LocalPlayer += ; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local hasAssignmentError = false
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and (
+                        message:find("Unexpected token in expression", 1, true) ~= nil
+                        or message:find("Expected expression", 1, true) ~= nil
+                        or message:find("set accessor is invalid", 1, true) ~= nil
+                    ) then
+                    hasAssignmentError = true
+                    break
+                end
+            end
+
+            expect(hasAssignmentError):toBe(true)
+        end)
+
+        it("adds diagnostics for variable declarations missing semicolon", function()
+            local source = "class Main { void GameEntry() { var l = playersService.LocalPlayer } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local missingSemicolonDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Expected punctuation ';'", 1, true) ~= nil then
+                    missingSemicolonDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(missingSemicolonDiagnostic):toNotBeNil()
+        end)
+
         it("adds undeclared diagnostics for identifiers used inside interpolated strings", function()
             local source = "class Main { void GameEntry() { print($\"{missingValue} is data\"); } }"
             local parseResult = parseSource(source)

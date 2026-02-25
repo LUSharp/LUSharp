@@ -411,6 +411,43 @@ class Foo : Bar {
 
             expect(invalidExpressionStatementDiagnostic):toNotBeNil()
         end)
+
+        it("reports error for incomplete compound assignment", function()
+            local source = "class Main { void GameEntry() { var playersService = game.GetService<Players>(); var l = playersService.LocalPlayer += ; } }"
+            local ast = parse(source)
+            local incompleteCompoundAssignmentDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and (
+                        message:find("Expected expression", 1, true) ~= nil
+                        or message:find("Unexpected token in expression", 1, true) ~= nil
+                    ) then
+                    incompleteCompoundAssignmentDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(incompleteCompoundAssignmentDiagnostic):toNotBeNil()
+        end)
+
+        it("reports error for variable declaration missing semicolon", function()
+            local source = "class Main { void GameEntry() { var l = playersService.LocalPlayer } }"
+            local ast = parse(source)
+            local missingSemicolonDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Expected punctuation ';'", 1, true) ~= nil then
+                    missingSemicolonDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(missingSemicolonDiagnostic):toNotBeNil()
+        end)
     end)
 end
 

@@ -584,6 +584,30 @@ return function(describe, it, expect)
             expect(newCursor):toBe(#newText + 1)
         end)
 
+        it("ctrl-backspace removes chained member call tokens one segment at a time", function()
+            local text = "var l = playersService.LocalPlayer.AccountAge.ToString();"
+
+            local t1, c1, ch1 = TextUtils.deletePrevWordSegment(text, #text + 1)
+            expect(ch1):toBe(true)
+            expect(t1):toBe("var l = playersService.LocalPlayer.AccountAge.ToString()")
+            expect(c1):toBe(#t1 + 1)
+
+            local t2, c2, ch2 = TextUtils.deletePrevWordSegment(t1, #t1 + 1)
+            expect(ch2):toBe(true)
+            expect(t2):toBe("var l = playersService.LocalPlayer.AccountAge.ToString(")
+            expect(c2):toBe(#t2 + 1)
+
+            local t3, c3, ch3 = TextUtils.deletePrevWordSegment(t2, #t2 + 1)
+            expect(ch3):toBe(true)
+            expect(t3):toBe("var l = playersService.LocalPlayer.AccountAge.ToString")
+            expect(c3):toBe(#t3 + 1)
+
+            local t4, c4, ch4 = TextUtils.deletePrevWordSegment(t3, #t3 + 1)
+            expect(ch4):toBe(true)
+            expect(t4):toBe("var l = playersService.LocalPlayer.AccountAge.")
+            expect(c4):toBe(#t4 + 1)
+        end)
+
         it("detects ctrl+z and ctrl+y as undo/redo shortcuts", function()
             expect(TextUtils.isUndoRedoShortcut("Z", true, false)):toBe(true)
             expect(TextUtils.isUndoRedoShortcut("Y", true, false)):toBe(true)
@@ -622,6 +646,21 @@ return function(describe, it, expect)
             expect(selection):toBe(1)
         end)
 
+        it("prefers sanitized selection for shortcut delete detection", function()
+            local selectionForDetect = TextUtils.resolveWordDeleteSelectionForDetect(1, -1, true)
+            expect(selectionForDetect):toBe(-1)
+        end)
+
+        it("prefers raw selection for non-shortcut delete detection", function()
+            local selectionForDetect = TextUtils.resolveWordDeleteSelectionForDetect(1, -1, false)
+            expect(selectionForDetect):toBe(1)
+        end)
+
+        it("falls back to sanitized selection when raw selection is unavailable", function()
+            local selectionForDetect = TextUtils.resolveWordDeleteSelectionForDetect(nil, -1, false)
+            expect(selectionForDetect):toBe(-1)
+        end)
+
         it("treats matching selection splice as active selection", function()
             expect(TextUtils.isSelectionDeleteSplice(20, 1, 1)):toBe(true)
         end)
@@ -640,8 +679,12 @@ return function(describe, it, expect)
             expect(TextUtils.shouldRepairWordDelete("Delete", false, "\nwhole line", "", false)):toBe(true)
         end)
 
-        it("does not repair multi-char non-newline backspace delete without shortcut confirmation", function()
-            expect(TextUtils.shouldRepairWordDelete("Backspace", false, "wholetoken", "", false)):toBe(false)
+        it("repairs multi-char non-newline backspace delete without shortcut confirmation", function()
+            expect(TextUtils.shouldRepairWordDelete("Backspace", false, "wholetoken", "", false)):toBe(true)
+        end)
+
+        it("repairs punctuation-rich backspace delete without shortcut confirmation", function()
+            expect(TextUtils.shouldRepairWordDelete("Backspace", false, "playersService.LocalPlayer.AccountAge.ToString();", "", false)):toBe(true)
         end)
 
         it("repairs suspicious multi-char non-newline delete without shortcut confirmation", function()
@@ -661,6 +704,10 @@ return function(describe, it, expect)
 
         it("does not repair shortcut backspace when native path already removed a token", function()
             expect(TextUtils.shouldRepairWordDelete("Backspace", false, "Players", "", true)):toBe(false)
+        end)
+
+        it("repairs shortcut backspace when native path removes chained expression tails", function()
+            expect(TextUtils.shouldRepairWordDelete("Backspace", false, "playersService.LocalPlayer.AccountAge.ToString();", "", true)):toBe(true)
         end)
 
         it("repairs shortcut delete when native path removed a whole expression tail", function()
