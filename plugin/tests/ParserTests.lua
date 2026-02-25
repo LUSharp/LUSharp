@@ -313,6 +313,43 @@ class Foo : Bar {
             expect(ast.aborted):toBe(true)
             expect(#(ast.diagnostics or {} ) > 0):toBe(true)
         end)
+
+        it("reports error for using directive missing semicolon", function()
+            local ast = parse("using System\nclass Main { }")
+            local missingUsingTerminatorDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("using directive", 1, true) ~= nil then
+                    missingUsingTerminatorDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(missingUsingTerminatorDiagnostic):toNotBeNil()
+            expect(missingUsingTerminatorDiagnostic.line):toBe(1)
+            expect(missingUsingTerminatorDiagnostic.column >= 1):toBe(true)
+            expect(missingUsingTerminatorDiagnostic.endColumn > missingUsingTerminatorDiagnostic.column):toBe(true)
+        end)
+
+        it("reports error for namespace declaration missing opening brace", function()
+            local ast = parse("namespace Game.Shared\nclass Main { }")
+            local missingNamespaceBraceDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("namespace", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("{", 1, true) ~= nil then
+                    missingNamespaceBraceDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(missingNamespaceBraceDiagnostic):toNotBeNil()
+            expect(missingNamespaceBraceDiagnostic.line):toBe(1)
+            expect(missingNamespaceBraceDiagnostic.column >= 1):toBe(true)
+            expect(missingNamespaceBraceDiagnostic.endColumn > missingNamespaceBraceDiagnostic.column):toBe(true)
+        end)
     end)
 end
 

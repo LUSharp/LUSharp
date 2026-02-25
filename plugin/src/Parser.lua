@@ -1127,23 +1127,41 @@ function Parser.parse(tokens, options)
         if check("keyword", "using") then
             advance()
             local parts = {}
-            table.insert(parts, expect("identifier").value)
+            local lastPartToken = expect("identifier")
+            table.insert(parts, lastPartToken.value)
             while match("punctuation", ".") do
-                table.insert(parts, expect("identifier").value)
+                lastPartToken = expect("identifier")
+                table.insert(parts, lastPartToken.value)
             end
-            match("punctuation", ";")
+            if not match("punctuation", ";") then
+                local anchorToken = {
+                    line = lastPartToken.line,
+                    column = lastPartToken.column + math.max(1, #tostring(lastPartToken.value or "")),
+                    value = ";",
+                }
+                addDiagnostic("error", "Expected ';' after using directive", anchorToken)
+            end
             table.insert(ast.usings, table.concat(parts, "."))
 
         -- namespace
         elseif check("keyword", "namespace") then
             advance()
             local parts = {}
-            table.insert(parts, expect("identifier").value)
+            local lastPartToken = expect("identifier")
+            table.insert(parts, lastPartToken.value)
             while match("punctuation", ".") do
-                table.insert(parts, expect("identifier").value)
+                lastPartToken = expect("identifier")
+                table.insert(parts, lastPartToken.value)
             end
             ast.namespace = table.concat(parts, ".")
-            match("punctuation", "{")
+            if not match("punctuation", "{") then
+                local anchorToken = {
+                    line = lastPartToken.line,
+                    column = lastPartToken.column + math.max(1, #tostring(lastPartToken.value or "")),
+                    value = "{",
+                }
+                addDiagnostic("error", "Expected '{' after namespace declaration", anchorToken)
+            end
 
         else
             local mods = parseModifiers()

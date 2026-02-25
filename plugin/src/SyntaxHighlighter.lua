@@ -20,6 +20,9 @@ local DEFAULT_STYLES = {
     method = "#DCDCAA",
     enum = "#B5CEA8",
     localVar = "#D7BA7D",
+    argument = "#F5B971",
+    property = "#4FC1FF",
+    event = "#C586C0",
     namespace = "#C8C8C8",
     string = "#CE9178",
     number = "#B5CEA8",
@@ -35,6 +38,9 @@ local LIGHT_STYLES = {
     method = "#795E26",
     enum = "#2B91AF",
     localVar = "#A31515",
+    argument = "#B54708",
+    property = "#005A9E",
+    event = "#AF00DB",
     namespace = "#7A3E9D",
     string = "#A31515",
     number = "#098658",
@@ -107,6 +113,145 @@ local function isPrimitiveTypeKeyword(value)
         or value == "var"
 end
 
+local function isNamespaceChainIdentifier(tokens, index)
+    local anchor = index
+
+    while anchor > 2 do
+        local dotToken = tokens[anchor - 1]
+        local prevIdentifier = tokens[anchor - 2]
+        if not (dotToken and dotToken.type == "punctuation" and dotToken.value == ".") then
+            break
+        end
+        if not (prevIdentifier and prevIdentifier.type == "identifier") then
+            break
+        end
+        anchor -= 2
+    end
+
+    local beforeAnchor = tokens[anchor - 1]
+    return beforeAnchor
+        and beforeAnchor.type == "keyword"
+        and (beforeAnchor.value == "using" or beforeAnchor.value == "namespace")
+end
+
+local function isDeclarationDelimiterToken(token)
+    if not token then
+        return false
+    end
+
+    return token.type == "operator" and token.value == "="
+        or token.type == "punctuation" and (token.value == "," or token.value == ";" or token.value == ")")
+end
+
+local function isLikelyGenericTypeClose(tokens, index)
+    local depth = 0
+
+    for cursor = index, 1, -1 do
+        local token = tokens[cursor]
+        if token and token.type == "operator" and token.value == ">" then
+            depth += 1
+        elseif token and token.type == "operator" and token.value == "<" then
+            depth -= 1
+            if depth == 0 then
+                local beforeOpen = tokens[cursor - 1]
+                return beforeOpen and (beforeOpen.type == "identifier"
+                    or (beforeOpen.type == "keyword" and isPrimitiveTypeKeyword(beforeOpen.value)))
+            end
+        end
+    end
+
+    return false
+end
+
+local function isTypeTailToken(tokens, index)
+    local token = tokens[index]
+    if not token then
+        return false
+    end
+
+    if token.type == "identifier" then
+        return true
+    end
+
+    if token.type == "keyword" and isPrimitiveTypeKeyword(token.value) then
+        return true
+    end
+
+    if token.type == "operator" and token.value == "?" then
+        return true
+    end
+
+    if token.type == "operator" and token.value == ">" then
+        return isLikelyGenericTypeClose(tokens, index)
+    end
+
+    if token.type == "punctuation" and token.value == "]" then
+        return true
+    end
+
+    return false
+end
+
+local function isInvocationArgumentIdentifier(tokens, index)
+    local token = tokens[index]
+    if not (token and token.type == "identifier") then
+        return false
+    end
+
+    local prev = tokens[index - 1]
+    if not (prev and prev.type == "punctuation" and (prev.value == "(" or prev.value == ",")) then
+        return false
+    end
+
+    local depth = 0
+    for cursor = index - 1, 1, -1 do
+        local current = tokens[cursor]
+        if current and current.type == "punctuation" and current.value == ")" then
+            depth += 1
+        elseif current and current.type == "punctuation" and current.value == "(" then
+            if depth == 0 then
+                local callee = tokens[cursor - 1]
+                return callee ~= nil and callee.type == "identifier"
+            end
+            depth -= 1
+        end
+    end
+
+    return false
+end
+
+local function isEventMemberIdentifier(tokens, index)
+    local token = tokens[index]
+    if not (token and token.type == "identifier") then
+        return false
+    end
+
+    local nextDot = tokens[index + 1]
+    local nextMember = tokens[index + 2]
+    local nextParen = tokens[index + 3]
+    if nextDot
+        and nextDot.type == "punctuation"
+        and nextDot.value == "."
+        and nextMember
+        and nextMember.type == "identifier"
+        and nextMember.value == "Connect"
+        and nextParen
+        and nextParen.type == "punctuation"
+        and nextParen.value == "(" then
+        return true
+    end
+
+    local value = tostring(token.value or "")
+    return value:find("Added$") ~= nil
+        or value:find("Changed$") ~= nil
+        or value:find("Removing$") ~= nil
+        or value:find("Removed$") ~= nil
+end
+
+local function isLikelyTypeIdentifierValue(value)
+    return type(value) == "string" and value:match("^[A-Z][%w_]*$") ~= nil
+end
+
 local function classifyIdentifierTokens(tokens)
     local identifierKinds = {}
     local enumTypes = {}
@@ -144,8 +289,35 @@ local function classifyIdentifierTokens(tokens)
             end
         end
 
+        if prev and prev.type == "punctuation" and prev.value == "." and isNamespaceChainIdentifier(tokens, i) then
+            identifierKinds[i] = "namespace"
+            continue
+        end
+
         if nextTok and nextTok.type == "punctuation" and nextTok.value == "(" then
             identifierKinds[i] = "method"
+            continue
+        end
+
+        if isInvocationArgumentIdentifier(tokens, i) and isLikelyTypeIdentifierValue(token.value) then
+            identifierKinds[i] = "type"
+            continue
+        end
+
+        if prev and prev.type == "punctuation" and prev.value == "(" and nextTok and nextTok.type == "identifier" and isLikelyTypeIdentifierValue(token.value) then
+            identifierKinds[i] = "type"
+            continue
+        end
+
+        if prev and prev.type == "punctuation" and prev.value == "," and nextTok and nextTok.type == "identifier" and isLikelyTypeIdentifierValue(token.value) then
+            identifierKinds[i] = "type"
+            continue
+        end
+
+        if (not (prev and prev.type == "punctuation" and prev.value == "."))
+            and nextTok and nextTok.type == "punctuation" and nextTok.value == "."
+            and isLikelyTypeIdentifierValue(token.value) then
+            identifierKinds[i] = "type"
             continue
         end
 
@@ -167,6 +339,9 @@ local function classifyIdentifierTokens(tokens)
                 identifierKinds[i] = "enum"
                 continue
             end
+
+            identifierKinds[i] = isEventMemberIdentifier(tokens, i) and "event" or "property"
+            continue
         end
 
         local isLocalDeclaration = false
@@ -180,6 +355,8 @@ local function classifyIdentifierTokens(tokens)
             elseif nextType == "punctuation" and (nextValue == "," or nextValue == ";" or nextValue == ")") then
                 isLocalDeclaration = true
             end
+        elseif isTypeTailToken(tokens, i - 1) and isDeclarationDelimiterToken(nextTok) then
+            isLocalDeclaration = true
         end
 
         if isLocalDeclaration then
@@ -189,7 +366,11 @@ local function classifyIdentifierTokens(tokens)
         end
 
         if localVars[token.value] and not (prev and prev.type == "punctuation" and prev.value == ".") then
-            identifierKinds[i] = "localVar"
+            if isInvocationArgumentIdentifier(tokens, i) then
+                identifierKinds[i] = "argument"
+            else
+                identifierKinds[i] = "localVar"
+            end
             continue
         end
 
@@ -227,7 +408,26 @@ local function makeStyleMap(options)
     return styleMap
 end
 
-local function styleText(text, category, styleMap)
+local function styleInterpolatedStringToken(text, styleMap)
+    local escaped = escapeRichText(text)
+    local localVarColor = styleMap.localVar
+    if localVarColor ~= nil then
+        escaped = escaped:gsub("{([%a_][%w_]*)}", '{<font color="' .. localVarColor .. '">%1</font>}')
+    end
+
+    local stringColor = styleMap.string
+    if stringColor == nil then
+        return escaped
+    end
+
+    return '<font color="' .. stringColor .. '">' .. escaped .. "</font>"
+end
+
+local function styleText(text, category, styleMap, tokenType)
+    if tokenType == "interpolated_string" then
+        return styleInterpolatedStringToken(text, styleMap)
+    end
+
     local escaped = escapeRichText(text)
     local color = category and styleMap[category] or nil
 
@@ -279,7 +479,7 @@ function SyntaxHighlighter.highlight(source, options)
             category = identifierKinds[i]
         end
 
-        table.insert(out, styleText(tokenText, category, styleMap))
+        table.insert(out, styleText(tokenText, category, styleMap, token.type))
 
         cursor = tokenEnd + 1
     end

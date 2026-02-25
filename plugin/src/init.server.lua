@@ -267,7 +267,7 @@ local function parseDiagnostics(source)
         yieldEvery = PARSER_YIELD_EVERY,
         maxOperations = maxOperations,
     })
-    local diagnostics = IntelliSense.getDiagnostics(parseResult)
+    local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
 
     diagnosticsCacheSource = source
     diagnosticsCacheResult = diagnostics
@@ -422,10 +422,18 @@ editor:setOnRequestHoverInfo(function(cursorPos)
         return nil
     end
 
+    local diagnostics = nil
+    if diagnosticsCacheSource == source and diagnosticsCacheResult ~= nil then
+        diagnostics = diagnosticsCacheResult
+    else
+        diagnostics = parseDiagnostics(source)
+    end
+
     return IntelliSense.getHoverInfo(source, cursorPos, {
         context = context,
         searchNearby = true,
         nearbyRadius = 20,
+        diagnostics = diagnostics,
     })
 end)
 

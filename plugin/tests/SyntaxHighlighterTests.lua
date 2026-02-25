@@ -51,6 +51,67 @@ local function run(describe, it, expect)
             local out = SyntaxHighlighter.highlight("int count = 0; count = count + 1;")
             expect(out):toContain('<font color="#D7BA7D">count</font>')
         end)
+
+        it("styles full using namespace chain", function()
+            local out = SyntaxHighlighter.highlight("using System.Collections.Generic;")
+            expect(out):toContain('<font color="#C8C8C8">System</font>')
+            expect(out):toContain('<font color="#C8C8C8">Collections</font>')
+            expect(out):toContain('<font color="#C8C8C8">Generic</font>')
+        end)
+
+        it("styles full namespace declaration chain", function()
+            local out = SyntaxHighlighter.highlight("namespace Game.Shared.Core { }")
+            expect(out):toContain('<font color="#C8C8C8">Game</font>')
+            expect(out):toContain('<font color="#C8C8C8">Shared</font>')
+            expect(out):toContain('<font color="#C8C8C8">Core</font>')
+        end)
+
+        it("styles generic, array, and nullable parameter identifiers as local vars", function()
+            local out = SyntaxHighlighter.highlight("class Foo { void Log(List<int> items, string[] names, int? count) { Log(items, names, count); } }")
+            expect(out):toContain('<font color="#D7BA7D">items</font>')
+            expect(out):toContain('<font color="#D7BA7D">names</font>')
+            expect(out):toContain('<font color="#D7BA7D">count</font>')
+        end)
+
+        it("keeps method names method-colored while call arguments use argument coloring", function()
+            local out = SyntaxHighlighter.highlight("class Foo { void Log(int value) { Log(value); } }")
+            expect(out):toContain('<font color="#DCDCAA">Log</font>')
+            expect(out):toContain('<font color="#F5B971">value</font>')
+
+            local methodCount = 0
+            for _ in out:gmatch('<font color="#DCDCAA">Log</font>') do
+                methodCount += 1
+            end
+
+            expect(methodCount):toBe(2)
+            expect(out:find('<font color="#D7BA7D">Log</font>', 1, true) == nil):toBe(true)
+        end)
+
+        it("styles nested property chains and events distinctly", function()
+            local out = SyntaxHighlighter.highlight("var players = game.GetService(\"Players\"); players.LocalPlayer.CharacterAdded.Connect(OnCharacterAdded); var anchored = players.LocalPlayer.Character.PrimaryPart.Anchored;")
+            expect(out):toContain('<font color="#4FC1FF">LocalPlayer</font>')
+            expect(out):toContain('<font color="#C586C0">CharacterAdded</font>')
+            expect(out):toContain('<font color="#DCDCAA">Connect</font>')
+            expect(out):toContain('<font color="#4FC1FF">PrimaryPart</font>')
+            expect(out):toContain('<font color="#4FC1FF">Anchored</font>')
+        end)
+
+        it("does not treat comparison rhs identifier as declaration local", function()
+            local out = SyntaxHighlighter.highlight("class Foo { bool Check(int a) { return a > limit; } }")
+            expect(out):toContain('<font color="#D7BA7D">a</font>')
+            expect(out:find('<font color="#D7BA7D">limit</font>', 1, true) == nil):toBe(true)
+        end)
+
+        it("styles interpolation placeholders as local variables", function()
+            local out = SyntaxHighlighter.highlight('class Foo { void Log(string name) { print($"Hello {name}"); } }')
+            expect(out):toContain('{<font color="#D7BA7D">name</font>}')
+        end)
+
+        it("styles class names in parameter and argument positions", function()
+            local out = SyntaxHighlighter.highlight('class Foo { void Log(Console consoleRef) { UseType(Console, Players); Console.WriteLine("x"); } }')
+            expect(out):toContain('<font color="#4EC9B0">Console</font>')
+            expect(out):toContain('<font color="#4EC9B0">Players</font>')
+        end)
     end)
 end
 
