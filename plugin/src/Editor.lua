@@ -324,6 +324,17 @@ local function getPreferredMousePosition(self)
     return self and self._lastValidMousePosition or nil
 end
 
+local function getCaretHoverAnchorScreenPosition(self)
+    if self and self.caret and self.caret.AbsolutePosition then
+        return Vector2.new(
+            self.caret.AbsolutePosition.X + 8,
+            self.caret.AbsolutePosition.Y + math.max(10, self.options and self.options.lineHeight or 18)
+        )
+    end
+
+    return nil
+end
+
 local function getHoverAnchorScreenPosition(self)
     local mousePos = getPreferredMousePosition(self)
     if mousePos then
@@ -334,11 +345,9 @@ local function getHoverAnchorScreenPosition(self)
         return self._lastResolvedHoverPoint
     end
 
-    if self and self.caret and self.caret.AbsolutePosition then
-        return Vector2.new(
-            self.caret.AbsolutePosition.X + 8,
-            self.caret.AbsolutePosition.Y + math.max(10, self.options and self.options.lineHeight or 18)
-        )
+    local caretAnchor = getCaretHoverAnchorScreenPosition(self)
+    if caretAnchor then
+        return caretAnchor
     end
 
     if self and self.root and self.root.AbsolutePosition then
@@ -368,13 +377,13 @@ local function resolveHoverCursorFromCaret(self)
     if not EditorTextUtils.shouldUseCaretHoverCursor(cursorPos, selectionStart) then
         local selectionCursor = EditorTextUtils.resolveHoverCursorFromSelection(selectionStart, cursorPos, #source)
         if type(selectionCursor) == "number" then
-            return selectionCursor, getHoverAnchorScreenPosition(self), "selection"
+            return selectionCursor, getCaretHoverAnchorScreenPosition(self) or getHoverAnchorScreenPosition(self), "selection"
         end
 
         return nil, nil, nil
     end
 
-    return cursorPos, getHoverAnchorScreenPosition(self), "caret"
+    return cursorPos, getCaretHoverAnchorScreenPosition(self) or getHoverAnchorScreenPosition(self), "caret"
 end
 
 local function resolveHoverCursorFromCandidates(self)

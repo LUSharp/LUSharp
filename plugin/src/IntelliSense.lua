@@ -2154,6 +2154,9 @@ local function inferDeclarationHover(identifier, trailingText, beforeTrimmed, be
     return nil
 end
 
+local getDiagnosticAtCursor
+local buildDiagnosticHoverInfo
+
 local function resolveHoverInfoAtPosition(source, cursorPos, opts)
     opts = opts or {}
     local _context = opts.context
@@ -2306,6 +2309,11 @@ function IntelliSense.getHoverInfo(source, cursorPos, opts)
 
     opts = opts or {}
 
+    local diagnosticAtCursor = getDiagnosticAtCursor(source, cursorPos, opts.diagnostics)
+    if diagnosticAtCursor then
+        return buildDiagnosticHoverInfo(diagnosticAtCursor)
+    end
+
     local info, suppressNearby = resolveHoverInfoAtPosition(source, cursorPos, opts)
     if info then
         return info
@@ -2403,67 +2411,582 @@ local function clampPositiveInt(value, fallback)
     return math.max(1, intValue)
 end
 
-function IntelliSense.getDiagnostics(parseResult)
-    local diagnostics = {}
-
-    if not parseResult or type(parseResult) ~= "table" then
-        return diagnostics
+local function lineColumnToSourceIndex(lineStarts, line, column, sourceLength)
+    local lineStart = lineStarts[line]
+    if lineStart == nil then
+        return sourceLength + 1
     end
 
-    for _, diagnostic in ipairs(parseResult.diagnostics or {}) do
+    local index = lineStart + math.max(0, (column or 1) - 1)
+    return math.max(1, math.min(index, sourceLength + 1))
+end
+
+local function sourceIndexToLineColumn(lineStarts, index)
+    local line = 1
+    for i = #lineStarts, 1, -1 do
+        if lineStarts[i] <= index then
+            line = i
+            break
+        end
+    end
+
+    local column = math.max(1, index - lineStarts[line] + 1)
+    return line, column
+end
+
+local function escapeLuaPattern(text)
+    return (tostring(text or ""):gsub("([^%w])", "%%%1"))
+end
+
+local function findIdentifierPosition(source, lineStarts, identifier, startOffset, opts)
+    local escapedIdentifier = escapeLuaPattern(identifier)
+    local pattern = "%f[%w_]" .. escapedIdentifier .. "%f[^%w_]"
+    local searchStart = math.max(1, tonumber(startOffset) or 1)
+
+    local startPos, endPos = source:find(pattern, searchStart)
+
+    if opts and opts.preferLast then
+        local lastStart = nil
+        local lastEnd = nil
+        local cursor = 1
+        while true do
+            local s, e = source:find(pattern, cursor)
+            if not s then
+                break
+            end
+            lastStart = s
+            lastEnd = e
+            cursor = e + 1
+        end
+
+        if lastStart then
+            startPos = lastStart
+            endPos = lastEnd
+        end
+    elseif not startPos then
+        startPos, endPos = source:find(pattern, 1)
+    end
+
+    if not startPos then
+        return nil
+    end
+
+    local line, column = sourceIndexToLineColumn(lineStarts, startPos)
+    return {
+        line = line,
+        column = column,
+        endLine = line,
+        endColumn = column + math.max(1, #tostring(identifier or "")),
+        length = math.max(1, #tostring(identifier or "")),
+        nextStart = (endPos or startPos) + 1,
+    }
+end
+
+local function appendNormalizedDiagnostic(out, diagnostic)
+    if type(diagnostic) ~= "table" then
+        return
+    end
+
+    local startLine = clampPositiveInt(diagnostic.line, 1)
+    local startColumn = clampPositiveInt(diagnostic.column, 1)
+
+    local rawLength = toIntegerOrNil(diagnostic.length)
+    local lengthFromField = nil
+    if rawLength and rawLength > 0 then
+        lengthFromField = rawLength
+    end
+
+    local endLine = clampPositiveInt(diagnostic.endLine, startLine)
+    local endColumn = toIntegerOrNil(diagnostic.endColumn)
+
+    if endColumn == nil then
+        if lengthFromField and endLine == startLine then
+            endColumn = startColumn + lengthFromField
+        else
+            endColumn = startColumn + 1
+        end
+    end
+
+    endColumn = math.max(1, endColumn)
+
+    if endLine < startLine then
+        endLine = startLine
+    end
+
+    if endLine == startLine and endColumn <= startColumn then
+        if lengthFromField then
+            endColumn = startColumn + lengthFromField
+        else
+            endColumn = startColumn + 1
+        end
+    end
+
+    local length = nil
+    if endLine == startLine then
+        length = math.max(1, endColumn - startColumn)
+    elseif lengthFromField then
+        length = lengthFromField
+    else
+        length = 1
+    end
+
+    table.insert(out, {
+        severity = diagnostic.severity or "error",
+        message = diagnostic.message or "",
+        line = startLine,
+        column = startColumn,
+        endLine = endLine,
+        endColumn = endColumn,
+        length = length,
+        code = diagnostic.code,
+    })
+end
+
+local function collectUnknownUsingNamespaceDiagnostics(source)
+    local diagnostics = {}
+    local knownNamespaces = {}
+    for _, namespaceName in ipairs(getUsingNamespaceNames()) do
+        knownNamespaces[string.lower(namespaceName)] = true
+    end
+
+    local lineNumber = 1
+    for line in (source .. "\n"):gmatch("([^\n]*)\n") do
+        local namespaceName = line:match("^%s*using%s+([%a_][%w_%.]*)%s*;%s*$")
+        if namespaceName and not knownNamespaces[string.lower(namespaceName)] then
+            local column = line:find(namespaceName, 1, true) or 1
+            local length = math.max(1, #namespaceName)
+            table.insert(diagnostics, {
+                severity = "error",
+                message = "Unknown using namespace '" .. namespaceName .. "'",
+                line = lineNumber,
+                column = column,
+                endLine = lineNumber,
+                endColumn = column + length,
+                length = length,
+                code = "semantic.unknown_using_namespace",
+            })
+        end
+
+        lineNumber += 1
+    end
+
+    return diagnostics
+end
+
+local function isKnownExternalIdentifier(name)
+    if type(name) ~= "string" or name == "" then
+        return true
+    end
+
+    if KEYWORD_SET[name] then
+        return true
+    end
+
+    if symbolTable[name] ~= nil then
+        return true
+    end
+
+    if findMemberInType("Globals", name) ~= nil then
+        return true
+    end
+
+    if DOTNET_NAMESPACE_MEMBERS[name] ~= nil then
+        return true
+    end
+
+    if isTypeLikeDeclarationName(name) then
+        return true
+    end
+
+    return false
+end
+
+local function createScope(parent)
+    return {
+        parent = parent,
+        declared = {},
+    }
+end
+
+local function declareInScope(scope, allDeclared, name)
+    if type(name) ~= "string" or name == "" then
+        return
+    end
+
+    scope.declared[name] = true
+    allDeclared[name] = true
+end
+
+local function isDeclaredInScope(scope, name)
+    local currentScope = scope
+    while currentScope do
+        if currentScope.declared[name] then
+            return true
+        end
+        currentScope = currentScope.parent
+    end
+
+    return false
+end
+
+local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, out, seedDeclaredNames)
+    local allDeclared = {}
+    local emitted = {}
+    local nextSearchStartByName = {}
+
+    local function reportIdentifierIssue(name, outOfScope)
+        if type(name) ~= "string" or name == "" then
+            return
+        end
+
+        local issueKind = outOfScope and "out_of_scope" or "undeclared"
+        local key = issueKind .. "::" .. name
+        if emitted[key] then
+            return
+        end
+        emitted[key] = true
+
+        local found = findIdentifierPosition(source, lineStarts, name, nextSearchStartByName[name], {
+            preferLast = outOfScope,
+        })
+        if found then
+            nextSearchStartByName[name] = found.nextStart
+        end
+
+        local message
+        local code
+        if outOfScope then
+            message = "Identifier '" .. name .. "' is out of scope"
+            code = "semantic.out_of_scope_identifier"
+        else
+            message = "Undeclared identifier '" .. name .. "'"
+            code = "semantic.undeclared_identifier"
+        end
+
+        table.insert(out, {
+            severity = "error",
+            message = message,
+            line = found and found.line or 1,
+            column = found and found.column or 1,
+            endLine = found and found.endLine or 1,
+            endColumn = found and found.endColumn or 2,
+            length = found and found.length or math.max(1, #name),
+            code = code,
+        })
+    end
+
+    local walkExpression
+    local walkStatements
+
+    walkExpression = function(expr, scope)
+        if type(expr) ~= "table" then
+            return
+        end
+
+        local exprType = expr.type
+        if exprType == "identifier" then
+            local name = expr.name
+            if type(name) == "string"
+                and name ~= ""
+                and not isDeclaredInScope(scope, name)
+                and not isKnownExternalIdentifier(name) then
+                reportIdentifierIssue(name, allDeclared[name] == true)
+            end
+            return
+        end
+
+        if exprType == "assignment" then
+            walkExpression(expr.target, scope)
+            walkExpression(expr.value, scope)
+            return
+        end
+
+        if exprType == "binary" then
+            walkExpression(expr.left, scope)
+            walkExpression(expr.right, scope)
+            return
+        end
+
+        if exprType == "ternary" then
+            walkExpression(expr.condition, scope)
+            walkExpression(expr.thenExpr, scope)
+            walkExpression(expr.elseExpr, scope)
+            return
+        end
+
+        if exprType == "unary" then
+            walkExpression(expr.operand, scope)
+            return
+        end
+
+        if exprType == "call" then
+            walkExpression(expr.callee, scope)
+            for _, arg in ipairs(expr.arguments or {}) do
+                walkExpression(arg, scope)
+            end
+            return
+        end
+
+        if exprType == "member_access" or exprType == "null_conditional" then
+            walkExpression(expr.object, scope)
+            return
+        end
+
+        if exprType == "index" then
+            walkExpression(expr.object, scope)
+            walkExpression(expr.index, scope)
+            return
+        end
+
+        if exprType == "new" then
+            for _, arg in ipairs(expr.arguments or {}) do
+                walkExpression(arg, scope)
+            end
+            for _, initializerExpr in ipairs(expr.initializer or {}) do
+                walkExpression(initializerExpr, scope)
+            end
+            return
+        end
+
+        if exprType == "lambda" then
+            local lambdaScope = createScope(scope)
+            for _, parameterName in ipairs(expr.parameters or {}) do
+                declareInScope(lambdaScope, allDeclared, parameterName)
+            end
+
+            if type(expr.body) == "table" and expr.body[1] ~= nil then
+                walkStatements(expr.body, lambdaScope)
+            else
+                walkExpression(expr.body, lambdaScope)
+            end
+            return
+        end
+
+        if exprType == "cast" then
+            walkExpression(expr.expression, scope)
+            return
+        end
+
+        if exprType == "is" or exprType == "as" then
+            walkExpression(expr.expression, scope)
+            return
+        end
+    end
+
+    walkStatements = function(statements, scope)
+        for _, statement in ipairs(statements or {}) do
+            if type(statement) ~= "table" then
+                continue
+            end
+
+            local statementType = statement.type
+            if statementType == "local_var" then
+                walkExpression(statement.initializer, scope)
+                declareInScope(scope, allDeclared, statement.name)
+            elseif statementType == "expression_statement" then
+                walkExpression(statement.expression, scope)
+            elseif statementType == "if" then
+                walkExpression(statement.condition, scope)
+                walkStatements(statement.body, createScope(scope))
+                for _, elseIf in ipairs(statement.elseIfs or {}) do
+                    walkExpression(elseIf.condition, scope)
+                    walkStatements(elseIf.body, createScope(scope))
+                end
+                walkStatements(statement.elseBody, createScope(scope))
+            elseif statementType == "for" then
+                local loopScope = createScope(scope)
+                if type(statement.init) == "table" and statement.init.type == "local_var" then
+                    walkExpression(statement.init.initializer, loopScope)
+                    declareInScope(loopScope, allDeclared, statement.init.name)
+                else
+                    walkExpression(statement.init, loopScope)
+                end
+                walkExpression(statement.condition, loopScope)
+                walkExpression(statement.increment, loopScope)
+                walkStatements(statement.body, createScope(loopScope))
+            elseif statementType == "foreach" then
+                local loopScope = createScope(scope)
+                walkExpression(statement.iterable, scope)
+                declareInScope(loopScope, allDeclared, statement.variable)
+                walkStatements(statement.body, createScope(loopScope))
+            elseif statementType == "while" then
+                walkExpression(statement.condition, scope)
+                walkStatements(statement.body, createScope(scope))
+            elseif statementType == "do_while" then
+                walkStatements(statement.body, createScope(scope))
+                walkExpression(statement.condition, scope)
+            elseif statementType == "return" then
+                walkExpression(statement.value, scope)
+            elseif statementType == "throw" then
+                walkExpression(statement.expression, scope)
+            elseif statementType == "switch" then
+                walkExpression(statement.expression, scope)
+                for _, caseNode in ipairs(statement.cases or {}) do
+                    walkStatements(caseNode.body, createScope(scope))
+                end
+            elseif statementType == "try_catch" then
+                walkStatements(statement.tryBody, createScope(scope))
+                if statement.catchBody then
+                    local catchScope = createScope(scope)
+                    declareInScope(catchScope, allDeclared, statement.catchVar)
+                    walkStatements(statement.catchBody, catchScope)
+                end
+                walkStatements(statement.finallyBody, createScope(scope))
+            end
+        end
+    end
+
+    local methodScope = createScope(nil)
+
+    if type(seedDeclaredNames) == "table" then
+        for name in pairs(seedDeclaredNames) do
+            declareInScope(methodScope, allDeclared, name)
+        end
+    end
+
+    for _, parameter in ipairs(methodNode.parameters or {}) do
+        declareInScope(methodScope, allDeclared, parameter.name)
+    end
+
+    walkStatements(methodNode.body or {}, methodScope)
+end
+
+local function collectMethodScopeDiagnostics(parseResult, source)
+    if type(parseResult) ~= "table" then
+        return {}
+    end
+
+    local diagnostics = {}
+    local lineStarts = buildLineStarts(source)
+
+    for _, classNode in ipairs(parseResult.classes or {}) do
+        local classScopeNames = {}
+
+        for _, field in ipairs(classNode.fields or {}) do
+            classScopeNames[field.name] = true
+        end
+
+        for _, property in ipairs(classNode.properties or {}) do
+            classScopeNames[property.name] = true
+        end
+
+        for _, method in ipairs(classNode.methods or {}) do
+            classScopeNames[method.name] = true
+        end
+
+        local methods = {}
+        for _, method in ipairs(classNode.methods or {}) do
+            table.insert(methods, method)
+        end
+        if type(classNode.constructor) == "table" then
+            table.insert(methods, classNode.constructor)
+        end
+
+        for _, methodNode in ipairs(methods) do
+            local shimMethod = {
+                parameters = methodNode.parameters,
+                body = methodNode.body,
+            }
+
+            collectScopeDiagnosticsForMethod(shimMethod, source, lineStarts, diagnostics, classScopeNames)
+        end
+    end
+
+    return diagnostics
+end
+
+local function collectSemanticDiagnostics(parseResult, source)
+    local diagnostics = {}
+
+    for _, diagnostic in ipairs(collectUnknownUsingNamespaceDiagnostics(source)) do
+        table.insert(diagnostics, diagnostic)
+    end
+
+    for _, diagnostic in ipairs(collectMethodScopeDiagnostics(parseResult, source)) do
+        table.insert(diagnostics, diagnostic)
+    end
+
+    return diagnostics
+end
+
+getDiagnosticAtCursor = function(source, cursorPos, diagnostics)
+    if type(diagnostics) ~= "table" or #diagnostics == 0 then
+        return nil
+    end
+
+    local sourceLength = #source
+    local lineStarts = buildLineStarts(source)
+    local cursorIndex = math.max(1, math.min(cursorPos or 1, sourceLength + 1))
+
+    for _, diagnostic in ipairs(diagnostics) do
         local startLine = clampPositiveInt(diagnostic.line, 1)
         local startColumn = clampPositiveInt(diagnostic.column, 1)
-
-        local rawLength = toIntegerOrNil(diagnostic.length)
-        local lengthFromField = nil
-        if rawLength and rawLength > 0 then
-            lengthFromField = rawLength
-        end
-
         local endLine = clampPositiveInt(diagnostic.endLine, startLine)
-        local endColumn = toIntegerOrNil(diagnostic.endColumn)
+        local endColumn = clampPositiveInt(diagnostic.endColumn, startColumn + math.max(1, clampPositiveInt(diagnostic.length, 1)))
 
-        if endColumn == nil then
-            if lengthFromField and endLine == startLine then
-                endColumn = startColumn + lengthFromField
-            else
-                endColumn = startColumn + 1
-            end
+        local startIndex = lineColumnToSourceIndex(lineStarts, startLine, startColumn, sourceLength)
+        local endExclusive = lineColumnToSourceIndex(lineStarts, endLine, endColumn, sourceLength)
+        if endExclusive <= startIndex then
+            endExclusive = startIndex + math.max(1, clampPositiveInt(diagnostic.length, 1))
         end
 
-        endColumn = math.max(1, endColumn)
-
-        if endLine < startLine then
-            endLine = startLine
+        if cursorIndex >= startIndex and cursorIndex < endExclusive then
+            return diagnostic
         end
+    end
 
-        if endLine == startLine and endColumn <= startColumn then
-            if lengthFromField then
-                endColumn = startColumn + lengthFromField
-            else
-                endColumn = startColumn + 1
-            end
+    return nil
+end
+
+local DIAGNOSTIC_FALLBACK_DETAIL_BY_CODE = {
+    ["semantic.undeclared_identifier"] = "Undeclared identifier.",
+    ["semantic.out_of_scope_identifier"] = "Identifier is out of scope.",
+    ["semantic.unknown_using_namespace"] = "Unknown using namespace.",
+}
+
+local function resolveDiagnosticHoverDetail(diagnostic)
+    local message = tostring(diagnostic.message or "")
+    if message:match("%S") then
+        return message
+    end
+
+    local code = tostring(diagnostic.code or "")
+    if code ~= "" and DIAGNOSTIC_FALLBACK_DETAIL_BY_CODE[code] ~= nil then
+        return DIAGNOSTIC_FALLBACK_DETAIL_BY_CODE[code]
+    end
+
+    return "Issue detected."
+end
+
+buildDiagnosticHoverInfo = function(diagnostic)
+    if type(diagnostic) ~= "table" then
+        return nil
+    end
+
+    local severity = string.lower(tostring(diagnostic.severity or "error"))
+    local isWarning = severity == "warning"
+
+    return {
+        label = isWarning and "Warning" or "Error",
+        kind = isWarning and "warning" or "error",
+        detail = resolveDiagnosticHoverDetail(diagnostic),
+        documentation = diagnostic.code and ("Code: " .. tostring(diagnostic.code)) or nil,
+    }
+end
+
+function IntelliSense.getDiagnostics(parseResult, source)
+    local diagnostics = {}
+
+    if parseResult and type(parseResult) == "table" then
+        for _, diagnostic in ipairs(parseResult.diagnostics or {}) do
+            appendNormalizedDiagnostic(diagnostics, diagnostic)
         end
+    end
 
-        local length = nil
-        if endLine == startLine then
-            length = math.max(1, endColumn - startColumn)
-        elseif lengthFromField then
-            length = lengthFromField
-        else
-            length = 1
+    if type(source) == "string" and source ~= "" and parseResult and type(parseResult) == "table" then
+        for _, diagnostic in ipairs(collectSemanticDiagnostics(parseResult, source)) do
+            appendNormalizedDiagnostic(diagnostics, diagnostic)
         end
-
-        table.insert(diagnostics, {
-            severity = diagnostic.severity or "error",
-            message = diagnostic.message or "",
-            line = startLine,
-            column = startColumn,
-            endLine = endLine,
-            endColumn = endColumn,
-            length = length,
-            code = diagnostic.code,
-        })
     end
 
     return diagnostics

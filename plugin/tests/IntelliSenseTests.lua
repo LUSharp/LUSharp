@@ -463,6 +463,170 @@ class Foo {
             expect(sawUnexpectedWarning):toBe(true)
         end)
 
+        it("adds diagnostics for unknown using namespace include", function()
+            local source = "using NotAReal.Namespace;\nclass Main { }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local unknownUsingDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Unknown using namespace", 1, true) ~= nil then
+                    unknownUsingDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(unknownUsingDiagnostic):toNotBeNil()
+            expect(unknownUsingDiagnostic.line):toBe(1)
+            expect(unknownUsingDiagnostic.column):toBe(source:find("NotAReal.Namespace", 1, true))
+            expect(unknownUsingDiagnostic.endColumn > unknownUsingDiagnostic.column):toBe(true)
+        end)
+
+        it("adds diagnostics for undeclared identifiers", function()
+            local source = "class Main { void GameEntry() { missingValue = 1; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local undeclaredIdentifierDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("missingValue", 1, true) ~= nil then
+                    undeclaredIdentifierDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(undeclaredIdentifierDiagnostic):toNotBeNil()
+            expect(undeclaredIdentifierDiagnostic.line):toBe(1)
+            expect(undeclaredIdentifierDiagnostic.column):toBe(source:find("missingValue", 1, true))
+            expect(undeclaredIdentifierDiagnostic.endColumn > undeclaredIdentifierDiagnostic.column):toBe(true)
+        end)
+
+        it("adds diagnostics for using loop variable outside scope", function()
+            local source = "class Main { void GameEntry() { for (int i = 0; i < 1; i++) { } i = 3; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local outOfScopeIdentifierDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("out of scope", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("i", 1, true) ~= nil then
+                    outOfScopeIdentifierDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(outOfScopeIdentifierDiagnostic):toNotBeNil()
+            expect(outOfScopeIdentifierDiagnostic.line):toBe(1)
+            expect(outOfScopeIdentifierDiagnostic.column):toBe(source:find("i = 3", 1, true))
+            expect(outOfScopeIdentifierDiagnostic.endColumn > outOfScopeIdentifierDiagnostic.column):toBe(true)
+        end)
+
+        it("does not mark print inside lambda callback as undeclared", function()
+            local source = "class Main { void GameEntry() { Players players = game.GetService(\"Players\"); players.DescendantAdded.Connect(() => { print(\"hi\"); }); print(\"ok\"); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawUndeclaredPrint = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("print", 1, true) ~= nil then
+                    sawUndeclaredPrint = true
+                    break
+                end
+            end
+
+            expect(sawUndeclaredPrint):toBe(false)
+        end)
+
+        it("returns diagnostic hover info when cursor is inside diagnostic span", function()
+            local source = "class Main { void GameEntry() { missingValue = 1; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+            local hoverPos = source:find("missingValue", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, {
+                diagnostics = diagnostics,
+            })
+
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("error")
+            expect(info.label):toContain("Error")
+            expect(info.detail):toContain("missingValue")
+        end)
+
+        it("uses friendly fallback detail when semantic diagnostic message is missing", function()
+            local source = "class Main { }"
+            local column = source:find("Main", 1, true)
+            local info = IntelliSense.getHoverInfo(source, column + 1, {
+                diagnostics = {
+                    {
+                        severity = "error",
+                        code = "semantic.undeclared_identifier",
+                        line = 1,
+                        column = column,
+                        endLine = 1,
+                        endColumn = column + #"Main",
+                        length = #"Main",
+                    },
+                },
+            })
+
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("error")
+            expect(info.detail):toBe("Undeclared identifier.")
+            expect(info.documentation):toContain("semantic.undeclared_identifier")
+        end)
+
+        it("keeps human-readable diagnostic messages as primary hover detail", function()
+            local source = "class Main { }"
+            local column = source:find("Main", 1, true)
+            local info = IntelliSense.getHoverInfo(source, column + 1, {
+                diagnostics = {
+                    {
+                        severity = "error",
+                        message = "Identifier 'i' is out of scope",
+                        code = "semantic.out_of_scope_identifier",
+                        line = 1,
+                        column = column,
+                        endLine = 1,
+                        endColumn = column + #"Main",
+                        length = #"Main",
+                    },
+                },
+            })
+
+            expect(info):toNotBeNil()
+            expect(info.detail):toBe("Identifier 'i' is out of scope")
+            expect(info.documentation):toContain("semantic.out_of_scope_identifier")
+        end)
+
+        it("uses generic fallback detail for unknown diagnostic codes", function()
+            local source = "class Main { }"
+            local column = source:find("Main", 1, true)
+            local info = IntelliSense.getHoverInfo(source, column + 1, {
+                diagnostics = {
+                    {
+                        severity = "warning",
+                        code = "semantic.some_future_code",
+                        line = 1,
+                        column = column,
+                        endLine = 1,
+                        endColumn = column + #"Main",
+                        length = #"Main",
+                    },
+                },
+            })
+
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("warning")
+            expect(info.detail):toBe("Issue detected.")
+            expect(info.documentation):toContain("semantic.some_future_code")
+        end)
+
         it("supports manual symbol type caching", function()
             IntelliSense.resetSymbolTable()
             expect(IntelliSense.setSymbolType("player", "Player")):toBe(true)
