@@ -706,6 +706,18 @@ class Foo {
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
         end)
 
+        it("shows inferred service hover on declaration variable name", function()
+            local source = "var players = game.GetService(\"Players\");"
+            local hoverPos = source:find("players", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("variable")
+            expect(info.label):toBe("players")
+            expect(info.detail):toContain("Players")
+            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Services.Players")
+            expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
+        end)
+
         it("shows hover docs for local inferred from GetService string call", function()
             local source = "var players = game.GetService(\"Players\"); players"
             local hoverPos = #source - 2

@@ -28,6 +28,36 @@ local HOVER_POLL_INTERVAL_SECONDS = 0.2
 local HOVER_EDGE_TOLERANCE_PIXELS = 3
 local HOVER_TYPING_SUPPRESS_SECONDS = 0.25
 local COMPLETION_ACCEPT_ACTION_NAME = "LUSharpEditorCompletionAccept"
+local SMART_DOUBLE_CLICK_SECONDS = 0.75
+local SMART_DOUBLE_CLICK_EXPAND_SECONDS = 0.5
+local SMART_DOUBLE_CLICK_MAX_CURSOR_DELTA = 24
+local SMART_DOUBLE_CLICK_EXPAND_CURSOR_DELTA = 12
+local SMART_TRIPLE_CLICK_MAX_CURSOR_DELTA = 2
+local SMART_LINE_MODE_INCLUDE_TERMINATOR = true
+local SMART_PRIMARY_MOUSE_DEDUPE_SECONDS = 0.05
+local SMART_PRIMARY_MOUSE_DEDUPE_CURSOR_DELTA = 2
+local SMART_DOUBLE_CLICK_STOP_CHARS = {
+    ["\""] = true,
+    ["'"] = true,
+    ["`"] = true,
+    ["$"] = true,
+    ["{"] = true,
+    ["}"] = true,
+    ["("] = true,
+    [")"] = true,
+    [","] = true,
+    [";"] = true,
+    ["="] = true,
+    ["+"] = true,
+    ["-"] = true,
+    ["*"] = true,
+    ["/"] = true,
+    ["\\"] = true,
+    ["."] = true,
+    [":"] = true,
+}
+
+warn("[LUSharp SelDbg] editor-module-loaded")
 
 local cursorPositionFromScreenPoint
 
@@ -156,6 +186,31 @@ local function setKeyDebug(self, message)
     updateStatus(self)
 end
 
+local function setSelectionDebug(self, message, forceLog)
+    local nextMessage = tostring(message or "")
+    setKeyDebug(self, nextMessage)
+
+    local logLine = "[LUSharp SelDbg] " .. nextMessage
+    if forceLog ~= true and self._lastSelectionDebugLog == logLine then
+        return
+    end
+
+    self._lastSelectionDebugLog = logLine
+    warn(logLine)
+end
+
+local function setSelectionMode(self, mode, anchorStart, anchorEndExclusive)
+    self._selectionMode = mode or "character"
+
+    if type(anchorStart) == "number" and type(anchorEndExclusive) == "number" and anchorEndExclusive > anchorStart then
+        self._selectionModeAnchorStart = anchorStart
+        self._selectionModeAnchorEndExclusive = anchorEndExclusive
+    else
+        self._selectionModeAnchorStart = nil
+        self._selectionModeAnchorEndExclusive = nil
+    end
+end
+
 local function updateModifierCache(self, keyCode, isDown)
     if keyCode == Enum.KeyCode.LeftControl or keyCode == Enum.KeyCode.RightControl then
         self._ctrlModifierDown = isDown == true
@@ -174,6 +229,11 @@ local function isAltModifierDown(self)
     return self._altModifierDown == true
         or UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)
         or UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)
+end
+
+local function isShiftModifierDown()
+    return UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
 end
 
 local function readInputModifierState(inputObject, modifierKey)
@@ -303,6 +363,16 @@ local function resolveHoverCursorFromCaret(self)
 
     cursorPos = math.floor(cursorPos)
     cursorPos = math.clamp(cursorPos, 1, maxCursor)
+
+    local selectionStart = tonumber(textBox.SelectionStart)
+    if not EditorTextUtils.shouldUseCaretHoverCursor(cursorPos, selectionStart) then
+        local selectionCursor = EditorTextUtils.resolveHoverCursorFromSelection(selectionStart, cursorPos, #source)
+        if type(selectionCursor) == "number" then
+            return selectionCursor, getHoverAnchorScreenPosition(self), "selection"
+        end
+
+        return nil, nil, nil
+    end
 
     return cursorPos, getHoverAnchorScreenPosition(self), "caret"
 end
@@ -1147,11 +1217,21 @@ function Editor.new(pluginObject, options)
     table.insert(self._connections, textBox:GetPropertyChangedSignal("SelectionStart"):Connect(function()
         updateSelectionHighlight()
         self._lastSelectionStart = textBox.SelectionStart
+
+        if not EditorTextUtils.shouldUseCaretHoverCursor(tonumber(textBox.CursorPosition), tonumber(textBox.SelectionStart)) then
+            self._latestHoverSample = nil
+        end
+
         self:_syncCompletionActiveCaretSnapshot()
     end))
     table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(function()
         updateSelectionHighlight()
         self._lastSelectionStart = textBox.SelectionStart
+
+        if not EditorTextUtils.shouldUseCaretHoverCursor(tonumber(textBox.CursorPosition), tonumber(textBox.SelectionStart)) then
+            self._latestHoverSample = nil
+        end
+
         self:_syncCompletionActiveCaretSnapshot()
     end))
 
@@ -1169,6 +1249,10 @@ function Editor.new(pluginObject, options)
     self._latestHoverSample = nil
     self._lastHoverProbeAt = 0
     self._lastHoverProbeSource = nil
+    self._primaryMouseDown = false
+    self._selectionMode = "character"
+    self._selectionModeAnchorStart = nil
+    self._selectionModeAnchorEndExclusive = nil
     self._completionShownAt = 0
     self._activeCompletionIndex = nil
     self._completionAnchorStart = nil
@@ -1185,6 +1269,8 @@ function Editor.new(pluginObject, options)
     self._deferNextSuppressedRefresh = false
     self._ctrlModifierDown = false
     self._altModifierDown = false
+
+    warn("[LUSharp SelDbg] editor-init instrumentation-active")
 
     local caret = Instance.new("Frame")
     caret.Name = "Caret"
@@ -1306,6 +1392,7 @@ function Editor.new(pluginObject, options)
         if self._suppressTextChange then
             self._suppressTextChange = false
             self._pendingAutoIndent = nil
+            self._pendingWordDelete = nil
             self._lastText = textBox.Text
             self._lastCursorPos = textBox.CursorPosition
             self._lastSelectionStart = textBox.SelectionStart
@@ -1333,8 +1420,13 @@ function Editor.new(pluginObject, options)
                 local beforeText = tostring(pendingWordDelete.beforeText or "")
                 local beforeCursor = tonumber(pendingWordDelete.beforeCursor)
                 local beforeSelection = tonumber(pendingWordDelete.beforeSelection)
+                local rawBeforeSelection = tonumber(pendingWordDelete.rawBeforeSelection)
                 local _fixStartPos, fixRemovedText, fixInsertedText = findSingleSplice(beforeText, textBox.Text)
-                local hadSelection = beforeSelection ~= nil and beforeSelection ~= -1 and beforeCursor ~= nil and beforeSelection ~= beforeCursor
+                local selectionForDetect = rawBeforeSelection
+                if selectionForDetect == nil then
+                    selectionForDetect = beforeSelection
+                end
+                local hadSelection = EditorTextUtils.isSelectionDeleteSplice(beforeCursor, selectionForDetect, _fixStartPos)
                 local shouldRepairWordDelete = EditorTextUtils.shouldRepairWordDelete(
                     pendingWordDelete.keyCode,
                     hadSelection,
@@ -1659,7 +1751,8 @@ function Editor.new(pluginObject, options)
 
             local beforeText = self.textBox.Text
             local beforeCursor = self.textBox.CursorPosition
-            local beforeSelection = self.textBox.SelectionStart
+            local rawBeforeSelection = self.textBox.SelectionStart
+            local beforeSelection = EditorTextUtils.sanitizeWordDeleteSelection(beforeCursor, rawBeforeSelection, keyCode, ctrlDown, altDown)
 
             local nextText, nextCursor, nextSelection, changed
             if keyCode == Enum.KeyCode.Backspace then
@@ -1760,6 +1853,43 @@ function Editor.new(pluginObject, options)
 
         self._lastMouseMoveAt = os.clock()
 
+        if self._primaryMouseDown == true and (self._selectionMode == "word" or self._selectionMode == "line") then
+            local sourceText = textBox.Text or ""
+            local dragCursorPos = nil
+            if isValidMousePoint(input.Position) then
+                dragCursorPos = cursorPositionFromScreenPoint(self, input.Position, true)
+            end
+            if type(dragCursorPos) ~= "number" then
+                dragCursorPos = tonumber(textBox.CursorPosition)
+            end
+
+            local startPos, endPosExclusive = EditorTextUtils.resolveDragSelectionForMode(
+                sourceText,
+                self._selectionModeAnchorStart,
+                self._selectionModeAnchorEndExclusive,
+                dragCursorPos,
+                self._selectionMode,
+                SMART_DOUBLE_CLICK_STOP_CHARS,
+                SMART_LINE_MODE_INCLUDE_TERMINATOR
+            )
+
+            if type(startPos) == "number" and type(endPosExclusive) == "number" and endPosExclusive > startPos then
+                if textBox.SelectionStart ~= startPos then
+                    textBox.SelectionStart = startPos
+                end
+                if textBox.CursorPosition ~= endPosExclusive then
+                    textBox.CursorPosition = endPosExclusive
+                end
+
+                self._lastCursorPos = textBox.CursorPosition
+                self._lastSelectionStart = textBox.SelectionStart
+                updateStatus(self)
+                updateCaretPosition(self)
+                self:hideHoverInfo()
+                return
+            end
+        end
+
         if not self.widget or not self.widget.Enabled then
             self:hideHoverInfo()
             return
@@ -1839,9 +1969,12 @@ function Editor.new(pluginObject, options)
 
             local latestSample = self._latestHoverSample
             if type(latestSample) == "table" and latestSample.requestToken == token and type(latestSample.cursorPos) == "number" then
-                latestCursorPos = latestSample.cursorPos
-                latestAnchorPos = latestSample.anchorPos
-                latestSource = tostring(latestSample.source or "mouse-sample")
+                local sampleSource = tostring(latestSample.source or "mouse-sample")
+                if EditorTextUtils.shouldUseCachedHoverSample(sampleSource, latestSample.cursorPos, tonumber(self.textBox and self.textBox.SelectionStart)) then
+                    latestCursorPos = latestSample.cursorPos
+                    latestAnchorPos = latestSample.anchorPos
+                    latestSource = sampleSource
+                end
             end
 
             if not latestCursorPos then
@@ -1921,10 +2054,15 @@ function Editor.new(pluginObject, options)
         local sourceLabel = nil
 
         if type(latestSample) == "table" and type(latestSample.cursorPos) == "number" and type(latestSample.sampledAt) == "number" and (now - latestSample.sampledAt) <= HOVER_POLL_INTERVAL_SECONDS then
-            cursorPos = latestSample.cursorPos
-            anchorPos = latestSample.anchorPos
-            sourceLabel = "mouse-sample"
-        else
+            local sampleSource = tostring(latestSample.source or "mouse-sample")
+            if EditorTextUtils.shouldUseCachedHoverSample(sampleSource, latestSample.cursorPos, tonumber(self.textBox and self.textBox.SelectionStart)) then
+                cursorPos = latestSample.cursorPos
+                anchorPos = latestSample.anchorPos
+                sourceLabel = sampleSource
+            end
+        end
+
+        if not cursorPos then
             cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCaret(self)
             if not cursorPos then
                 cursorPos, anchorPos, sourceLabel = resolveHoverCursorFromCandidates(self)
@@ -1952,8 +2090,315 @@ function Editor.new(pluginObject, options)
         end
     end))
 
+    local function handlePrimaryMouseDown(screenPosition, sourceLabel)
+        local now = os.clock()
+        local clickCursorPos = nil
+        local point = nil
+
+        if isValidMousePoint(screenPosition) then
+            point = screenPosition
+            setSelectionDebug(self, string.format("SelDbg mouse-down src=%s raw-pos=%s", tostring(sourceLabel or "?"), tostring(screenPosition)), true)
+        else
+            setSelectionDebug(self, string.format("SelDbg mouse-down src=%s raw-pos=<invalid>", tostring(sourceLabel or "?")), true)
+        end
+
+        if point then
+            clickCursorPos = cursorPositionFromScreenPoint(self, point)
+        end
+
+        local sourceTextForCursor = textBox.Text or ""
+        local detectionCursorPos = EditorTextUtils.resolvePreferredSelectionCursor(
+            clickCursorPos,
+            tonumber(textBox.CursorPosition),
+            #sourceTextForCursor,
+            true
+        )
+        if type(detectionCursorPos) == "number" then
+            clickCursorPos = detectionCursorPos
+        elseif type(clickCursorPos) ~= "number" then
+            clickCursorPos = tonumber(textBox.CursorPosition)
+        end
+
+        local currentSource = tostring(sourceLabel or "?")
+        local lastSource = tostring(self._lastPrimaryMouseEventSource or "")
+        local shouldDedupe = (lastSource ~= "" and lastSource ~= currentSource)
+            and EditorTextUtils.shouldIgnoreDuplicatePrimaryMouseDown(
+                self._lastPrimaryMouseEventAt,
+                self._lastPrimaryMouseEventCursor,
+                now,
+                clickCursorPos,
+                SMART_PRIMARY_MOUSE_DEDUPE_SECONDS,
+                SMART_PRIMARY_MOUSE_DEDUPE_CURSOR_DELTA
+            )
+
+        if shouldDedupe then
+            setSelectionDebug(self, string.format("SelDbg dedupe src=%s prev=%s click=%s", currentSource, lastSource, tostring(clickCursorPos)), true)
+            return
+        end
+
+        self._primaryMouseDown = true
+        self._lastPrimaryMouseEventAt = now
+        self._lastPrimaryMouseEventCursor = clickCursorPos
+        self._lastPrimaryMouseEventSource = currentSource
+        self._characterSelectionNormalizeId = (tonumber(self._characterSelectionNormalizeId) or 0) + 1
+
+        local previousClickState = self._smartSelectionClickState
+        local clickState = EditorTextUtils.resolveSmartSelectionClickState(
+            now,
+            clickCursorPos,
+            previousClickState,
+            SMART_DOUBLE_CLICK_SECONDS,
+            SMART_DOUBLE_CLICK_EXPAND_SECONDS,
+            SMART_DOUBLE_CLICK_MAX_CURSOR_DELTA,
+            SMART_TRIPLE_CLICK_MAX_CURSOR_DELTA,
+            SMART_PRIMARY_MOUSE_DEDUPE_SECONDS,
+            SMART_PRIMARY_MOUSE_DEDUPE_CURSOR_DELTA
+        )
+
+        self._smartSelectionClickState = {
+            at = now,
+            cursorPos = clickCursorPos,
+            count = clickState.count,
+            burstStartAt = clickState.burstStartAt,
+        }
+
+        self._lastPrimaryClickAt = now
+        self._lastPrimaryClickCursor = clickCursorPos
+
+        if clickState.duplicate == true then
+            setSelectionDebug(self, string.format("SelDbg duplicate src=%s click=%s count=%s", tostring(sourceLabel or "?"), tostring(clickCursorPos), tostring(clickState.count)), true)
+            return
+        end
+
+        local previousCursor = type(previousClickState) == "table" and previousClickState.cursorPos or nil
+        local previousCount = type(previousClickState) == "table" and previousClickState.count or nil
+        local cursorDelta = (type(clickCursorPos) == "number" and type(previousCursor) == "number") and math.abs(clickCursorPos - previousCursor) or "?"
+
+        if clickState.mode ~= "character" then
+            local selectionMode = clickState.mode
+
+            self._smartSelectionCycleId = (tonumber(self._smartSelectionCycleId) or 0) + 1
+            local cycleId = self._smartSelectionCycleId
+
+            self._smartStringDoubleClickCycle = {
+                id = cycleId,
+                cursorPos = clickCursorPos,
+                lastAt = now,
+                selectionMode = selectionMode,
+                pending = true,
+            }
+
+            setSelectionDebug(self, string.format("SelDbg detect mode=%s count=%s seq=%s src=%s click=%s prevCursor=%s prevCount=%s delta=%s", tostring(selectionMode), tostring(clickState.count), tostring(clickState.inSequence), tostring(sourceLabel or "?"), tostring(clickCursorPos), tostring(previousCursor), tostring(previousCount), tostring(cursorDelta)), true)
+
+            local sourceText = textBox.Text or ""
+            local initialCursorPos = clickCursorPos
+
+            local function selectedPreview(tb)
+                if not tb then
+                    return ""
+                end
+
+                local cursor = tonumber(tb.CursorPosition)
+                local selection = tonumber(tb.SelectionStart)
+                local content = tb.Text or ""
+                if type(cursor) ~= "number" or type(selection) ~= "number" then
+                    return ""
+                end
+
+                if selection == -1 or selection == cursor then
+                    return ""
+                end
+
+                local fromPos = math.max(1, math.min(selection, cursor))
+                local toPosExclusive = math.max(fromPos, math.max(selection, cursor))
+                local snippet = content:sub(fromPos, math.min(toPosExclusive - 1, fromPos + 47))
+                snippet = snippet:gsub("\n", "\\n")
+                return snippet
+            end
+
+            task.defer(function()
+                if not self.textBox or not self.textBox.Parent then
+                    return
+                end
+
+                if self.textBox.Text ~= sourceText then
+                    setSelectionDebug(self, string.format("SelDbg deferred abort=text-changed src=%s", tostring(sourceLabel or "?")))
+                    return
+                end
+
+                if not EditorTextUtils.shouldApplySmartSelectionForCycle(self._smartStringDoubleClickCycle, cycleId) then
+                    return
+                end
+
+                local preferredCursorPos = EditorTextUtils.resolvePreferredSelectionCursor(
+                    initialCursorPos,
+                    tonumber(self.textBox.CursorPosition),
+                    #sourceText,
+                    true
+                )
+
+                local startPos, endPosExclusive = EditorTextUtils.resolveSelectionRangeForMode(
+                    sourceText,
+                    preferredCursorPos,
+                    selectionMode,
+                    SMART_DOUBLE_CLICK_STOP_CHARS,
+                    SMART_LINE_MODE_INCLUDE_TERMINATOR
+                )
+
+                if type(startPos) ~= "number" or type(endPosExclusive) ~= "number" or endPosExclusive <= startPos then
+                    local cursorChar = ""
+                    if type(preferredCursorPos) == "number" and preferredCursorPos >= 1 and preferredCursorPos <= #sourceText then
+                        cursorChar = sourceText:sub(preferredCursorPos, preferredCursorPos):gsub("\n", "\\n")
+                    end
+                    setSelectionDebug(self, string.format("SelDbg no-range src=%s click=%s pref=%s mode=%s char='%s'", tostring(sourceLabel or "?"), tostring(initialCursorPos), tostring(preferredCursorPos), tostring(selectionMode), tostring(cursorChar)), true)
+
+                    local activeCycle = self._smartStringDoubleClickCycle
+                    if EditorTextUtils.shouldApplySmartSelectionForCycle(activeCycle, cycleId) then
+                        self._smartStringDoubleClickCycle = nil
+                    end
+                    setSelectionMode(self, "character")
+                    return
+                end
+
+                local requestedSnippet = sourceText:sub(startPos, math.min(endPosExclusive - 1, startPos + 63))
+                requestedSnippet = requestedSnippet:gsub("\n", "\\n")
+                setSelectionDebug(self, string.format("SelDbg range src=%s pref=%s start=%d end=%d text=%s", tostring(sourceLabel or "?"), tostring(preferredCursorPos), startPos, endPosExclusive, requestedSnippet), true)
+
+                local activeCycle = self._smartStringDoubleClickCycle
+                if EditorTextUtils.shouldApplySmartSelectionForCycle(activeCycle, cycleId) then
+                    activeCycle.cursorPos = preferredCursorPos
+                    activeCycle.selectionMode = selectionMode
+                    activeCycle.pending = nil
+                    self._smartStringDoubleClickCycle = activeCycle
+                end
+
+                local function applySmartSelection(tag)
+                    if not self.textBox or not self.textBox.Parent then
+                        return false
+                    end
+
+                    if not EditorTextUtils.shouldApplySmartSelectionForCycle(self._smartStringDoubleClickCycle, cycleId) then
+                        return false
+                    end
+
+                    if self.textBox.Text ~= sourceText then
+                        setSelectionDebug(self, string.format("SelDbg %s abort=text-changed", tostring(tag)))
+                        return false
+                    end
+
+                    local beforeCursor = tostring(self.textBox.CursorPosition)
+                    local beforeSelection = tostring(self.textBox.SelectionStart)
+
+                    if self.textBox.SelectionStart ~= startPos then
+                        self.textBox.SelectionStart = startPos
+                    end
+                    if self.textBox.CursorPosition ~= endPosExclusive then
+                        self.textBox.CursorPosition = endPosExclusive
+                    end
+
+                    self._lastCursorPos = self.textBox.CursorPosition
+                    self._lastSelectionStart = self.textBox.SelectionStart
+                    updateStatus(self)
+                    updateCaretPosition(self)
+
+                    local success = self.textBox.SelectionStart == startPos and self.textBox.CursorPosition == endPosExclusive
+                    if success then
+                        setSelectionMode(self, selectionMode, startPos, endPosExclusive)
+                    end
+                    setSelectionDebug(self, string.format("SelDbg %s mode=%s want=%d-%d before=%s/%s after=%s/%s ok=%s text=%s", tostring(tag), tostring(selectionMode), startPos, endPosExclusive, beforeSelection, beforeCursor, tostring(self.textBox.SelectionStart), tostring(self.textBox.CursorPosition), tostring(success), selectedPreview(self.textBox)))
+
+                    return success
+                end
+
+                if applySmartSelection("try0") then
+                    return
+                end
+
+                for attempt = 1, 4 do
+                    RunService.Heartbeat:Wait()
+                    if applySmartSelection("hb" .. tostring(attempt)) then
+                        return
+                    end
+                end
+
+                setSelectionDebug(self, string.format("SelDbg fail want=%d-%d final=%s/%s text=%s", startPos, endPosExclusive, tostring(self.textBox and self.textBox.SelectionStart), tostring(self.textBox and self.textBox.CursorPosition), selectedPreview(self.textBox)))
+            end)
+        else
+            setSelectionMode(self, "character")
+            setSelectionDebug(self, string.format("SelDbg detect mode=character count=%s seq=%s src=%s click=%s prevCursor=%s prevCount=%s delta=%s", tostring(clickState.count), tostring(clickState.inSequence), tostring(sourceLabel or "?"), tostring(clickCursorPos), tostring(previousCursor), tostring(previousCount), tostring(cursorDelta)), true)
+
+            local normalizeId = self._characterSelectionNormalizeId
+            local normalizeClickCursor = clickCursorPos
+            local normalizeShiftDown = isShiftModifierDown()
+
+            task.defer(function()
+                if not self.textBox or not self.textBox.Parent then
+                    return
+                end
+
+                if not EditorTextUtils.shouldApplyCharacterNormalization(normalizeId, self._characterSelectionNormalizeId) then
+                    return
+                end
+
+                local currentSelection = tonumber(self.textBox.SelectionStart)
+                local currentCursor = tonumber(self.textBox.CursorPosition)
+                if not EditorTextUtils.shouldNormalizeCharacterClickSelection(currentSelection, currentCursor, normalizeClickCursor, normalizeShiftDown) then
+                    return
+                end
+
+                local collapsePos = EditorTextUtils.resolvePreferredSelectionCursor(
+                    normalizeClickCursor,
+                    currentCursor,
+                    #(self.textBox.Text or ""),
+                    true
+                )
+                if type(collapsePos) ~= "number" then
+                    return
+                end
+
+                local beforeSelection = tostring(self.textBox.SelectionStart)
+                local beforeCursor = tostring(self.textBox.CursorPosition)
+
+                self.textBox.SelectionStart = collapsePos
+                self.textBox.CursorPosition = collapsePos
+                self._lastCursorPos = self.textBox.CursorPosition
+                self._lastSelectionStart = self.textBox.SelectionStart
+                updateStatus(self)
+                updateCaretPosition(self)
+
+                setSelectionDebug(self, string.format("SelDbg normalize-character click=%s before=%s/%s after=%s/%s", tostring(normalizeClickCursor), beforeSelection, beforeCursor, tostring(self.textBox.SelectionStart), tostring(self.textBox.CursorPosition)), true)
+            end)
+
+            return
+        end
+    end
+
+    if self._pluginMouse and self._pluginMouse.Button1Down then
+        table.insert(self._connections, self._pluginMouse.Button1Down:Connect(function()
+            local pluginPoint = nil
+            if self._pluginMouse then
+                pluginPoint = Vector2.new(self._pluginMouse.X, self._pluginMouse.Y)
+            end
+            handlePrimaryMouseDown(pluginPoint, "plugin")
+        end))
+        setSelectionDebug(self, "SelDbg plugin-mouse-hook-attached", true)
+    else
+        setSelectionDebug(self, "SelDbg plugin-mouse-hook-missing", true)
+    end
+
+    table.insert(self._connections, textBox.InputBegan:Connect(function(input, _gameProcessed)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            handlePrimaryMouseDown(input.Position, "textbox")
+        end
+    end))
+    setSelectionDebug(self, "SelDbg textbox-input-hook-attached", true)
+
     table.insert(self._connections, UserInputService.InputBegan:Connect(function(input, _gameProcessed)
         updateModifierCache(self, input.KeyCode, true)
+
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            handlePrimaryMouseDown(input.Position, "uis")
+        end
 
         local completionVisibleNow = self.completionFrame and self.completionFrame.Visible
         local completionCountNow = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
@@ -1982,13 +2427,17 @@ function Editor.new(pluginObject, options)
         local altDown = resolveAltModifierDown(self, input)
 
         if input.KeyCode == Enum.KeyCode.Backspace or input.KeyCode == Enum.KeyCode.Delete then
+            local shortcutDetected = EditorTextUtils.isWordDeleteShortcut(input.KeyCode, ctrlDown, altDown)
+            local beforeCursor = textBox.CursorPosition
+            local rawBeforeSelection = textBox.SelectionStart
             self._pendingWordDelete = {
                 keyCode = input.KeyCode,
                 createdAt = os.clock(),
                 beforeText = textBox.Text,
-                beforeCursor = textBox.CursorPosition,
-                beforeSelection = textBox.SelectionStart,
-                shortcutDetected = EditorTextUtils.isWordDeleteShortcut(input.KeyCode, ctrlDown, altDown),
+                beforeCursor = beforeCursor,
+                rawBeforeSelection = rawBeforeSelection,
+                beforeSelection = EditorTextUtils.sanitizeWordDeleteSelection(beforeCursor, rawBeforeSelection, input.KeyCode, ctrlDown, altDown),
+                shortcutDetected = shortcutDetected,
             }
         end
 
@@ -2018,7 +2467,8 @@ function Editor.new(pluginObject, options)
         if isWordDeleteShortcut then
             local beforeText = textBox.Text
             local beforeCursor = textBox.CursorPosition
-            local beforeSelection = textBox.SelectionStart
+            local rawBeforeSelection = textBox.SelectionStart
+            local beforeSelection = EditorTextUtils.sanitizeWordDeleteSelection(beforeCursor, rawBeforeSelection, input.KeyCode, ctrlDown, altDown)
 
             task.defer(function()
                 if not self.textBox or not self.textBox.Parent or not self.textBox:IsFocused() then
@@ -2186,6 +2636,11 @@ function Editor.new(pluginObject, options)
 
     table.insert(self._connections, UserInputService.InputEnded:Connect(function(input)
         updateModifierCache(self, input.KeyCode, false)
+
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            self._primaryMouseDown = false
+            setSelectionMode(self, "character")
+        end
     end))
 
     table.insert(self._connections, widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
@@ -2212,6 +2667,7 @@ function Editor:setSource(source, options)
 
     self.textBox.Text = source
     self.textBox.CursorPosition = #self.textBox.Text + 1
+    setSelectionMode(self, "character")
 
     if not changed then
         if deferRefresh then
