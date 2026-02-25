@@ -156,6 +156,28 @@ return function(describe, it, expect)
             expect(indent):toBe("")
         end)
 
+        it("tops up indentation when newline insert already includes partial indent", function()
+            local prevText = "if (x) {\n    if (y) {\n        print(\"hi\");\n    }\n}"
+            local prevCursor = prevText:find("        print", 1, true)
+
+            local newText = prevText:sub(1, prevCursor - 1) .. "\n    " .. prevText:sub(prevCursor)
+            local newCursor = prevCursor + #"\n    "
+
+            local indent = TextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, "    ")
+            expect(indent):toBe("    ")
+        end)
+
+        it("does not duplicate indentation when newline insert already matches context", function()
+            local prevText = "if (x) {\n    if (y) {\n        print(\"hi\");\n    }\n}"
+            local prevCursor = prevText:find("        print", 1, true)
+
+            local newText = prevText:sub(1, prevCursor - 1) .. "\n        " .. prevText:sub(prevCursor)
+            local newCursor = prevCursor + #"\n        "
+
+            local indent = TextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, "    ")
+            expect(indent):toBe("")
+        end)
+
         it("suppresses auto-trigger when current line is whitespace only", function()
             local text = "class Main {\n    \n"
             local cursor = #text + 1
@@ -254,6 +276,10 @@ return function(describe, it, expect)
             expect(TextUtils.getCompletionKindIcon("local_variable")):toBe("rbxassetid://109131190629355")
         end)
 
+        it("maps service kind to a visible icon", function()
+            expect(TextUtils.getCompletionKindIcon("service")):toBe("rbxassetid://99768122416664")
+        end)
+
         it("maps enum item aliases to enum item icon", function()
             expect(TextUtils.getCompletionKindIcon("enumitem")):toBe("rbxassetid://120188564562495")
             expect(TextUtils.getCompletionKindIcon("enum item")):toBe("rbxassetid://120188564562495")
@@ -266,6 +292,14 @@ return function(describe, it, expect)
 
         it("maps method kind to hover badge text", function()
             expect(TextUtils.getHoverKindBadgeText("method")):toBe("M")
+        end)
+
+        it("uses symbolic icons for property and variable hover badges", function()
+            expect(TextUtils.getHoverKindBadgeText("property")):toBe("▣")
+            expect(TextUtils.getHoverKindBadgeText("variable")):toBe("◉")
+            expect(TextUtils.getHoverKindBadgeText("local_variable")):toBe("◉")
+            expect(TextUtils.getHoverKindBadgeText("P")):toBe("•")
+            expect(TextUtils.getHoverKindBadgeText("V")):toBe("•")
         end)
 
         it("uses fallback hover badge text for unknown kind", function()
@@ -1282,6 +1316,38 @@ return function(describe, it, expect)
         it("does not normalize character click when selection is collapsed", function()
             local shouldNormalize = TextUtils.shouldNormalizeCharacterClickSelection(208, 208, 208, false)
             expect(shouldNormalize):toBe(false)
+        end)
+
+        it("resolves shift-click anchor from active selection start", function()
+            local anchor = TextUtils.resolveShiftSelectionAnchor("hello world", nil, 3, 9)
+            expect(anchor):toBe(3)
+        end)
+
+        it("prefers persisted shift-click anchor over active selection", function()
+            local anchor = TextUtils.resolveShiftSelectionAnchor("hello world", 8, 3, 9)
+            expect(anchor):toBe(8)
+        end)
+
+        it("uses current cursor as shift-click anchor when no active selection", function()
+            local anchor = TextUtils.resolveShiftSelectionAnchor("hello world", nil, -1, 6)
+            expect(anchor):toBe(6)
+        end)
+
+        it("prefers pre-click caret as shift-click anchor when provided", function()
+            local anchor = TextUtils.resolveShiftSelectionAnchor("hello world", nil, -1, 10, 4)
+            expect(anchor):toBe(4)
+        end)
+
+        it("resolves shift-click selection endpoints with clamped cursors", function()
+            local selectionStart, cursorPos = TextUtils.resolveShiftClickSelectionEndpoints("abc", 9, 2)
+            expect(selectionStart):toBe(4)
+            expect(cursorPos):toBe(2)
+        end)
+
+        it("returns nil shift-click endpoints when inputs are invalid", function()
+            local selectionStart, cursorPos = TextUtils.resolveShiftClickSelectionEndpoints("abc", nil, 2)
+            expect(selectionStart):toBeNil()
+            expect(cursorPos):toBeNil()
         end)
 
         it("runs native retokenize fallback only inside recency window", function()

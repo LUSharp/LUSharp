@@ -252,6 +252,103 @@ local function isLikelyTypeIdentifierValue(value)
     return type(value) == "string" and value:match("^[A-Z][%w_]*$") ~= nil
 end
 
+local function isGenericTypeArgumentIdentifier(tokens, index)
+    local token = tokens[index]
+    if not (token and token.type == "identifier" and isLikelyTypeIdentifierValue(token.value)) then
+        return false
+    end
+
+    local prev = tokens[index - 1]
+    if prev and prev.type == "punctuation" and prev.value == "." then
+        return false
+    end
+
+    local depth = 0
+    local openIndex = nil
+    for cursor = index - 1, 1, -1 do
+        local current = tokens[cursor]
+        if current and current.type == "operator" and current.value == ">" and isLikelyGenericTypeClose(tokens, cursor) then
+            depth += 1
+        elseif current and current.type == "operator" and current.value == "<" then
+            if depth == 0 then
+                openIndex = cursor
+                break
+            end
+            depth -= 1
+        elseif current and current.type == "punctuation" and (current.value == ";" or current.value == "{" or current.value == "}") then
+            break
+        end
+    end
+
+    if not openIndex then
+        return false
+    end
+
+    local owner = tokens[openIndex - 1]
+    if not (owner and (owner.type == "identifier" or (owner.type == "keyword" and isPrimitiveTypeKeyword(owner.value)))) then
+        return false
+    end
+
+    depth = 0
+    for cursor = index + 1, #tokens do
+        local current = tokens[cursor]
+        if current and current.type == "operator" and current.value == "<" then
+            depth += 1
+        elseif current and current.type == "operator" and current.value == ">" then
+            if depth == 0 then
+                return true
+            end
+            depth -= 1
+        elseif current and current.type == "punctuation" and (current.value == ";" or current.value == "{" or current.value == "}") then
+            break
+        end
+    end
+
+    return false
+end
+
+local GLOBAL_IDENTIFIER_VALUES = {
+    game = true,
+    workspace = true,
+    script = true,
+    shared = true,
+    Enum = true,
+}
+
+local function isKnownGlobalIdentifierValue(value)
+    return GLOBAL_IDENTIFIER_VALUES[tostring(value or "")] == true
+end
+
+local function isGenericMethodInvocationIdentifier(tokens, index)
+    local token = tokens[index]
+    if not (token and token.type == "identifier") then
+        return false
+    end
+
+    local nextToken = tokens[index + 1]
+    if not (nextToken and nextToken.type == "operator" and nextToken.value == "<") then
+        return false
+    end
+
+    local depth = 0
+    for cursor = index + 1, #tokens do
+        local current = tokens[cursor]
+        if current and current.type == "operator" and current.value == "<" then
+            depth += 1
+        elseif current and current.type == "operator" and current.value == ">" then
+            depth -= 1
+            if depth == 0 then
+                local afterClose = tokens[cursor + 1]
+                return afterClose and afterClose.type == "punctuation" and afterClose.value == "("
+            end
+        elseif current and current.type == "punctuation" and (current.value == ";" or current.value == "{" or current.value == "}") then
+            break
+        end
+    end
+
+    return false
+end
+
 local function classifyIdentifierTokens(tokens)
     local identifierKinds = {}
     local enumTypes = {}
@@ -296,6 +393,16 @@ local function classifyIdentifierTokens(tokens)
 
         if nextTok and nextTok.type == "punctuation" and nextTok.value == "(" then
             identifierKinds[i] = "method"
+            continue
+        end
+
+        if isGenericMethodInvocationIdentifier(tokens, i) then
+            identifierKinds[i] = "method"
+            continue
+        end
+
+        if isGenericTypeArgumentIdentifier(tokens, i) then
+            identifierKinds[i] = "type"
             continue
         end
 
@@ -408,19 +515,136 @@ local function makeStyleMap(options)
     return styleMap
 end
 
-local function styleInterpolatedStringToken(text, styleMap)
-    local escaped = escapeRichText(text)
-    local localVarColor = styleMap.localVar
-    if localVarColor ~= nil then
-        escaped = escaped:gsub("{([%a_][%w_]*)}", '{<font color="' .. localVarColor .. '">%1</font>}')
+local function styleInterpolatedExpression(expression, styleMap)
+    local expressionSource = tostring(expression or "")
+    if expressionSource == "" then
+        return ""
     end
+
+    local tokens = Lexer.tokenize(expressionSource, { preserveComments = true })
+    local identifierKinds = classifyIdentifierTokens(tokens)
+    local lineStarts = buildLineStarts(expressionSource)
+    local sourceLength = #expressionSource
+
+    local out = {}
+    local cursor = 1
+
+    for i, token in ipairs(tokens) do
+        if token.type == "eof" then
+            break
+        end
+
+        local startIndex = lineColumnToIndex(lineStarts, token.line, token.column, sourceLength)
+        if startIndex > sourceLength + 1 then
+            startIndex = sourceLength + 1
+        end
+
+        if startIndex > cursor then
+            table.insert(out, escapeRichText(string.sub(expressionSource, cursor, startIndex - 1)))
+        end
+
+        local tokenLength = #token.value
+        local tokenEnd = startIndex + tokenLength - 1
+        if tokenEnd > sourceLength then
+            tokenEnd = sourceLength
+        end
+
+        local tokenText = string.sub(expressionSource, startIndex, tokenEnd)
+        local category = normalizeCategory(token.type)
+
+        if token.type == "identifier" then
+            if identifierKinds[i] ~= nil then
+                category = identifierKinds[i]
+            elseif isKnownGlobalIdentifierValue(token.value) then
+                category = "identifier"
+            else
+                category = "localVar"
+            end
+        end
+
+        local escapedToken = escapeRichText(tokenText)
+        local color = category and styleMap[category] or nil
+        if color then
+            table.insert(out, '<font color="' .. color .. '">' .. escapedToken .. "</font>")
+        else
+            table.insert(out, escapedToken)
+        end
+
+        cursor = tokenEnd + 1
+    end
+
+    if cursor <= sourceLength then
+        table.insert(out, escapeRichText(string.sub(expressionSource, cursor)))
+    end
+
+    return table.concat(out)
+end
+
+local function styleInterpolatedSegments(text, styleMap)
+    local out = {}
+    local i = 1
+    local n = #text
+
+    local punctuationColor = styleMap.punctuation
+    local function styleDelimiter(delimiter)
+        local escaped = escapeRichText(delimiter)
+        if punctuationColor == nil then
+            return escaped
+        end
+        return '<font color="' .. punctuationColor .. '">' .. escaped .. "</font>"
+    end
+
+    while i <= n do
+        local currentChar = text:sub(i, i)
+
+        if currentChar == "$" and i < n and text:sub(i + 1, i + 1) == "{" then
+            local closeBrace = text:find("}", i + 2, true)
+            if closeBrace then
+                local expression = text:sub(i + 2, closeBrace - 1)
+                table.insert(out, escapeRichText("$"))
+                table.insert(out, styleDelimiter("{"))
+                table.insert(out, styleInterpolatedExpression(expression, styleMap))
+                table.insert(out, styleDelimiter("}"))
+                i = closeBrace + 1
+            else
+                table.insert(out, escapeRichText(currentChar))
+                i += 1
+            end
+        elseif currentChar == "{" then
+            if i < n and text:sub(i + 1, i + 1) == "{" then
+                table.insert(out, escapeRichText("{{"))
+                i += 2
+            else
+                local closeBrace = text:find("}", i + 1, true)
+                if closeBrace then
+                    local expression = text:sub(i + 1, closeBrace - 1)
+                    table.insert(out, styleDelimiter("{"))
+                    table.insert(out, styleInterpolatedExpression(expression, styleMap))
+                    table.insert(out, styleDelimiter("}"))
+                    i = closeBrace + 1
+                else
+                    table.insert(out, escapeRichText(currentChar))
+                    i += 1
+                end
+            end
+        else
+            table.insert(out, escapeRichText(currentChar))
+            i += 1
+        end
+    end
+
+    return table.concat(out)
+end
+
+local function styleInterpolatedStringToken(text, styleMap)
+    local styled = styleInterpolatedSegments(text, styleMap)
 
     local stringColor = styleMap.string
     if stringColor == nil then
-        return escaped
+        return styled
     end
 
-    return '<font color="' .. stringColor .. '">' .. escaped .. "</font>"
+    return '<font color="' .. stringColor .. '">' .. styled .. "</font>"
 end
 
 local function styleText(text, category, styleMap, tokenType)

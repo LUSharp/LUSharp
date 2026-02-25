@@ -87,6 +87,42 @@ local DOTNET_NAMESPACE_MEMBERS = {
             documentation = "System.Collections",
         },
         {
+            label = "Text",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.Text",
+        },
+        {
+            label = "Linq",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.Linq",
+        },
+        {
+            label = "Threading",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.Threading",
+        },
+        {
+            label = "IO",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.IO",
+        },
+        {
+            label = "Net",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.Net",
+        },
+        {
+            label = "Diagnostics",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.Diagnostics",
+        },
+        {
             label = "Console",
             kind = "type",
             detail = "class",
@@ -177,7 +213,6 @@ local DEFAULT_VISIBLE_SERVICES = {
     "Players",
     "Lighting",
     "MaterialService",
-    "NetworkClient",
     "ReplicatedFirst",
     "ReplicatedStorage",
     "ServerScriptService",
@@ -185,9 +220,10 @@ local DEFAULT_VISIBLE_SERVICES = {
     "StarterGui",
     "StarterPack",
     "StarterPlayer",
-    "Teams",
     "SoundService",
     "TextChatService",
+    "Chat",
+    "Teams",
 }
 
 local function toLowerSet(names)
@@ -648,14 +684,46 @@ local function getGlobalType()
     return resolveType("Globals")
 end
 
+local function mapInternalNamespaceToRoblox(path)
+    local mapped = tostring(path or "")
+    if mapped == "" then
+        return mapped
+    end
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Services$", "Roblox.Services")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Services%.", "Roblox.Services.")
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Classes$", "Roblox.Classes")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Classes%.", "Roblox.Classes.")
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Enums$", "Roblox.Enums")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Enums%.", "Roblox.Enums.")
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Types$", "Roblox.Types")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.Types%.", "Roblox.Types.")
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL$", "Roblox")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.STL%.", "Roblox.")
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.Internal$", "Roblox.Internal")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.Internal%.", "Roblox.Internal.")
+
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime$", "Roblox")
+    mapped = mapped:gsub("^LUSharpAPI%.Runtime%.", "Roblox.")
+
+    mapped = mapped:gsub("^LUSharpAPI$", "Roblox")
+    mapped = mapped:gsub("^LUSharpAPI%.", "")
+
+    return mapped
+end
+
 local function displayTypeName(typeName)
     local t = tostring(typeName or "")
     if t == "" then
         return t
     end
 
-    t = t:gsub("^LUSharpAPI%.", "")
-    return t
+    return mapInternalNamespaceToRoblox(t)
 end
 
 local function getRobloxTypeDocumentation(typeName, fullName, typeInfo)
@@ -671,7 +739,11 @@ local function getRobloxTypeDocumentation(typeName, fullName, typeInfo)
     end
     displayName = displayTypeName(displayName)
 
-    local rootName = displayName:match("^([%a_][%w_]*)") or displayName
+    local rootName = tostring((resolvedTypeInfo and (resolvedTypeInfo.alias or resolvedTypeInfo.name)) or "")
+    if rootName == "" then
+        rootName = displayName:match("([%a_][%w_]*)$") or displayName
+    end
+
     local baseDoc = ROBLOX_TYPE_DOCS[rootName]
 
     local namespace = tostring((resolvedTypeInfo and resolvedTypeInfo.namespace) or "")
@@ -738,7 +810,7 @@ local function memberDetail(member)
             end
         end
 
-        return string.format("method %s(%s) -> %s", member.name, table.concat(params, ", "), returnType)
+        return string.format("%s %s(%s)", returnType, member.name, table.concat(params, ", "))
     end
 
     if member.kind == "property" or member.kind == "field" or member.kind == "event" then
@@ -746,6 +818,32 @@ local function memberDetail(member)
     end
 
     return member.kind
+end
+
+local function buildMemberDocumentation(ownerTypeName, member)
+    local explicitDocumentation = tostring(member.documentation or member.summary or "")
+    local lines = {}
+
+    if explicitDocumentation:match("%S") then
+        table.insert(lines, explicitDocumentation)
+    else
+        local memberKindName = tostring(member.kind or "member")
+        local ownerDisplayName = displayTypeName(ownerTypeName or "type")
+        local capitalizedKind = memberKindName:sub(1, 1):upper() .. memberKindName:sub(2)
+        table.insert(lines, string.format("%s on %s: %s", capitalizedKind, ownerDisplayName, tostring(member.name or "")))
+    end
+
+    local memberTypeName = tostring(member.type or member.returnType or "")
+    if memberTypeName ~= "" then
+        local resolvedMemberType = resolveType(memberTypeName) or resolveType(TypeDatabase.aliases[memberTypeName] or memberTypeName)
+        local resolvedMemberFullName = tostring((resolvedMemberType and resolvedMemberType.fullName) or (TypeDatabase.aliases[memberTypeName] or memberTypeName))
+        local memberTypeDocumentation = getRobloxTypeDocumentation(memberTypeName, resolvedMemberFullName, resolvedMemberType)
+        if memberTypeDocumentation:match("%S") then
+            table.insert(lines, memberTypeDocumentation)
+        end
+    end
+
+    return table.concat(lines, "\n")
 end
 
 local function getMemberCompletions(typeName, prefix)
@@ -764,7 +862,7 @@ local function getMemberCompletions(typeName, prefix)
                     label,
                     memberKind(member),
                     memberDetail(member),
-                    nil
+                    buildMemberDocumentation(typeName, member)
                 ))
             end
         end
@@ -1150,6 +1248,89 @@ local function isCursorInStringLiteral(tokens)
     return false
 end
 
+local function getActiveInterpolatedExpressionPrefix(text)
+    text = tostring(text or "")
+    if text == "" then
+        return nil
+    end
+
+    local inInterpolatedString = false
+    local interpolationDepth = 0
+    local expressionStartIndex = nil
+    local lastClosedExpression = nil
+    local lastClosedExpressionEnd = nil
+
+    local i = 1
+    while i <= #text do
+        local ch = text:sub(i, i)
+        local nextCh = text:sub(i + 1, i + 1)
+
+        if not inInterpolatedString then
+            if ch == "$" and nextCh == '"' then
+                inInterpolatedString = true
+                interpolationDepth = 0
+                expressionStartIndex = nil
+                i += 2
+            else
+                i += 1
+            end
+        else
+            if ch == "\\" then
+                i += 2
+            elseif ch == '"' then
+                if interpolationDepth == 0 then
+                    inInterpolatedString = false
+                    expressionStartIndex = nil
+                    i += 1
+                else
+                    if expressionStartIndex then
+                        return text:sub(expressionStartIndex, i - 1)
+                    end
+                    return nil
+                end
+            elseif ch == "{" then
+                if nextCh == "{" then
+                    i += 2
+                else
+                    interpolationDepth += 1
+                    if interpolationDepth == 1 then
+                        expressionStartIndex = i + 1
+                    end
+                    i += 1
+                end
+            elseif ch == "}" then
+                if nextCh == "}" then
+                    i += 2
+                elseif interpolationDepth > 0 then
+                    interpolationDepth -= 1
+                    if interpolationDepth == 0 then
+                        if expressionStartIndex then
+                            lastClosedExpression = text:sub(expressionStartIndex, i - 1)
+                            lastClosedExpressionEnd = i
+                        end
+                        expressionStartIndex = nil
+                    end
+                    i += 1
+                else
+                    i += 1
+                end
+            else
+                i += 1
+            end
+        end
+    end
+
+    if inInterpolatedString and interpolationDepth > 0 and expressionStartIndex then
+        return text:sub(expressionStartIndex)
+    end
+
+    if inInterpolatedString and interpolationDepth == 0 and lastClosedExpression and lastClosedExpressionEnd == #text then
+        return lastClosedExpression
+    end
+
+    return nil
+end
+
 local function getServiceNameCompletions(prefix, opts)
     local result = {}
     local seen = {}
@@ -1201,6 +1382,129 @@ local function findMemberInType(typeName, memberName)
     return nil
 end
 
+local function findMembersInType(typeName, memberName)
+    local members = {}
+    collectMembers(typeName, nil, members)
+
+    local out = {}
+    for _, member in ipairs(members) do
+        if member.name == memberName then
+            table.insert(out, member)
+        end
+    end
+
+    return out
+end
+
+local function buildMethodSignature(member, ownerTypeName)
+    local methodName = tostring(member.name or "")
+
+    if methodName == "GetService" and normalizeTypeName(ownerTypeName) == "DataModel" then
+        local params = member.parameters or {}
+        if tostring(member.returnType or "") == "T" and type(params) == "table" and #params == 0 then
+            return "T game.GetService<T>() where T : Service"
+        end
+
+        local classNameType = "String"
+        if type(params) == "table" and params[1] and params[1].type then
+            classNameType = displayTypeName(params[1].type)
+        end
+
+        local returnType = displayTypeName(member.returnType or "Instance")
+        return string.format("%s game.GetService(className: %s)", returnType, classNameType)
+    end
+
+    local params = {}
+    if type(member.parameters) == "table" then
+        for index, param in ipairs(member.parameters) do
+            local paramType = displayTypeName(param.type or "Object")
+            local paramName = tostring(param.name or "")
+            if paramName == "" then
+                paramName = "arg" .. tostring(index)
+            end
+            table.insert(params, string.format("%s %s", paramType, paramName))
+        end
+    end
+
+    local returnType = displayTypeName(member.returnType or "Void")
+    return string.format("%s %s(%s)", returnType, methodName, table.concat(params, ", "))
+end
+
+local function getMethodOverloadSignatures(typeName, methodName)
+    local overloads = {}
+    local seen = {}
+
+    for _, member in ipairs(findMembersInType(typeName, methodName)) do
+        if member.kind == "method" then
+            local signature = buildMethodSignature(member, typeName)
+            if not seen[signature] then
+                seen[signature] = true
+                table.insert(overloads, signature)
+            end
+        end
+    end
+
+    return overloads
+end
+
+local function buildHoverInfoFromMember(ownerTypeName, identifier, member)
+    if member.kind ~= "method" then
+        return {
+            label = identifier,
+            kind = memberKind(member),
+            detail = memberDetail(member),
+            documentation = buildMemberDocumentation(ownerTypeName, member),
+        }
+    end
+
+    local detail = buildMethodSignature(member, ownerTypeName)
+    local documentation = tostring(member.documentation or member.summary or "")
+
+    local allOverloads = findMembersInType(ownerTypeName, member.name)
+    local primarySignature = detail
+    local alternateCount = 0
+    local firstAlternateSignature = nil
+
+    for _, overloadMember in ipairs(allOverloads) do
+        if overloadMember.kind == "method" then
+            local overloadSignature = buildMethodSignature(overloadMember, ownerTypeName)
+            if overloadSignature ~= primarySignature then
+                alternateCount += 1
+                if firstAlternateSignature == nil then
+                    firstAlternateSignature = overloadSignature
+                end
+            end
+        end
+    end
+
+    if alternateCount > 0 and firstAlternateSignature ~= nil then
+        local lines = {}
+        if documentation:match("%S") then
+            table.insert(lines, documentation)
+        end
+
+        table.insert(lines, "Overloads:")
+        table.insert(lines, "- " .. firstAlternateSignature)
+
+        if alternateCount > 1 then
+            table.insert(lines, "+" .. tostring(alternateCount - 1))
+        end
+
+        documentation = table.concat(lines, "\n")
+    end
+
+    if documentation == "" then
+        documentation = ownerTypeName
+    end
+
+    return {
+        label = identifier,
+        kind = "method",
+        detail = detail,
+        documentation = documentation,
+    }
+end
+
 local function inferExprTypeFromTokens(tokens, endIndex, symbolTypes)
     local idx = endIndex
 
@@ -1214,6 +1518,72 @@ local function inferExprTypeFromTokens(tokens, endIndex, symbolTypes)
             end
         end
         return i
+    end
+
+    local function inferGenericGetServiceTypeFromCallTail(i)
+        i = skipTrivia(i)
+        local closeParen = tokens[i]
+        if not (closeParen and closeParen.type == "punctuation" and closeParen.value == ")") then
+            return nil
+        end
+
+        local depth = 1
+        local openIndex = i - 1
+        while openIndex >= 1 do
+            local tok = tokens[openIndex]
+            if tok and tok.type == "punctuation" then
+                if tok.value == ")" then
+                    depth += 1
+                elseif tok.value == "(" then
+                    depth -= 1
+                    if depth == 0 then
+                        break
+                    end
+                end
+            end
+            openIndex -= 1
+        end
+
+        if openIndex < 1 then
+            return nil
+        end
+
+        local genericStartIndex = openIndex - 2
+        if genericStartIndex < 1 then
+            return nil
+        end
+
+        local genericType, afterGenericIndex = parseGenericTypeSuffix(tokens, genericStartIndex)
+        if not genericType then
+            return nil
+        end
+
+        if not (tokens[afterGenericIndex] and tokens[afterGenericIndex].type == "operator" and tokens[afterGenericIndex].value == ">") then
+            return nil
+        end
+
+        if not (tokens[afterGenericIndex + 1] and tokens[afterGenericIndex + 1].type == "punctuation" and tokens[afterGenericIndex + 1].value == "(") then
+            return nil
+        end
+
+        local lessThan = tokens[genericStartIndex - 1]
+        local methodToken = tokens[genericStartIndex - 2]
+        local dotToken = tokens[genericStartIndex - 3]
+        local objectToken = tokens[genericStartIndex - 4]
+
+        if lessThan and lessThan.type == "operator" and lessThan.value == "<"
+            and methodToken and methodToken.type == "identifier" and methodToken.value == "GetService"
+            and dotToken and dotToken.type == "punctuation" and dotToken.value == "."
+            and objectToken and objectToken.type == "identifier" and objectToken.value == "game" then
+            return genericType
+        end
+
+        return nil
+    end
+
+    local directGenericGetServiceType = inferGenericGetServiceTypeFromCallTail(idx)
+    if directGenericGetServiceType and resolveType(directGenericGetServiceType) then
+        return directGenericGetServiceType
     end
 
     local parseMemberAccess
@@ -1754,6 +2124,23 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     local symbolTypes = getMergedSymbolTypes(left)
 
     if isCursorInStringLiteral(tokens) then
+        local interpolationPrefix = getActiveInterpolatedExpressionPrefix(left)
+        if interpolationPrefix ~= nil then
+            local interpolationTokens = Lexer.tokenize(interpolationPrefix)
+            local interpolationType, interpolationMemberPrefix = inferMemberAccessType(interpolationTokens, symbolTypes)
+            if interpolationType then
+                return getMemberCompletions(interpolationType, interpolationMemberPrefix)
+            end
+
+            local interpolationWordPrefix = interpolationPrefix:match("([%a_][%w_]*)$") or ""
+            local localCompletions = getLocalCompletions(symbolTypes, interpolationWordPrefix)
+            local keywordCompletions = getKeywordCompletions(interpolationWordPrefix)
+            local globalCompletions = getGlobalCompletions(interpolationWordPrefix)
+            local typeCompletions = getTypeCompletions(interpolationWordPrefix, false)
+            local dotnetBaselineCompletions = getDotnetBaselineCompletions(interpolationWordPrefix)
+            return mergeCompletions({}, localCompletions, keywordCompletions, globalCompletions, dotnetBaselineCompletions, typeCompletions)
+        end
+
         local callContext = findCallContext(source, cursorPos)
         if callContext and callContext.activeParam == 1 then
             if callContext.objectName == "game" and callContext.methodName == "GetService" then
@@ -2107,7 +2494,7 @@ local function inferDeclarationHover(identifier, trailingText, beforeTrimmed, be
                 if resolvedInferredFullName ~= "" then
                     local resolvedDisplay = displayTypeName(resolvedInferredFullName)
                     if resolvedDisplay ~= "" and resolvedDisplay ~= inferredDisplayType then
-                        detail = detail .. " (" .. resolvedInferredFullName .. ")"
+                        detail = detail .. " (" .. resolvedDisplay .. ")"
                     end
                 end
 
@@ -2157,6 +2544,48 @@ end
 local getDiagnosticAtCursor
 local buildDiagnosticHoverInfo
 
+local function inferUsingNamespaceHoverInfo(identifier, beforeIdentifier, trailingText)
+    local segment = tostring(identifier or "")
+    if segment == "" or not segment:match("^[%a_][%w_]*$") then
+        return nil
+    end
+
+    local lineBefore = tostring(beforeIdentifier or ""):match("([^\n]*)$") or ""
+    if not lineBefore:match("^%s*using%s+") then
+        return nil
+    end
+
+    local lineAfter = tostring(trailingText or ""):match("^([^\n]*)") or ""
+
+    local prefixPath = nil
+    if lineBefore:match("^%s*using%s+$") then
+        prefixPath = ""
+    else
+        prefixPath = lineBefore:match("^%s*using%s+([%a_][%w_%.]*)%.$")
+    end
+
+    if prefixPath == nil then
+        return nil
+    end
+
+    local suffixPath = lineAfter:match("^([%w_%.]*)%s*;?%s*$")
+    if not suffixPath then
+        return nil
+    end
+
+    local fullPath = ((prefixPath ~= "" and (prefixPath .. ".") or "") .. segment)
+    if suffixPath:sub(1, 1) == "." then
+        fullPath = fullPath .. suffixPath
+    end
+
+    return {
+        label = segment,
+        kind = "namespace",
+        detail = "namespace",
+        documentation = fullPath,
+    }
+end
+
 local function resolveHoverInfoAtPosition(source, cursorPos, opts)
     opts = opts or {}
     local _context = opts.context
@@ -2182,6 +2611,11 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
 
     if beforeTrimmed:sub(-1) == "." then
         local objectExprSource = beforeTrimmed:sub(1, -2)
+        local interpolationObjectExpr = getActiveInterpolatedExpressionPrefix(objectExprSource)
+        if interpolationObjectExpr ~= nil then
+            objectExprSource = interpolationObjectExpr
+        end
+
         local objectTokens = Lexer.tokenize(objectExprSource)
 
         local objectEndIndex = #objectTokens
@@ -2194,12 +2628,7 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
             if objectType then
                 local member = findMemberInType(objectType, identifier)
                 if member then
-                    return {
-                        label = identifier,
-                        kind = memberKind(member),
-                        detail = memberDetail(member),
-                        documentation = member.documentation or member.summary or objectType,
-                    }
+                    return buildHoverInfoFromMember(objectType, identifier, member)
                 end
             end
         end
@@ -2234,6 +2663,11 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
         return declarationHover
     end
 
+    local usingNamespaceHover = inferUsingNamespaceHoverInfo(identifier, beforeIdentifier, trailingText)
+    if usingNamespaceHover then
+        return usingNamespaceHover
+    end
+
     local localType = symbolTypes[identifier]
     if localType then
         local resolvedLocalType = resolveType(localType) or resolveType(TypeDatabase.aliases[localType] or localType)
@@ -2244,7 +2678,7 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
         if resolvedLocalFullName ~= "" then
             local resolvedDisplay = displayTypeName(resolvedLocalFullName)
             if resolvedDisplay ~= "" and resolvedDisplay ~= localDisplayType then
-                detail = detail .. " (" .. resolvedLocalFullName .. ")"
+                detail = detail .. " (" .. resolvedDisplay .. ")"
             end
         end
 
@@ -2269,12 +2703,7 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
 
     local globalMember = findMemberInType("Globals", identifier)
     if globalMember then
-        return {
-            label = identifier,
-            kind = memberKind(globalMember),
-            detail = memberDetail(globalMember),
-            documentation = globalMember.documentation or globalMember.summary or "Global",
-        }
+        return buildHoverInfoFromMember("Globals", identifier, globalMember)
     end
 
     local typeHover = buildTypeHoverInfo(identifier)
@@ -2573,6 +3002,123 @@ local function collectUnknownUsingNamespaceDiagnostics(source)
     return diagnostics
 end
 
+local REQUIRED_USING_BY_TYPE_ALIAS = nil
+
+local function fullNameToNamespace(fullName)
+    local withoutGenerics = tostring(fullName or ""):gsub("%b<>", "")
+    return withoutGenerics:match("^(.*)%.[%a_][%w_]*$") or ""
+end
+
+local function getRequiredUsingByTypeAlias()
+    if REQUIRED_USING_BY_TYPE_ALIAS then
+        return REQUIRED_USING_BY_TYPE_ALIAS
+    end
+
+    local out = {}
+
+    for alias, fullName in pairs(TypeDatabase.aliases or {}) do
+        if type(alias) == "string" and alias ~= "" and type(fullName) == "string" and fullName:sub(1, 7) == "System." then
+            local namespaceName = fullNameToNamespace(fullName)
+            if namespaceName ~= "" then
+                out[alias] = namespaceName
+            end
+        end
+    end
+
+    for _, typeInfo in ipairs(DOTNET_BASE_TYPES) do
+        local alias = tostring(typeInfo.alias or "")
+        local namespaceName = fullNameToNamespace(typeInfo.fullName)
+        if alias ~= "" and namespaceName ~= "" then
+            out[alias] = namespaceName
+        end
+    end
+
+    REQUIRED_USING_BY_TYPE_ALIAS = out
+    return out
+end
+
+local function collectIncludedUsingNamespaces(source)
+    local includedNamespaces = {}
+
+    for namespaceName in tostring(source or ""):gmatch("using%s+([%a_][%w_%.]*)%s*;") do
+        includedNamespaces[string.lower(namespaceName)] = true
+    end
+
+    return includedNamespaces
+end
+
+local function collectMissingNamespaceImportDiagnostics(source)
+    local diagnostics = {}
+    local includedNamespaces = collectIncludedUsingNamespaces(source)
+    local requiredUsingByTypeAlias = getRequiredUsingByTypeAlias()
+    local emitted = {}
+    local tokens = Lexer.tokenize(source)
+
+    for index, token in ipairs(tokens) do
+        if token.type ~= "identifier" then
+            continue
+        end
+
+        local typeAlias = tostring(token.value or "")
+        local requiredNamespace = requiredUsingByTypeAlias[typeAlias]
+        if not requiredNamespace or includedNamespaces[string.lower(requiredNamespace)] then
+            continue
+        end
+
+        local prev = nil
+        for cursor = index - 1, 1, -1 do
+            local candidate = tokens[cursor]
+            if candidate and candidate.type ~= "eof" then
+                prev = candidate
+                break
+            end
+        end
+
+        local nextToken = nil
+        for cursor = index + 1, #tokens do
+            local candidate = tokens[cursor]
+            if candidate and candidate.type ~= "eof" then
+                nextToken = candidate
+                break
+            end
+        end
+
+        local previousIsDot = prev and prev.type == "punctuation" and prev.value == "."
+        local nextLooksTypeUsage = nextToken and (
+            (nextToken.type == "punctuation" and nextToken.value == ".")
+            or (nextToken.type == "operator" and nextToken.value == "<")
+            or nextToken.type == "identifier"
+        )
+
+        if previousIsDot or not nextLooksTypeUsage then
+            continue
+        end
+
+        local diagnosticKey = typeAlias .. "::" .. requiredNamespace
+        if emitted[diagnosticKey] then
+            continue
+        end
+        emitted[diagnosticKey] = true
+
+        local line = clampPositiveInt(token.line, 1)
+        local column = clampPositiveInt(token.column, 1)
+        local length = math.max(1, #typeAlias)
+
+        table.insert(diagnostics, {
+            severity = "error",
+            message = "Type '" .. typeAlias .. "' requires 'using " .. requiredNamespace .. ";'",
+            line = line,
+            column = column,
+            endLine = line,
+            endColumn = column + length,
+            length = length,
+            code = "semantic.missing_namespace_import",
+        })
+    end
+
+    return diagnostics
+end
+
 local function isKnownExternalIdentifier(name)
     if type(name) ~= "string" or name == "" then
         return true
@@ -2634,6 +3180,92 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
     local emitted = {}
     local nextSearchStartByName = {}
 
+    local function extractInterpolatedIdentifiers(rawValue)
+        local text = unquoteStringTokenValue(rawValue)
+        local identifiers = {}
+        local seen = {}
+        local incompleteMemberBases = {}
+        local seenIncompleteBases = {}
+
+        local function getIncompleteMemberAccessBase(expression)
+            local tokens = Lexer.tokenize(tostring(expression or ""))
+            local filtered = {}
+
+            for _, token in ipairs(tokens) do
+                if token.type ~= "eof" then
+                    table.insert(filtered, token)
+                end
+            end
+
+            if #filtered < 2 then
+                return nil
+            end
+
+            local trailingDot = filtered[#filtered]
+            if not trailingDot then
+                return nil
+            end
+
+            local isDot = (trailingDot.type == "operator" or trailingDot.type == "punctuation") and trailingDot.value == "."
+            if not isDot then
+                return nil
+            end
+
+            local i = 1
+            if not filtered[i] or filtered[i].type ~= "identifier" then
+                return nil
+            end
+
+            local baseName = filtered[i].value
+            i += 1
+
+            while i <= #filtered - 1 do
+                local dotToken = filtered[i]
+                local memberToken = filtered[i + 1]
+                if not dotToken or not memberToken then
+                    return nil
+                end
+
+                local isMemberDot = (dotToken.type == "operator" or dotToken.type == "punctuation") and dotToken.value == "."
+                if not isMemberDot or memberToken.type ~= "identifier" then
+                    return nil
+                end
+
+                i += 2
+            end
+
+            if i ~= #filtered then
+                return nil
+            end
+
+            return baseName
+        end
+
+        local function captureFromExpression(expression)
+            local name = tostring(expression or ""):match("^%s*([%a_][%w_]*)")
+            if name and not seen[name] then
+                seen[name] = true
+                table.insert(identifiers, name)
+            end
+
+            local incompleteBase = getIncompleteMemberAccessBase(expression)
+            if incompleteBase and not seenIncompleteBases[incompleteBase] then
+                seenIncompleteBases[incompleteBase] = true
+                table.insert(incompleteMemberBases, incompleteBase)
+            end
+        end
+
+        for expression in text:gmatch("%${([^}]*)}") do
+            captureFromExpression(expression)
+        end
+
+        for expression in text:gmatch("{([^}]*)}") do
+            captureFromExpression(expression)
+        end
+
+        return identifiers, incompleteMemberBases
+    end
+
     local function reportIdentifierIssue(name, outOfScope)
         if type(name) ~= "string" or name == "" then
             return
@@ -2672,6 +3304,36 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             endColumn = found and found.endColumn or 2,
             length = found and found.length or math.max(1, #name),
             code = code,
+        })
+    end
+
+    local function reportIncompleteMemberAccessIssue(name)
+        if type(name) ~= "string" or name == "" then
+            return
+        end
+
+        local key = "incomplete_member_access::" .. name
+        if emitted[key] then
+            return
+        end
+        emitted[key] = true
+
+        local found = findIdentifierPosition(source, lineStarts, name, nextSearchStartByName[name], {
+            preferLast = true,
+        })
+        if found then
+            nextSearchStartByName[name] = found.nextStart
+        end
+
+        table.insert(out, {
+            severity = "error",
+            message = "Incomplete member access in interpolated expression",
+            line = found and found.line or 1,
+            column = found and found.column or 1,
+            endLine = found and found.endLine or 1,
+            endColumn = found and found.endColumn or 2,
+            length = found and (found.length + 1) or math.max(1, #name + 1),
+            code = "semantic.incomplete_member_access",
         })
     end
 
@@ -2759,6 +3421,25 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             else
                 walkExpression(expr.body, lambdaScope)
             end
+            return
+        end
+
+        if exprType == "interpolated_string" then
+            local interpolationIdentifiers, incompleteMemberBases = extractInterpolatedIdentifiers(expr.value)
+
+            for _, name in ipairs(interpolationIdentifiers) do
+                if type(name) == "string"
+                    and name ~= ""
+                    and not isDeclaredInScope(scope, name)
+                    and not isKnownExternalIdentifier(name) then
+                    reportIdentifierIssue(name, allDeclared[name] == true)
+                end
+            end
+
+            for _, baseName in ipairs(incompleteMemberBases) do
+                reportIncompleteMemberAccessIssue(baseName)
+            end
+
             return
         end
 
@@ -2895,6 +3576,89 @@ local function collectMethodScopeDiagnostics(parseResult, source)
     return diagnostics
 end
 
+local function collectIncompleteMemberAccessDiagnostics(source)
+    local diagnostics = {}
+    local tokens = Lexer.tokenize(source)
+    local emitted = {}
+
+    local function emit(lastIdentifierToken, dotToken)
+        if type(lastIdentifierToken) ~= "table" or type(dotToken) ~= "table" then
+            return
+        end
+
+        local line = tonumber(lastIdentifierToken.line) or 1
+        local startColumn = tonumber(lastIdentifierToken.column) or 1
+        local dotColumn = tonumber(dotToken.column) or (startColumn + #tostring(lastIdentifierToken.value or ""))
+        local endColumn = math.max(startColumn + 1, dotColumn + 1)
+        local key = tostring(line) .. ":" .. tostring(startColumn) .. ":" .. tostring(endColumn)
+
+        if emitted[key] then
+            return
+        end
+        emitted[key] = true
+
+        table.insert(diagnostics, {
+            severity = "error",
+            message = "Incomplete member access.",
+            line = line,
+            column = startColumn,
+            endLine = line,
+            endColumn = endColumn,
+            length = math.max(1, endColumn - startColumn),
+            code = "semantic.incomplete_member_access",
+        })
+    end
+
+    local i = 1
+    while i <= #tokens do
+        local token = tokens[i]
+        if token and token.type == "identifier" then
+            local lastIdentifierToken = token
+            local j = i + 1
+            local sawChain = false
+
+            while j <= #tokens do
+                local dotToken = tokens[j]
+                if not dotToken or dotToken.type == "eof" then
+                    break
+                end
+
+                local isDot = (dotToken.type == "operator" or dotToken.type == "punctuation") and dotToken.value == "."
+                if not isDot then
+                    break
+                end
+
+                sawChain = true
+                local nextToken = tokens[j + 1]
+                if not nextToken or nextToken.type == "eof" then
+                    emit(lastIdentifierToken, dotToken)
+                    j += 1
+                    break
+                end
+
+                if nextToken.type ~= "identifier" or tonumber(nextToken.line) ~= tonumber(dotToken.line) then
+                    emit(lastIdentifierToken, dotToken)
+                    j += 1
+                    break
+                end
+
+                lastIdentifierToken = nextToken
+                j += 2
+            end
+
+            if sawChain then
+                i = math.max(i + 1, j)
+            else
+                i += 1
+            end
+        else
+            i += 1
+        end
+    end
+
+    return diagnostics
+end
+
 local function collectSemanticDiagnostics(parseResult, source)
     local diagnostics = {}
 
@@ -2902,7 +3666,15 @@ local function collectSemanticDiagnostics(parseResult, source)
         table.insert(diagnostics, diagnostic)
     end
 
+    for _, diagnostic in ipairs(collectMissingNamespaceImportDiagnostics(source)) do
+        table.insert(diagnostics, diagnostic)
+    end
+
     for _, diagnostic in ipairs(collectMethodScopeDiagnostics(parseResult, source)) do
+        table.insert(diagnostics, diagnostic)
+    end
+
+    for _, diagnostic in ipairs(collectIncompleteMemberAccessDiagnostics(source)) do
         table.insert(diagnostics, diagnostic)
     end
 
@@ -2942,6 +3714,7 @@ local DIAGNOSTIC_FALLBACK_DETAIL_BY_CODE = {
     ["semantic.undeclared_identifier"] = "Undeclared identifier.",
     ["semantic.out_of_scope_identifier"] = "Identifier is out of scope.",
     ["semantic.unknown_using_namespace"] = "Unknown using namespace.",
+    ["semantic.missing_namespace_import"] = "Type requires a missing using namespace import.",
 }
 
 local function resolveDiagnosticHoverDetail(diagnostic)
@@ -2983,7 +3756,7 @@ function IntelliSense.getDiagnostics(parseResult, source)
         end
     end
 
-    if type(source) == "string" and source ~= "" and parseResult and type(parseResult) == "table" then
+    if type(source) == "string" and source ~= "" then
         for _, diagnostic in ipairs(collectSemanticDiagnostics(parseResult, source)) do
             appendNormalizedDiagnostic(diagnostics, diagnostic)
         end
