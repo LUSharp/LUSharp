@@ -524,31 +524,86 @@ function Parser.parse(tokens, options)
         return { type = "unknown", value = tok.value }
     end
 
+    local function buildCallNode(expr, args)
+        local callNode = { type = "call", callee = expr, arguments = args }
+        if expr.type == "identifier" then
+            callNode.name = expr.name
+        elseif expr.type == "member_access" then
+            callNode.name = expr.member
+            callNode.target = expr.object
+        end
+        return callNode
+    end
+
+    local function findGenericCloseIndex(startIndex)
+        local depth = 0
+        local cursor = startIndex
+
+        while cursor <= #tokens do
+            local tok = tokens[cursor]
+            if not tok or tok.type == "eof" then
+                return nil
+            end
+
+            if tok.type == "operator" and tok.value == "<" then
+                depth += 1
+            elseif tok.type == "operator" and tok.value == ">" then
+                depth -= 1
+                if depth == 0 then
+                    return cursor
+                elseif depth < 0 then
+                    return nil
+                end
+            elseif tok.type == "punctuation" and (tok.value == ";" or tok.value == "{" or tok.value == "}") then
+                return nil
+            end
+
+            cursor += 1
+        end
+
+        return nil
+    end
+
     -- Parse postfix: member access (a.b), null-conditional (a?.b), method calls (a()), indexing (a[])
     local function parsePostfix(expr)
         while true do
             -- Null-conditional member access: expr?.member
             if check("operator", "?.") then
-                advance() -- ?.
-                local memberName = expect("identifier").value
-                expr = { type = "null_conditional", object = expr, member = memberName }
+                local nullDotToken = advance() -- ?.
+                local nextToken = current()
+                if nextToken.type == "identifier" and tonumber(nextToken.line) == tonumber(nullDotToken.line) then
+                    local memberName = advance().value
+                    expr = { type = "null_conditional", object = expr, member = memberName }
+                else
+                    addDiagnostic("error", "Incomplete member access: expected member name after '?.'", nullDotToken)
+                    break
+                end
             -- Member access: expr.member
             elseif check("punctuation", ".") then
-                advance() -- .
-                local memberName = expect("identifier").value
-                expr = { type = "member_access", object = expr, member = memberName }
+                local dotToken = advance() -- .
+                local nextToken = current()
+                if nextToken.type == "identifier" and tonumber(nextToken.line) == tonumber(dotToken.line) then
+                    local memberName = advance().value
+                    expr = { type = "member_access", object = expr, member = memberName }
+                else
+                    addDiagnostic("error", "Incomplete member access: expected member name after '.'", dotToken)
+                    break
+                end
+            -- Generic method call: expr<T>(args)
+            elseif check("operator", "<") then
+                local genericCloseIndex = findGenericCloseIndex(pos)
+                local afterGeneric = genericCloseIndex and tokens[genericCloseIndex + 1] or nil
+                if not (afterGeneric and afterGeneric.type == "punctuation" and afterGeneric.value == "(") then
+                    break
+                end
+
+                pos = genericCloseIndex + 1
+                local args = parseArguments()
+                expr = buildCallNode(expr, args)
             -- Method call: expr(args)
             elseif check("punctuation", "(") then
                 local args = parseArguments()
-                -- Set convenience `name` field when callee is a simple identifier
-                local callNode = { type = "call", callee = expr, arguments = args }
-                if expr.type == "identifier" then
-                    callNode.name = expr.name
-                elseif expr.type == "member_access" then
-                    callNode.name = expr.member
-                    callNode.target = expr.object
-                end
-                expr = callNode
+                expr = buildCallNode(expr, args)
             -- Indexing: expr[index]
             elseif check("punctuation", "[") then
                 advance() -- [
@@ -715,6 +770,22 @@ function Parser.parse(tokens, options)
                 return true
             end
         end
+        return false
+    end
+
+    local function isValidExpressionStatement(expr)
+        if type(expr) ~= "table" then
+            return false
+        end
+
+        if expr.type == "assignment" or expr.type == "call" or expr.type == "new" or expr.type == "await" then
+            return true
+        end
+
+        if expr.type == "unary" and (expr.operator == "++" or expr.operator == "--") then
+            return true
+        end
+
         return false
     end
 
@@ -950,7 +1021,17 @@ function Parser.parse(tokens, options)
 
         -- Expression statement (assignment, method call, etc.)
         local expr = parseExpression()
-        match("punctuation", ";")
+        local statementTerminator = current()
+        expect("punctuation", ";")
+
+        if not isValidExpressionStatement(expr) then
+            addDiagnostic(
+                "error",
+                "Invalid expression statement: only assignment, call, increment/decrement, await, and object creation expressions are allowed",
+                statementTerminator
+            )
+        end
+
         return { type = "expression_statement", expression = expr }
     end
 

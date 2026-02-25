@@ -277,6 +277,16 @@ class Foo : Bar {
             expect(expr.type):toBe("member_access")
         end)
 
+        it("parses generic GetService call followed by semicolon", function()
+            local ast = parse("class C { void M() { game.GetService<ServerScriptService>(); } }")
+            expect(#(ast.diagnostics or {})):toBe(0)
+
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("expression_statement")
+            expect(stmt.expression.type):toBe("call")
+            expect(stmt.expression.name):toBe("GetService")
+        end)
+
         it("respects operator precedence", function()
             local ast = parse("class C { void M() { var x = 1 + 2 * 3; } }")
             local init = ast.classes[1].methods[1].body[1].initializer
@@ -349,6 +359,57 @@ class Foo : Bar {
             expect(missingNamespaceBraceDiagnostic.line):toBe(1)
             expect(missingNamespaceBraceDiagnostic.column >= 1):toBe(true)
             expect(missingNamespaceBraceDiagnostic.endColumn > missingNamespaceBraceDiagnostic.column):toBe(true)
+        end)
+
+        it("reports error for expression statement missing semicolon", function()
+            local source = "class Main { void GameEntry() { playersService.LocalPlayer // comment\n print(\"x\"); } }"
+            local ast = parse(source)
+            local missingSemicolonDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Expected punctuation ';'", 1, true) ~= nil then
+                    missingSemicolonDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(missingSemicolonDiagnostic):toNotBeNil()
+        end)
+
+        it("reports error for trailing dot member access before next line", function()
+            local source = "class Main { void GameEntry() { playersService.LocalPlayer. // comment\n print(\"x\"); } }"
+            local ast = parse(source)
+            local incompleteMemberAccessDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Incomplete member access", 1, true) ~= nil then
+                    incompleteMemberAccessDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(incompleteMemberAccessDiagnostic):toNotBeNil()
+        end)
+
+        it("reports error for side-effect-free member access expression statements", function()
+            local source = "class Main { void GameEntry() { playersService.LocalPlayer; } }"
+            local ast = parse(source)
+            local invalidExpressionStatementDiagnostic = nil
+
+            for _, diagnostic in ipairs(ast.diagnostics or {}) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Invalid expression statement", 1, true) ~= nil then
+                    invalidExpressionStatementDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(invalidExpressionStatementDiagnostic):toNotBeNil()
         end)
     end)
 end

@@ -67,6 +67,17 @@ class Foo {
             expect(hasLabel(completions, "game")):toBe(true)
         end)
 
+        it("includes generated documentation for class property completions", function()
+            local source = "game."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            local workspaceMember = firstByLabel(completions, "Workspace")
+
+            expect(workspaceMember):toNotBeNil()
+            expect(type(workspaceMember.documentation)):toBe("string")
+            expect(workspaceMember.documentation:find("Property on DataModel", 1, true) ~= nil):toBe(true)
+            expect(workspaceMember.documentation:find("Namespace:", 1, true) ~= nil):toBe(true)
+        end)
+
         it("returns constructable type completions after new", function()
             local source = "new Vec"
             local completions = IntelliSense.getCompletions(source, #source + 1, nil)
@@ -116,6 +127,12 @@ class Foo {
             expect(hasLabel(completions, "String")):toBe(true)
             expect(hasLabel(completions, "Int32")):toBe(true)
             expect(hasLabel(completions, "Collections")):toBe(true)
+            expect(hasLabel(completions, "Text")):toBe(true)
+            expect(hasLabel(completions, "Linq")):toBe(true)
+            expect(hasLabel(completions, "Threading")):toBe(true)
+            expect(hasLabel(completions, "IO")):toBe(true)
+            expect(hasLabel(completions, "Net")):toBe(true)
+            expect(hasLabel(completions, "Diagnostics")):toBe(true)
         end)
 
         it("keeps namespace/type members in namespace chain context", function()
@@ -296,6 +313,10 @@ class Foo {
             local hiddenSource = "game.GetService(\"Http"
             local hiddenCompletions = IntelliSense.getCompletions(hiddenSource, #hiddenSource + 1, nil)
             expect(hasLabel(hiddenCompletions, "HttpService")):toBe(false)
+
+            local studioHiddenSource = "game.GetService(\"Network"
+            local studioHiddenCompletions = IntelliSense.getCompletions(studioHiddenSource, #studioHiddenSource + 1, nil)
+            expect(hasLabel(studioHiddenCompletions, "NetworkClient")):toBe(false)
         end)
 
         it("includes additional services when explicitly enabled", function()
@@ -320,6 +341,32 @@ class Foo {
             local source = "var s = \"cl"
             local completions = IntelliSense.getCompletions(source, #source + 1, nil)
             expect(#completions):toBe(0)
+        end)
+
+        it("suggests members while typing inside interpolated string expressions", function()
+            local source = "class Main { void GameEntry() { var player = game.GetService(\"Players\"); print($\"{player.Lo\"); } }"
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "LocalPlayer")):toBe(true)
+        end)
+
+        it("suggests members after trailing dot inside interpolated expressions", function()
+            local source = "class Main { void GameEntry() { var players = game.GetService(\"Players\"); print($\"{players.LocalPlayer.}\"); } }"
+            local dotCursor = source:find("players.LocalPlayer.", 1, true) + #("players.LocalPlayer.")
+            local completions = IntelliSense.getCompletions(source, dotCursor, nil)
+            expect(hasLabel(completions, "Character")):toBe(true)
+        end)
+
+        it("keeps interpolation member suggestions when cursor advances past closing brace", function()
+            local source = "class Main { void GameEntry() { var players = game.GetService(\"Players\"); print($\"{players.LocalPlayer.}\"); } }"
+            local braceCursor = source:find("players.LocalPlayer.}", 1, true) + #("players.LocalPlayer.}")
+            local completions = IntelliSense.getCompletions(source, braceCursor, nil)
+            expect(hasLabel(completions, "Character")):toBe(true)
+        end)
+
+        it("does not suggest members for brace text in regular strings", function()
+            local source = "class Main { void GameEntry() { var player = game.GetService(\"Players\"); print(\"{player.Lo\"); } }"
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "LocalPlayer")):toBe(false)
         end)
 
         it("suggests class names inside Instance.new string", function()
@@ -374,6 +421,21 @@ class Foo {
             expect(diagnostics[1].endLine):toBe(4)
             expect(diagnostics[1].endColumn):toBe(17)
             expect(diagnostics[1].length):toBe(5)
+        end)
+
+        it("still reports incomplete member access when parse result is unavailable", function()
+            local source = "playersService.LocalPlayer."
+            local diagnostics = IntelliSense.getDiagnostics(nil, source)
+
+            local incompleteMemberDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.code) == "semantic.incomplete_member_access" then
+                    incompleteMemberDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(incompleteMemberDiagnostic):toNotBeNil()
         end)
 
         it("normalizes malformed diagnostics to stable non-zero clamped ranges", function()
@@ -483,6 +545,44 @@ class Foo {
             expect(unknownUsingDiagnostic.endColumn > unknownUsingDiagnostic.column):toBe(true)
         end)
 
+        it("adds diagnostics when known types are used without required namespace imports", function()
+            local source = "class Main { void GameEntry() { Console.WriteLine(\"x\"); List<int> values; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawConsoleMissingUsing = false
+            local sawListMissingUsing = false
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message)
+                if tostring(diagnostic.severity) == "error" and message:find("requires 'using System;'", 1, true) ~= nil then
+                    sawConsoleMissingUsing = true
+                end
+                if tostring(diagnostic.severity) == "error" and message:find("requires 'using System.Collections.Generic;'", 1, true) ~= nil then
+                    sawListMissingUsing = true
+                end
+            end
+
+            expect(sawConsoleMissingUsing):toBe(true)
+            expect(sawListMissingUsing):toBe(true)
+        end)
+
+        it("does not add missing-namespace diagnostics when required using directives are present", function()
+            local source = "using System; using System.Collections.Generic; class Main { void GameEntry() { Console.WriteLine(\"x\"); List<int> values; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawMissingUsing = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("requires 'using", 1, true) ~= nil then
+                    sawMissingUsing = true
+                    break
+                end
+            end
+
+            expect(sawMissingUsing):toBe(false)
+        end)
+
         it("adds diagnostics for undeclared identifiers", function()
             local source = "class Main { void GameEntry() { missingValue = 1; } }"
             local parseResult = parseSource(source)
@@ -502,6 +602,153 @@ class Foo {
             expect(undeclaredIdentifierDiagnostic.line):toBe(1)
             expect(undeclaredIdentifierDiagnostic.column):toBe(source:find("missingValue", 1, true))
             expect(undeclaredIdentifierDiagnostic.endColumn > undeclaredIdentifierDiagnostic.column):toBe(true)
+        end)
+
+        it("adds diagnostics for incomplete member access statements", function()
+            local source = "class Main { void GameEntry() { var playersService = game.GetService(\"Players\"); playersService.LocalPlayer.; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local incompleteMemberDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.code) == "semantic.incomplete_member_access"
+                    and tostring(diagnostic.message):find("Incomplete member access", 1, true) ~= nil then
+                    incompleteMemberDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(incompleteMemberDiagnostic):toNotBeNil()
+        end)
+
+        it("adds diagnostics for expression statements missing semicolon", function()
+            local source = "class Main { void GameEntry() { var playersService = game.GetService<Players>(); playersService.LocalPlayer // should error here!\n print($\"{playersService.LocalPlayer} and some text \" ); data[0] = 3; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local missingSemicolonDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Expected punctuation ';'", 1, true) ~= nil then
+                    missingSemicolonDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(missingSemicolonDiagnostic):toNotBeNil()
+        end)
+
+        it("adds diagnostics for trailing dot member access before next line", function()
+            local source = "class Main { void GameEntry() { var playersService = game.GetService<Players>(); playersService.LocalPlayer. // should error here!\n print($\"{playersService.LocalPlayer} and some text \" ); data[0] = 3; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local incompleteMemberAccessDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and (
+                        tostring(diagnostic.code) == "semantic.incomplete_member_access"
+                        or message:find("Incomplete member access", 1, true) ~= nil
+                    ) then
+                    incompleteMemberAccessDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(incompleteMemberAccessDiagnostic):toNotBeNil()
+        end)
+
+        it("adds diagnostics for side-effect-free member access expression statements", function()
+            local source = "class Main { void GameEntry() { var playersService = game.GetService<Players>(); playersService.LocalPlayer; print($\"{playersService.LocalPlayer} and some text \" ); data[0] = 3; } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local invalidExpressionStatementDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                local message = tostring(diagnostic.message or "")
+                if tostring(diagnostic.severity) == "error"
+                    and message:find("Invalid expression statement", 1, true) ~= nil then
+                    invalidExpressionStatementDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(invalidExpressionStatementDiagnostic):toNotBeNil()
+        end)
+
+        it("adds undeclared diagnostics for identifiers used inside interpolated strings", function()
+            local source = "class Main { void GameEntry() { print($\"{missingValue} is data\"); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local undeclaredInterpolationDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("missingValue", 1, true) ~= nil then
+                    undeclaredInterpolationDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(undeclaredInterpolationDiagnostic):toNotBeNil()
+        end)
+
+        it("does not add undeclared diagnostics for declared identifiers inside interpolated strings", function()
+            local source = "class Main { void GameEntry() { var data = 123; print($\"{data} is data\"); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawUndeclaredData = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("data", 1, true) ~= nil then
+                    sawUndeclaredData = true
+                    break
+                end
+            end
+
+            expect(sawUndeclaredData):toBe(false)
+        end)
+
+        it("adds diagnostics for incomplete member access inside interpolated strings", function()
+            local source = "class Main { void GameEntry() { var players = game.GetService(\"Players\"); print($\"{players.}\"); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local incompleteMemberDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.code) == "semantic.incomplete_member_access"
+                    and tostring(diagnostic.message):find("Incomplete member access", 1, true) ~= nil then
+                    incompleteMemberDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(incompleteMemberDiagnostic):toNotBeNil()
+        end)
+
+        it("does not treat brace identifiers in regular strings as interpolation", function()
+            local source = "class Main { void GameEntry() { print(\"{missingValue} is data\"); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawUndeclaredInterpolation = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("missingValue", 1, true) ~= nil then
+                    sawUndeclaredInterpolation = true
+                    break
+                end
+            end
+
+            expect(sawUndeclaredInterpolation):toBe(false)
         end)
 
         it("adds diagnostics for using loop variable outside scope", function()
@@ -645,6 +892,15 @@ class Foo {
             expect(printEntry.detail):toNotBeNil()
         end)
 
+        it("shows return type first in method completion detail", function()
+            local source = "var part = Factory.Create<Part>(); part."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            local findFirstChild = firstByLabel(completions, "FindFirstChild")
+            expect(findFirstChild):toNotBeNil()
+            expect(findFirstChild.detail):toContain("Instance FindFirstChild(")
+            expect(findFirstChild.detail:find("->", 1, true) == nil):toBe(true)
+        end)
+
         it("returns hover info for member methods", function()
             local source = "game.GetService"
             local hoverPos = source:find("GetService", 1, true) + 2
@@ -652,6 +908,20 @@ class Foo {
             expect(info):toNotBeNil()
             expect(info.label):toBe("GetService")
             expect(info.kind):toBe("method")
+        end)
+
+        it("shows generic GetService signature and summarizes alternate overloads", function()
+            local source = "game.GetService"
+            local hoverPos = source:find("GetService", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("method")
+            expect(info.detail):toContain("T game.GetService<T>()")
+            expect(info.detail):toContain("where T : Service")
+            expect(info.documentation):toContain("Overloads:")
+            expect(info.documentation):toContain("Instance game.GetService(className: String)")
+            expect(info.documentation):toContain("+1")
+            expect(info.documentation:find("- T game.GetService<T>() where T : Service", 1, true) == nil):toBe(true)
         end)
 
         it("returns hover info for local variable symbols", function()
@@ -662,6 +932,33 @@ class Foo {
             expect(info.label):toBe("g")
             expect(info.kind):toBe("variable")
             expect(info.detail):toContain("Globals")
+        end)
+
+        it("returns hover info for variable and members inside interpolated expressions", function()
+            local source = "class Main { void GameEntry() { var player = game.GetService(\"Players\"); print($\"{player.LocalPlayer.Name}\"); } }"
+
+            local playerPos = source:find("player", 1, true) + 1
+            local playerInfo = IntelliSense.getHoverInfo(source, playerPos, nil)
+            expect(playerInfo):toNotBeNil()
+            expect(playerInfo.label):toBe("player")
+            expect(playerInfo.detail):toContain("Players")
+
+            local localPlayerPos = source:find("LocalPlayer", 1, true) + 2
+            local localPlayerInfo = IntelliSense.getHoverInfo(source, localPlayerPos, nil)
+            expect(localPlayerInfo):toNotBeNil()
+            expect(localPlayerInfo.label):toBe("LocalPlayer")
+
+            local namePos = source:find("Name", 1, true) + 1
+            local nameInfo = IntelliSense.getHoverInfo(source, namePos, nil)
+            expect(nameInfo):toNotBeNil()
+            expect(nameInfo.label):toBe("Name")
+        end)
+
+        it("does not return interpolation member hover info in regular strings", function()
+            local source = "class Main { void GameEntry() { var player = game.GetService(\"Players\"); print(\"{player.LocalPlayer.Name}\"); } }"
+            local localPlayerPos = source:find("LocalPlayer", 1, true) + 2
+            local localPlayerInfo = IntelliSense.getHoverInfo(source, localPlayerPos, nil)
+            expect(localPlayerInfo):toBeNil()
         end)
 
         it("finds nearby hover symbol when cursor is offset", function()
@@ -739,10 +1036,27 @@ class Foo {
             expect(info.kind):toBe("keyword")
         end)
 
+        it("returns nested using namespace hover info instead of using keyword", function()
+            local source = "using System.Collections.Generic;\nclass Main { }"
+            local hoverPos = source:find("Collections", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toNotBeNil()
+            expect(info.kind):toBe("namespace")
+            expect(info.label):toBe("Collections")
+            expect(info.label == "using"):toBe(false)
+            expect(tostring(info.documentation or "")):toContain("System.Collections")
+        end)
+
         it("infers local service type from generic GetService call", function()
             local source = "var players = game.GetService<Players>(); players."
             local completions = IntelliSense.getCompletions(source, #source + 1, nil)
             expect(hasLabel(completions, "PlayerAdded")):toBe(true)
+        end)
+
+        it("suggests members after generic GetService chain for ServerScriptService", function()
+            local source = "game.GetService<ServerScriptService>()."
+            local completions = IntelliSense.getCompletions(source, #source + 1, nil)
+            expect(hasLabel(completions, "Name")):toBe(true)
         end)
 
         it("does not show hover info for public modifier token", function()
@@ -865,8 +1179,11 @@ class Foo {
             expect(info.kind):toBe("variable")
             expect(info.label):toBe("players")
             expect(info.detail):toContain("Players")
-            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Services.Players")
+            expect(info.detail):toContain("Roblox.Services.Players")
+            expect(info.detail:find("LUSharpAPI", 1, true) == nil):toBe(true)
             expect(info.documentation):toContain("Roblox")
+            expect(info.documentation):toContain("Namespace: Roblox.Services")
+            expect(info.documentation):toContain("Type: Roblox.Services.Players")
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
         end)
 
@@ -878,7 +1195,9 @@ class Foo {
             expect(info.kind):toBe("variable")
             expect(info.label):toBe("players")
             expect(info.detail):toContain("Players")
-            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Services.Players")
+            expect(info.detail):toContain("Roblox.Services.Players")
+            expect(info.detail:find("LUSharpAPI", 1, true) == nil):toBe(true)
+            expect(info.documentation):toContain("Namespace: Roblox.Services")
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
         end)
 
@@ -890,8 +1209,10 @@ class Foo {
             expect(info.kind):toBe("variable")
             expect(info.label):toBe("players")
             expect(info.detail):toContain("Players")
-            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Services.Players")
+            expect(info.detail):toContain("Roblox.Services.Players")
+            expect(info.detail:find("LUSharpAPI", 1, true) == nil):toBe(true)
             expect(info.documentation):toContain("Roblox")
+            expect(info.documentation):toContain("Namespace: Roblox.Services")
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Players")
         end)
 
@@ -903,8 +1224,10 @@ class Foo {
             expect(info.kind):toBe("variable")
             expect(info.label):toBe("part")
             expect(info.detail):toContain("Part")
-            expect(info.detail):toContain("LUSharpAPI.Runtime.STL.Classes.Instance.PVInstance.Part")
+            expect(info.detail):toContain("Roblox.Classes.Instance.PVInstance.Part")
+            expect(info.detail:find("LUSharpAPI", 1, true) == nil):toBe(true)
             expect(info.documentation):toContain("Roblox")
+            expect(info.documentation):toContain("Namespace: Roblox.Classes.Instance.PVInstance")
             expect(info.documentation):toContain("create.roblox.com/docs/reference/engine/classes/Part")
         end)
 
@@ -914,9 +1237,9 @@ class Foo {
             local info = IntelliSense.getHoverInfo(source, hoverPos, nil)
             expect(info):toNotBeNil()
             expect(info.kind):toBe("method")
-            expect(info.detail):toContain("FindFirstChild(")
+            expect(info.detail):toContain("Instance FindFirstChild(")
             expect(info.detail):toContain("String name")
-            expect(info.detail):toContain("-> Instance")
+            expect(info.detail:find("->", 1, true) == nil):toBe(true)
         end)
 
         it("provides built-in Roblox type documentation on hover", function()

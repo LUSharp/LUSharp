@@ -21,7 +21,6 @@ local DEFAULT_VISIBLE_SERVICES = {
     "Players",
     "Lighting",
     "MaterialService",
-    "NetworkClient",
     "ReplicatedFirst",
     "ReplicatedStorage",
     "ServerScriptService",
@@ -29,9 +28,10 @@ local DEFAULT_VISIBLE_SERVICES = {
     "StarterGui",
     "StarterPack",
     "StarterPlayer",
-    "Teams",
     "SoundService",
     "TextChatService",
+    "Chat",
+    "Teams",
 }
 
 local function getAllServiceNames()

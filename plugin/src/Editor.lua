@@ -1262,6 +1262,7 @@ function Editor.new(pluginObject, options)
     self._selectionMode = "character"
     self._selectionModeAnchorStart = nil
     self._selectionModeAnchorEndExclusive = nil
+    self._shiftSelectionAnchorPos = nil
     self._completionShownAt = 0
     self._activeCompletionIndex = nil
     self._completionAnchorStart = nil
@@ -1361,16 +1362,15 @@ function Editor.new(pluginObject, options)
     hoverInfoFrame.Parent = root
     self.hoverInfoFrame = hoverInfoFrame
 
-    local hoverInfoIcon = Instance.new("TextLabel")
+    local hoverInfoIcon = Instance.new("ImageLabel")
     hoverInfoIcon.Name = "Icon"
     hoverInfoIcon.Size = UDim2.new(0, 24, 0, 24)
     hoverInfoIcon.Position = UDim2.new(0, 8, 0, 8)
     hoverInfoIcon.BackgroundColor3 = Color3.fromRGB(66, 66, 66)
     hoverInfoIcon.BorderSizePixel = 0
-    hoverInfoIcon.Font = Enum.Font.SourceSansBold
-    hoverInfoIcon.TextSize = 14
-    hoverInfoIcon.TextColor3 = Color3.fromRGB(230, 230, 230)
-    hoverInfoIcon.Text = "•"
+    hoverInfoIcon.Image = EditorTextUtils.getCompletionKindIcon("class")
+    hoverInfoIcon.ScaleType = Enum.ScaleType.Fit
+    hoverInfoIcon.ImageColor3 = Color3.fromRGB(200, 200, 200)
     hoverInfoIcon.ZIndex = hoverInfoFrame.ZIndex + 1
     hoverInfoIcon.Parent = hoverInfoFrame
     self.hoverInfoIcon = hoverInfoIcon
@@ -2151,6 +2151,60 @@ function Editor.new(pluginObject, options)
         self._lastPrimaryMouseEventSource = currentSource
         self._characterSelectionNormalizeId = (tonumber(self._characterSelectionNormalizeId) or 0) + 1
 
+        local shiftDown = isShiftModifierDown()
+        if shiftDown == true then
+            local sourceText = textBox.Text or ""
+            local preClickCaretPos = tonumber(self._lastCursorPos)
+            local anchorPos = EditorTextUtils.resolveShiftSelectionAnchor(
+                sourceText,
+                self._shiftSelectionAnchorPos,
+                tonumber(textBox.SelectionStart),
+                tonumber(textBox.CursorPosition),
+                preClickCaretPos
+            )
+            local selectionStart, cursorPos = EditorTextUtils.resolveShiftClickSelectionEndpoints(sourceText, anchorPos, clickCursorPos)
+            if type(selectionStart) == "number" and type(cursorPos) == "number" then
+                self._shiftSelectionAnchorPos = anchorPos
+                self._smartSelectionClickState = {
+                    at = now,
+                    cursorPos = clickCursorPos,
+                    count = 1,
+                    burstStartAt = now,
+                }
+
+                setSelectionMode(self, "character")
+
+                local beforeSelection = tostring(self.textBox.SelectionStart)
+                local beforeCursor = tostring(self.textBox.CursorPosition)
+
+                self.textBox.SelectionStart = selectionStart
+                self.textBox.CursorPosition = cursorPos
+
+                self._lastCursorPos = self.textBox.CursorPosition
+                self._lastSelectionStart = self.textBox.SelectionStart
+                updateStatus(self)
+                updateCaretPosition(self)
+
+                setSelectionDebug(
+                    self,
+                    string.format(
+                        "SelDbg shift-click anchor=%s click=%s before=%s/%s after=%s/%s",
+                        tostring(anchorPos),
+                        tostring(clickCursorPos),
+                        beforeSelection,
+                        beforeCursor,
+                        tostring(self.textBox.SelectionStart),
+                        tostring(self.textBox.CursorPosition)
+                    ),
+                    true
+                )
+
+                return
+            end
+        else
+            self._shiftSelectionAnchorPos = nil
+        end
+
         local previousClickState = self._smartSelectionClickState
         local clickState = EditorTextUtils.resolveSmartSelectionClickState(
             now,
@@ -2749,8 +2803,8 @@ function Editor:_showHoverInfo(info, screenPosition)
     local documentation = tostring((info and info.documentation) or "")
 
     local visual = getCompletionKindVisual(kind)
-    self.hoverInfoIcon.Text = visual.text
-    self.hoverInfoIcon.TextColor3 = visual.color
+    self.hoverInfoIcon.Image = visual.image
+    self.hoverInfoIcon.ImageColor3 = visual.color
 
     local lines = { label }
     if detail ~= "" then

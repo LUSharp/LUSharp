@@ -360,16 +360,26 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
     end
 
     local insertedNewlinePos
+    local insertedLeadingWhitespace = ""
 
     if prevText ~= newText then
-        -- Text changed: detect a single-splice replacement with a lone '\n'.
+        -- Text changed: detect a single-splice replacement that starts with '\n'.
         local startPos, _removedText, insertedText = findSingleSplice(prevText, newText)
-        if insertedText ~= "\n" then
+        if type(insertedText) ~= "string" then
             return ""
         end
 
-        -- Only insert auto-indent when the cursor is at the insertion point.
-        if newCursor ~= startPos + 1 then
+        local newlinePrefix = insertedText:match("^\n([ \t]*)$")
+        if newlinePrefix == nil then
+            return ""
+        end
+
+        insertedLeadingWhitespace = newlinePrefix
+
+        -- Only insert auto-indent when cursor remains within the inserted newline segment.
+        local minCursor = startPos + 1
+        local maxCursor = startPos + 1 + #insertedLeadingWhitespace
+        if newCursor < minCursor or newCursor > maxCursor then
             return ""
         end
 
@@ -385,13 +395,10 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
     local leadingWhitespace = prevLine:match("^([ \t]*)") or ""
     local trimmed = prevLine:match("^(.-)%s*$") or ""
 
-    local indent = leadingWhitespace
+    local desiredIndent = leadingWhitespace
     if trimmed ~= "" and trimmed:sub(-1) == "{" then
-        indent ..= tabText
-        return indent
-    end
-
-    if trimmed == "" then
+        desiredIndent ..= tabText
+    elseif trimmed == "" then
         local tokens = Lexer.tokenize(newText:sub(1, insertedNewlinePos - 1))
         local depth = 0
         for _, token in ipairs(tokens) do
@@ -405,11 +412,19 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
         end
 
         if depth > 0 then
-            return string.rep(tabText, depth)
+            desiredIndent = string.rep(tabText, depth)
         end
     end
 
-    return indent
+    if insertedLeadingWhitespace ~= "" then
+        if desiredIndent:sub(1, #insertedLeadingWhitespace) == insertedLeadingWhitespace then
+            return desiredIndent:sub(#insertedLeadingWhitespace + 1)
+        end
+
+        return ""
+    end
+
+    return desiredIndent
 end
 
 local function normalizeKeyName(keyCode)
@@ -1276,6 +1291,7 @@ function EditorTextUtils.getCompletionKindIcon(kind)
         event = "rbxassetid://79508262463966",
         enum = "rbxassetid://122090598292533",
         enumitem = "rbxassetid://120188564562495",
+        service = "rbxassetid://99768122416664",
         class = "rbxassetid://109871698753471",
         namespace = "rbxassetid://99768122416664",
         struct = "rbxassetid://121562580658819",
@@ -1298,11 +1314,11 @@ function EditorTextUtils.getHoverKindBadgeText(kind)
         enumitem = "E",
         method = "M",
         constructor = "M",
-        property = "P",
+        property = "▣",
         field = "F",
         event = "E",
-        variable = "V",
-        localvariable = "V",
+        variable = "◉",
+        localvariable = "◉",
         service = "S",
         keyword = "K",
     }
@@ -1722,6 +1738,40 @@ function EditorTextUtils.shouldNormalizeCharacterClickSelection(selectionStart, 
     end
 
     return type(clickCursorPos) == "number"
+end
+
+function EditorTextUtils.resolveShiftSelectionAnchor(text, persistedAnchorPos, selectionStart, cursorPosition, preClickCaretPos)
+    text = tostring(text or "")
+
+    if type(persistedAnchorPos) == "number" then
+        return clampCursor(text, persistedAnchorPos)
+    end
+
+    if type(selectionStart) == "number" and type(cursorPosition) == "number" and selectionStart ~= -1 and selectionStart ~= cursorPosition then
+        return clampCursor(text, selectionStart)
+    end
+
+    if type(preClickCaretPos) == "number" then
+        return clampCursor(text, preClickCaretPos)
+    end
+
+    if type(cursorPosition) == "number" then
+        return clampCursor(text, cursorPosition)
+    end
+
+    return nil
+end
+
+function EditorTextUtils.resolveShiftClickSelectionEndpoints(text, anchorPos, clickCursorPos)
+    text = tostring(text or "")
+
+    if type(anchorPos) ~= "number" or type(clickCursorPos) ~= "number" then
+        return nil, nil
+    end
+
+    local selectionStart = clampCursor(text, anchorPos)
+    local cursorPos = clampCursor(text, clickCursorPos)
+    return selectionStart, cursorPos
 end
 
 function EditorTextUtils.shouldIgnoreDuplicatePrimaryMouseDown(lastAt, lastCursorPos, nowAt, cursorPos, dedupeSeconds, maxCursorDelta)
