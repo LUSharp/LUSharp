@@ -472,6 +472,26 @@ return function(describe, it, expect)
             expect(newCursor):toBe(4)
         end)
 
+        it("ctrl-delete at opening quote deletes only the opening quote boundary", function()
+            local text = "game.GetService(\"Players\")"
+            local quotePos = assert(text:find("\"", 1, true))
+            local newText, newCursor, changed = TextUtils.deleteNextWordSegment(text, quotePos)
+
+            expect(changed):toBe(true)
+            expect(newText):toBe("game.GetService(Players\")")
+            expect(newCursor):toBe(quotePos)
+        end)
+
+        it("ctrl-delete at member/index boundary deletes only dot punctuation", function()
+            local text = "players[0].Name"
+            local dotPos = assert(text:find(".", 1, true))
+            local newText, newCursor, changed = TextUtils.deleteNextWordSegment(text, dotPos)
+
+            expect(changed):toBe(true)
+            expect(newText):toBe("players[0]Name")
+            expect(newCursor):toBe(dotPos)
+        end)
+
         it("ctrl-delete removes only contiguous horizontal whitespace", function()
             local text = "foo   bar"
             local newText, newCursor, changed = TextUtils.deleteNextWordSegment(text, 4)
@@ -490,7 +510,17 @@ return function(describe, it, expect)
             expect(newCursor):toBe(4)
         end)
 
-        it("ctrl-delete helper deletes selected range as one edit", function()
+        it("ctrl-delete on newline boundary remains no-op", function()
+            local text = "foo\nbar"
+            local newlinePos = assert(text:find("\n", 1, true))
+            local newText, newCursor, changed = TextUtils.deleteNextWordSegment(text, newlinePos)
+
+            expect(changed):toBe(false)
+            expect(newText):toBe(text)
+            expect(newCursor):toBe(newlinePos)
+        end)
+
+        it("ctrl-delete helper still prioritizes active selection deletion", function()
             local text = "alpha beta"
             local newText, newCursor, newSelection, changed = TextUtils.computeCtrlDeleteEdit(text, 7, 1)
 
@@ -507,6 +537,17 @@ return function(describe, it, expect)
             expect(changed):toBe(false)
             expect(newText):toBe(text)
             expect(newCursor):toBe(4)
+            expect(newSelection):toBe(-1)
+        end)
+
+        it("ctrl-delete helper preserves quote-adjacent token boundary behavior", function()
+            local text = "game.GetService(\"Players\")"
+            local quotePos = assert(text:find("\"", 1, true))
+            local newText, newCursor, newSelection, changed = TextUtils.computeCtrlDeleteEdit(text, quotePos, -1)
+
+            expect(changed):toBe(true)
+            expect(newText):toBe("game.GetService(Players\")")
+            expect(newCursor):toBe(quotePos)
             expect(newSelection):toBe(-1)
         end)
 
@@ -528,6 +569,26 @@ return function(describe, it, expect)
             expect(newCursor):toBe(4)
         end)
 
+        it("ctrl-backspace at closing bracket deletes only bracket boundary", function()
+            local text = "data[0]"
+            local cursor = #text + 1
+            local newText, newCursor, changed = TextUtils.deletePrevWordSegment(text, cursor)
+
+            expect(changed):toBe(true)
+            expect(newText):toBe("data[0")
+            expect(newCursor):toBe(#newText + 1)
+        end)
+
+        it("ctrl-backspace at member/index boundary deletes only dot punctuation", function()
+            local text = "players[0].Name"
+            local dotPos = assert(text:find(".", 1, true))
+            local newText, newCursor, changed = TextUtils.deletePrevWordSegment(text, dotPos + 1)
+
+            expect(changed):toBe(true)
+            expect(newText):toBe("players[0]Name")
+            expect(newCursor):toBe(dotPos)
+        end)
+
         it("ctrl-backspace helper deletes selected range as one edit", function()
             local text = "alpha beta"
             local newText, newCursor, newSelection, changed = TextUtils.computeCtrlBackspaceEdit(text, 1, 7)
@@ -538,7 +599,7 @@ return function(describe, it, expect)
             expect(newSelection):toBe(-1)
         end)
 
-        it("ctrl-backspace does not cross newline boundaries", function()
+        it("ctrl-backspace helper keeps newline boundary guard after refactor", function()
             local text = "foo\nbar"
             local newText, newCursor, newSelection, changed = TextUtils.computeCtrlBackspaceEdit(text, 5, -1)
 
@@ -631,6 +692,28 @@ return function(describe, it, expect)
             expect(TextUtils.isWordDeleteShortcut("Backspace", false, true)):toBe(false)
         end)
 
+        it("keeps shortcut modifier down true when live state is true even if reported is false", function()
+            expect(TextUtils.resolveShortcutModifierDown(false, true, false)):toBe(true)
+        end)
+
+        it("keeps shortcut modifier down false when reported and live are false", function()
+            expect(TextUtils.resolveShortcutModifierDown(false, false, false)):toBe(false)
+        end)
+
+        it("does not trust stale cached modifier when reported and live are false", function()
+            expect(TextUtils.resolveShortcutModifierDown(false, false, true)):toBe(false)
+        end)
+
+        it("falls back to cached modifier only when reported state is unavailable", function()
+            expect(TextUtils.resolveShortcutModifierDown(nil, false, true)):toBe(true)
+            expect(TextUtils.resolveShortcutModifierDown(nil, false, false)):toBe(false)
+        end)
+
+        it("keeps reported true shortcut modifier down regardless of live/cache", function()
+            expect(TextUtils.resolveShortcutModifierDown(true, false, false)):toBe(true)
+            expect(TextUtils.resolveShortcutModifierDown(true, true, true)):toBe(true)
+        end)
+
         it("sanitizes selection for ctrl-delete word shortcut", function()
             local selection = TextUtils.sanitizeWordDeleteSelection(20, 1, "Delete", true, false)
             expect(selection):toBe(-1)
@@ -659,6 +742,33 @@ return function(describe, it, expect)
         it("falls back to sanitized selection when raw selection is unavailable", function()
             local selectionForDetect = TextUtils.resolveWordDeleteSelectionForDetect(nil, -1, false)
             expect(selectionForDetect):toBe(-1)
+        end)
+
+        it("deduplicates pending word-delete snapshot across different sources inside dedupe window", function()
+            local shouldDedupe = TextUtils.shouldDeduplicateWordDeleteSnapshot({
+                keyCode = "Backspace",
+                source = "textbox",
+                createdAt = 10,
+            }, "Backspace", "uis", 10.01, 0.05)
+            expect(shouldDedupe):toBe(true)
+        end)
+
+        it("does not deduplicate pending word-delete snapshot from same source", function()
+            local shouldDedupe = TextUtils.shouldDeduplicateWordDeleteSnapshot({
+                keyCode = "Backspace",
+                source = "uis",
+                createdAt = 10,
+            }, "Backspace", "uis", 10.01, 0.05)
+            expect(shouldDedupe):toBe(false)
+        end)
+
+        it("does not deduplicate pending word-delete snapshot outside dedupe window", function()
+            local shouldDedupe = TextUtils.shouldDeduplicateWordDeleteSnapshot({
+                keyCode = "Backspace",
+                source = "textbox",
+                createdAt = 10,
+            }, "Backspace", "uis", 10.2, 0.05)
+            expect(shouldDedupe):toBe(false)
         end)
 
         it("treats matching selection splice as active selection", function()
