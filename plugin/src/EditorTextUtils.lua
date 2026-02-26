@@ -90,48 +90,84 @@ local function deleteLineColumnRange(text, lineStart, startCol, endCol)
     return newText, globalStart, true
 end
 
-function EditorTextUtils.deleteNextWordSegment(text, cursorPos)
-    text = text or ""
-    cursorPos = clampCursor(text, cursorPos)
+local function resolveDirectionalDeleteSpan(text, cursorPos, direction)
+    local isForward = direction == "forward"
 
-    if cursorPos > #text then
-        return text, cursorPos, false
+    if isForward then
+        if cursorPos > #text then
+            return nil, nil, nil
+        end
+    else
+        if cursorPos <= 1 then
+            return nil, nil, nil
+        end
     end
 
-    local firstChar = text:sub(cursorPos, cursorPos)
-    local segmentKind = classifyForwardDeleteChar(firstChar)
+    local targetPos = isForward and cursorPos or (cursorPos - 1)
+    local targetChar = text:sub(targetPos, targetPos)
+    local segmentKind = classifyForwardDeleteChar(targetChar)
 
     if segmentKind == "newline" then
-        return text, cursorPos, false
+        return nil, nil, nil
     end
 
     local lineStart = findLineStart(text, cursorPos)
     local lineEndExclusive = findLineEndExclusive(text, cursorPos)
     local lineText = text:sub(lineStart, lineEndExclusive - 1)
-    local column = cursorPos - lineStart + 1
+    local targetCol = targetPos - lineStart + 1
 
-    if isHorizontalWhitespace(firstChar) then
-        local endCol = column
-        while endCol < #lineText do
-            local nextChar = lineText:sub(endCol + 1, endCol + 1)
-            if not isHorizontalWhitespace(nextChar) then
-                break
+    if segmentKind == "space" then
+        if isForward then
+            local endCol = targetCol
+            while endCol < #lineText do
+                local nextChar = lineText:sub(endCol + 1, endCol + 1)
+                if not isHorizontalWhitespace(nextChar) then
+                    break
+                end
+                endCol += 1
             end
-            endCol += 1
+
+            return lineStart, targetCol, endCol
         end
 
-        return deleteLineColumnRange(text, lineStart, column, endCol)
+        local startCol = targetCol
+        while startCol > 1 do
+            local prevChar = lineText:sub(startCol - 1, startCol - 1)
+            if not isHorizontalWhitespace(prevChar) then
+                break
+            end
+            startCol -= 1
+        end
+
+        return lineStart, startCol, targetCol
     end
 
-    local tokens = Lexer.tokenize(lineText)
-    local _token, tokenStartCol, tokenEndCol = findTokenCoveringColumn(tokens, column)
+    if segmentKind == "word" then
+        local tokens = Lexer.tokenize(lineText)
+        local _token, tokenStartCol, tokenEndCol = findTokenCoveringColumn(tokens, targetCol)
 
-    if type(tokenStartCol) == "number" and type(tokenEndCol) == "number" then
-        local endCol = math.max(column, tokenEndCol)
-        return deleteLineColumnRange(text, lineStart, column, endCol)
+        if type(tokenStartCol) == "number" and type(tokenEndCol) == "number" then
+            if isForward then
+                return lineStart, targetCol, math.max(targetCol, tokenEndCol)
+            end
+
+            return lineStart, tokenStartCol, math.min(targetCol, tokenEndCol)
+        end
     end
 
-    return deleteLineColumnRange(text, lineStart, column, column)
+    return lineStart, targetCol, targetCol
+end
+
+function EditorTextUtils.deleteNextWordSegment(text, cursorPos)
+    text = text or ""
+    cursorPos = clampCursor(text, cursorPos)
+
+    local lineStart, startCol, endCol = resolveDirectionalDeleteSpan(text, cursorPos, "forward")
+    if type(lineStart) ~= "number" then
+        return text, cursorPos, false
+    end
+
+    return deleteLineColumnRange(text, lineStart, startCol, endCol)
 end
 
 function EditorTextUtils.computeCtrlDeleteEdit(text, cursorPos, selectionStart)
@@ -161,47 +197,12 @@ function EditorTextUtils.deletePrevWordSegment(text, cursorPos)
     text = text or ""
     cursorPos = clampCursor(text, cursorPos)
 
-    if cursorPos <= 1 then
+    local lineStart, startCol, endCol = resolveDirectionalDeleteSpan(text, cursorPos, "backward")
+    if type(lineStart) ~= "number" then
         return text, cursorPos, false
     end
 
-    local firstCharPos = cursorPos - 1
-    local firstChar = text:sub(firstCharPos, firstCharPos)
-    local segmentKind = classifyForwardDeleteChar(firstChar)
-
-    if segmentKind == "newline" then
-        return text, cursorPos, false
-    end
-
-    local lineStart = findLineStart(text, cursorPos)
-    local lineEndExclusive = findLineEndExclusive(text, cursorPos)
-    local lineText = text:sub(lineStart, lineEndExclusive - 1)
-    local column = cursorPos - lineStart + 1
-    local leftColumn = column - 1
-
-    if isHorizontalWhitespace(firstChar) then
-        local startCol = leftColumn
-        while startCol > 1 do
-            local prevChar = lineText:sub(startCol - 1, startCol - 1)
-            if not isHorizontalWhitespace(prevChar) then
-                break
-            end
-            startCol -= 1
-        end
-
-        return deleteLineColumnRange(text, lineStart, startCol, leftColumn)
-    end
-
-    local tokens = Lexer.tokenize(lineText)
-    local _token, tokenStartCol, tokenEndCol = findTokenCoveringColumn(tokens, leftColumn)
-
-    if type(tokenStartCol) == "number" and type(tokenEndCol) == "number" then
-        local startCol = tokenStartCol
-        local endCol = math.min(leftColumn, tokenEndCol)
-        return deleteLineColumnRange(text, lineStart, startCol, endCol)
-    end
-
-    return deleteLineColumnRange(text, lineStart, leftColumn, leftColumn)
+    return deleteLineColumnRange(text, lineStart, startCol, endCol)
 end
 
 function EditorTextUtils.computeCtrlBackspaceEdit(text, cursorPos, selectionStart)
@@ -465,6 +466,22 @@ function EditorTextUtils.isWordDeleteShortcut(keyCode, ctrlDown, altDown)
     return false
 end
 
+function EditorTextUtils.resolveShortcutModifierDown(reportedDown, liveDown, cachedDown)
+    if reportedDown == true then
+        return true
+    end
+
+    if liveDown == true then
+        return true
+    end
+
+    if reportedDown == false then
+        return false
+    end
+
+    return cachedDown == true
+end
+
 function EditorTextUtils.sanitizeWordDeleteSelection(cursorPos, selectionStart, keyCode, ctrlDown, altDown)
     if not EditorTextUtils.isWordDeleteShortcut(keyCode, ctrlDown, altDown) then
         return selectionStart
@@ -485,6 +502,34 @@ function EditorTextUtils.resolveWordDeleteSelectionForDetect(rawSelectionStart, 
     end
 
     return sanitizedSelectionStart
+end
+
+function EditorTextUtils.shouldDeduplicateWordDeleteSnapshot(existingSnapshot, nextKeyCode, nextSource, now, dedupeWindowSeconds)
+    if type(existingSnapshot) ~= "table" then
+        return false
+    end
+
+    if existingSnapshot.keyCode ~= nextKeyCode then
+        return false
+    end
+
+    if existingSnapshot.source == nextSource then
+        return false
+    end
+
+    local createdAt = tonumber(existingSnapshot.createdAt)
+    local currentTime = tonumber(now)
+    local dedupeWindow = tonumber(dedupeWindowSeconds)
+    if type(createdAt) ~= "number" or type(currentTime) ~= "number" or type(dedupeWindow) ~= "number" then
+        return false
+    end
+
+    if dedupeWindow <= 0 then
+        return false
+    end
+
+    local age = currentTime - createdAt
+    return age >= 0 and age <= dedupeWindow
 end
 
 function EditorTextUtils.isSelectionDeleteSplice(cursorPos, selectionStart, spliceStart)

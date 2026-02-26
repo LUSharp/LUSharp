@@ -37,6 +37,8 @@ local SMART_LINE_MODE_INCLUDE_TERMINATOR = true
 local SMART_PRIMARY_MOUSE_DEDUPE_SECONDS = 0.05
 local SMART_PRIMARY_MOUSE_DEDUPE_CURSOR_DELTA = 2
 local WORD_DELETE_SHORTCUT_GRACE_SECONDS = 0.8
+local WORD_DELETE_SNAPSHOT_DEDUPE_SECONDS = 0.05
+local ENABLE_SELECTION_DEBUG_LOGS = false
 local SMART_DOUBLE_CLICK_STOP_CHARS = {
     ["\""] = true,
     ["'"] = true,
@@ -58,7 +60,6 @@ local SMART_DOUBLE_CLICK_STOP_CHARS = {
     [":"] = true,
 }
 
-warn("[LUSharp SelDbg] editor-module-loaded")
 
 local cursorPositionFromScreenPoint
 
@@ -191,6 +192,10 @@ local function setSelectionDebug(self, message, forceLog)
     local nextMessage = tostring(message or "")
     setKeyDebug(self, nextMessage)
 
+    if ENABLE_SELECTION_DEBUG_LOGS ~= true then
+        return
+    end
+
     local logLine = "[LUSharp SelDbg] " .. nextMessage
     if forceLog ~= true and self._lastSelectionDebugLog == logLine then
         return
@@ -260,23 +265,25 @@ local function readInputModifierState(inputObject, modifierKey)
 end
 
 local function resolveCtrlModifierDown(self, inputObject)
-    local value = readInputModifierState(inputObject, Enum.ModifierKey and Enum.ModifierKey.Ctrl or nil)
-    if type(value) == "boolean" then
-        self._ctrlModifierDown = value
-        return value
-    end
+    local reported = readInputModifierState(inputObject, Enum.ModifierKey and Enum.ModifierKey.Ctrl or nil)
+    local liveDown = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    local cachedDown = self._ctrlModifierDown == true
+    local resolved = EditorTextUtils.resolveShortcutModifierDown(reported, liveDown, cachedDown)
 
-    return isCtrlModifierDown(self)
+    self._ctrlModifierDown = resolved
+    return resolved
 end
 
 local function resolveAltModifierDown(self, inputObject)
-    local value = readInputModifierState(inputObject, Enum.ModifierKey and Enum.ModifierKey.Alt or nil)
-    if type(value) == "boolean" then
-        self._altModifierDown = value
-        return value
-    end
+    local reported = readInputModifierState(inputObject, Enum.ModifierKey and Enum.ModifierKey.Alt or nil)
+    local liveDown = UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)
+    local cachedDown = self._altModifierDown == true
+    local resolved = EditorTextUtils.resolveShortcutModifierDown(reported, liveDown, cachedDown)
 
-    return isAltModifierDown(self)
+    self._altModifierDown = resolved
+    return resolved
 end
 
 local function formatOutsideEditorDebug(self)
@@ -1232,6 +1239,7 @@ function Editor.new(pluginObject, options)
 
     table.insert(self._connections, textBox:GetPropertyChangedSignal("SelectionStart"):Connect(function()
         updateSelectionHighlight()
+        self._lastCursorPos = textBox.CursorPosition
         self._lastSelectionStart = textBox.SelectionStart
 
         if not EditorTextUtils.shouldUseCaretHoverCursor(tonumber(textBox.CursorPosition), tonumber(textBox.SelectionStart)) then
@@ -1242,6 +1250,7 @@ function Editor.new(pluginObject, options)
     end))
     table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(function()
         updateSelectionHighlight()
+        self._lastCursorPos = textBox.CursorPosition
         self._lastSelectionStart = textBox.SelectionStart
 
         if not EditorTextUtils.shouldUseCaretHoverCursor(tonumber(textBox.CursorPosition), tonumber(textBox.SelectionStart)) then
@@ -1289,7 +1298,6 @@ function Editor.new(pluginObject, options)
     self._lastCtrlModifierDownAt = nil
     self._lastAltModifierDownAt = nil
 
-    warn("[LUSharp SelDbg] editor-init instrumentation-active")
 
     local caret = Instance.new("Frame")
     caret.Name = "Caret"
@@ -1432,9 +1440,48 @@ function Editor.new(pluginObject, options)
             return
         end
 
+        if type(pendingWordDelete) ~= "table" then
+            local currentText = textBox.Text
+            local lastKnownText = tostring(self._lastText or "")
+            local lastKnownCursor = tonumber(self._lastCursorPos)
+            local lastKnownSelection = tonumber(self._lastSelectionStart)
+
+            if lastKnownText ~= "" and currentText ~= lastKnownText then
+                local synthStartPos, synthRemovedText, synthInsertedText = findSingleSplice(lastKnownText, currentText)
+                local synthDirection = "backward"
+                local synthKeyCode = Enum.KeyCode.Backspace
+                local synthHadSelection = EditorTextUtils.isSelectionDeleteSplice(lastKnownCursor, lastKnownSelection, synthStartPos)
+
+                if EditorTextUtils.shouldRepairWordDelete(synthKeyCode, synthHadSelection, synthRemovedText, synthInsertedText, false) then
+                    local synthBeforeCursor = EditorTextUtils.resolveWordDeleteCursorFromSplice(
+                        synthStartPos,
+                        synthRemovedText,
+                        synthDirection
+                    )
+                    if type(synthBeforeCursor) ~= "number" then
+                        synthBeforeCursor = lastKnownCursor
+                    end
+
+                    pendingWordDelete = {
+                        keyCode = synthKeyCode,
+                        createdAt = os.clock(),
+                        beforeText = lastKnownText,
+                        beforeCursor = synthBeforeCursor,
+                        -- Synthetic snapshots should never carry stale selection anchors.
+                        rawBeforeSelection = -1,
+                        beforeSelection = -1,
+                        shortcutDetected = false,
+                        source = "synthetic-last-known",
+                    }
+                    self._pendingWordDelete = pendingWordDelete
+                    setKeyDebug(self, string.format("WordFix synthetic key=%s", tostring(synthKeyCode)))
+                end
+            end
+        end
+
         if type(pendingWordDelete) == "table" then
             local age = os.clock() - (tonumber(pendingWordDelete.createdAt) or 0)
-            if age > 0 and age <= 0.6
+            if age >= 0 and age <= 0.6
                 and (
                     textBox.Text ~= tostring(pendingWordDelete.beforeText or "")
                     or textBox.Text ~= tostring(self._lastText or "")
@@ -1534,6 +1581,8 @@ function Editor.new(pluginObject, options)
                         return
                     end
                 end
+
+                self._pendingWordDelete = nil
             elseif age > 0.6 then
                 self._pendingWordDelete = nil
             end
@@ -2531,11 +2580,14 @@ function Editor.new(pluginObject, options)
 
         local now = os.clock()
         local existing = self._pendingWordDelete
-        if type(existing) == "table" and existing.keyCode == keyCode then
-            local existingAge = now - (tonumber(existing.createdAt) or 0)
-            if existingAge >= 0 and existingAge <= WORD_DELETE_SHORTCUT_GRACE_SECONDS then
-                return
-            end
+        if EditorTextUtils.shouldDeduplicateWordDeleteSnapshot(
+            existing,
+            keyCode,
+            source,
+            now,
+            WORD_DELETE_SNAPSHOT_DEDUPE_SECONDS
+        ) then
+            return
         end
 
         local beforeCursor = textBox.CursorPosition
@@ -2551,6 +2603,7 @@ function Editor.new(pluginObject, options)
             shortcutDetected = EditorTextUtils.isWordDeleteShortcut(keyCode, ctrlDown, altDown),
             source = source,
         }
+
     end
 
     table.insert(self._connections, textBox.InputBegan:Connect(function(input, _gameProcessed)
