@@ -127,6 +127,17 @@ class Foo : Bar {
             local method = ast.classes[1].methods[1]
             expect(method.isOverride):toBe(true)
         end)
+
+        it("parses async method modifier", function()
+            local ast = parse([[
+class Foo {
+    public async Task RunAsync() { }
+}]])
+            local method = ast.classes[1].methods[1]
+            expect(method.name):toBe("RunAsync")
+            expect(method.returnType):toBe("Task")
+            expect(method.isAsync):toBe(true)
+        end)
     end)
 
     describe("Parser: Statements", function()
@@ -250,6 +261,23 @@ class Foo : Bar {
             local ast = parse("class C { void M() { var f = x => x + 1; } }")
             local init = ast.classes[1].methods[1].body[1].initializer
             expect(init.type):toBe("lambda")
+        end)
+
+        it("parses await expression statement", function()
+            local ast = parse("class C { void M() { await DoWork(); } }")
+            local stmt = ast.classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("expression_statement")
+            expect(stmt.expression.type):toBe("await")
+            expect(stmt.expression.expression.type):toBe("call")
+            expect(stmt.expression.expression.name):toBe("DoWork")
+        end)
+
+        it("parses async lambda expression", function()
+            local ast = parse("class C { void M() { var action = async x => await DoWork(x); } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("lambda")
+            expect(init.isAsync):toBe(true)
+            expect(init.body.type):toBe("await")
         end)
 
         it("parses string interpolation", function()

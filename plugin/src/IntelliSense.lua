@@ -21,6 +21,7 @@ local KEYWORDS = {
     "do", "double", "else", "enum", "event", "explicit", "extern", "false", "finally", "fixed", "float",
     "for", "foreach", "get", "goto", "if", "implicit", "in", "init", "int", "interface", "internal",
     "is", "lock", "long", "namespace", "new", "null", "object", "operator", "out",
+    "async", "await",
     "override", "params", "private", "protected", "public", "readonly", "record", "ref", "required",
     "return", "sealed", "set", "short", "sizeof", "stackalloc", "static", "string", "struct", "switch",
     "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort",
@@ -1331,6 +1332,81 @@ local function getActiveInterpolatedExpressionPrefix(text)
     return nil
 end
 
+local function getInterpolatedStringStateAtTextEnd(text)
+    text = tostring(text or "")
+    if text == "" then
+        return false, 0
+    end
+
+    local inInterpolatedString = false
+    local interpolationDepth = 0
+
+    local i = 1
+    while i <= #text do
+        local ch = text:sub(i, i)
+        local nextCh = text:sub(i + 1, i + 1)
+
+        if not inInterpolatedString then
+            if ch == "$" and nextCh == '"' then
+                inInterpolatedString = true
+                interpolationDepth = 0
+                i += 2
+            else
+                i += 1
+            end
+        else
+            if ch == "\\" then
+                i += 2
+            elseif ch == '"' and interpolationDepth == 0 then
+                inInterpolatedString = false
+                interpolationDepth = 0
+                i += 1
+            elseif ch == "{" then
+                if nextCh == "{" then
+                    i += 2
+                else
+                    interpolationDepth += 1
+                    i += 1
+                end
+            elseif ch == "}" then
+                if nextCh == "}" then
+                    i += 2
+                elseif interpolationDepth > 0 then
+                    interpolationDepth -= 1
+                    i += 1
+                else
+                    i += 1
+                end
+            else
+                i += 1
+            end
+        end
+    end
+
+    return inInterpolatedString, interpolationDepth
+end
+
+local function getHoverStringContextAtCursor(source, cursorPos)
+    if type(source) ~= "string" or source == "" then
+        return nil
+    end
+
+    local target = math.max(1, math.min(cursorPos or 1, #source))
+    local leftInclusive = source:sub(1, target)
+    local tokens = Lexer.tokenize(leftInclusive)
+
+    if not isCursorInStringLiteral(tokens) then
+        return nil
+    end
+
+    local inInterpolatedString, interpolationDepth = getInterpolatedStringStateAtTextEnd(leftInclusive)
+    if inInterpolatedString and interpolationDepth > 0 then
+        return "interpolated_expression"
+    end
+
+    return "string_literal"
+end
+
 local function getServiceNameCompletions(prefix, opts)
     local result = {}
     local seen = {}
@@ -2265,6 +2341,15 @@ local HOVER_SUPPRESSED_KEYWORDS = {
 local HOVER_SUPPRESSED_STRUCTURAL_CHARS = {
     ["{"] = true,
     ["}"] = true,
+    [";"] = true,
+    ["="] = true,
+    [","] = true,
+}
+
+local HOVER_SUPPRESSED_TRAILING_BOUNDARY_CHARS = {
+    [";"] = true,
+    ["="] = true,
+    [","] = true,
 }
 
 local function trimWhitespace(value)
@@ -2325,16 +2410,73 @@ local function isStructuralOnlyLineAtCursor(source, cursorPos)
     return type(lineText) == "string" and lineText:match("^%s*[%{%}]%s*$") ~= nil
 end
 
+local function getPreviousNonWhitespaceChar(source, cursorPos)
+    if type(source) ~= "string" or source == "" then
+        return nil
+    end
+
+    local cursorIndex = math.max(1, math.min(cursorPos or (#source + 1), #source + 1))
+    for index = cursorIndex - 1, 1, -1 do
+        local char = source:sub(index, index)
+        if not char:match("%s") then
+            return char, index
+        end
+    end
+
+    return nil
+end
+
+local function isNumericLiteralChar(source, index)
+    if type(source) ~= "string" or source == "" then
+        return false
+    end
+
+    local sourceLength = #source
+    index = math.max(1, math.min(index or 1, sourceLength))
+
+    local char = source:sub(index, index)
+    if not char:match("%d") then
+        return false
+    end
+
+    local leftChar = (index > 1) and source:sub(index - 1, index - 1) or ""
+    local rightChar = (index < sourceLength) and source:sub(index + 1, index + 1) or ""
+
+    if leftChar:match("[%a_]") or rightChar:match("[%a_]") then
+        return false
+    end
+
+    return true
+end
+
 local function shouldSuppressHoverAtCursor(source, cursorPos)
     if type(source) ~= "string" or source == "" then
         return false
     end
 
-    local index = math.max(1, math.min(cursorPos or 1, #source))
+    local sourceLength = #source
+    local index = math.max(1, math.min(cursorPos or 1, sourceLength))
     local char = source:sub(index, index)
 
     if HOVER_SUPPRESSED_STRUCTURAL_CHARS[char] then
         return true
+    end
+
+    if isNumericLiteralChar(source, index) then
+        return true
+    end
+
+    local cursorIndex = math.max(1, math.min(cursorPos or (sourceLength + 1), sourceLength + 1))
+    local isBoundaryGap = (cursorIndex == sourceLength + 1) or char == "" or char:match("%s") ~= nil
+    if isBoundaryGap then
+        local previousNonWhitespaceChar, previousNonWhitespaceIndex = getPreviousNonWhitespaceChar(source, cursorPos)
+        if previousNonWhitespaceChar and HOVER_SUPPRESSED_TRAILING_BOUNDARY_CHARS[previousNonWhitespaceChar] then
+            return true
+        end
+
+        if previousNonWhitespaceIndex and isNumericLiteralChar(source, previousNonWhitespaceIndex) then
+            return true
+        end
     end
 
     if isWhitespaceOnlyLineAtCursor(source, cursorPos) then
@@ -2589,6 +2731,11 @@ end
 local function resolveHoverInfoAtPosition(source, cursorPos, opts)
     opts = opts or {}
     local _context = opts.context
+
+    local stringContext = getHoverStringContextAtCursor(source, cursorPos)
+    if stringContext == "string_literal" then
+        return nil, true
+    end
 
     if shouldSuppressHoverAtCursor(source, cursorPos) then
         return nil, true
