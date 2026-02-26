@@ -849,6 +849,29 @@ class Foo {
             expect(sawUndeclaredPrint):toBe(false)
         end)
 
+        it("does not mark async or await in async lambda callback as undeclared", function()
+            local source = "class Main { void GameEntry() { var action = async x => await DoWork(x); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawUndeclaredAsync = false
+            local sawUndeclaredAwait = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil then
+                    if tostring(diagnostic.message):find("async", 1, true) ~= nil then
+                        sawUndeclaredAsync = true
+                    end
+                    if tostring(diagnostic.message):find("await", 1, true) ~= nil then
+                        sawUndeclaredAwait = true
+                    end
+                end
+            end
+
+            expect(sawUndeclaredAsync):toBe(false)
+            expect(sawUndeclaredAwait):toBe(false)
+        end)
+
         it("returns diagnostic hover info when cursor is inside diagnostic span", function()
             local source = "class Main { void GameEntry() { missingValue = 1; } }"
             local parseResult = parseSource(source)
@@ -1020,6 +1043,20 @@ class Foo {
             expect(localPlayerInfo):toBeNil()
         end)
 
+        it("does not show hover info for type-like text inside regular strings", function()
+            local source = "class Main { void GameEntry() { print(\"Players\"); } }"
+            local hoverPos = source:find("Players", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info for interpolated string text outside braces", function()
+            local source = "class Main { void GameEntry() { var player = game.GetService(\"Players\"); print($\"Player: {player.Name}\"); } }"
+            local hoverPos = source:find("Player:", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
         it("finds nearby hover symbol when cursor is offset", function()
             local source = "game.GetService     "
             local hoverPos = #source
@@ -1178,6 +1215,48 @@ class Foo {
         it("does not show hover info when cursor is on an opening brace", function()
             local source = "class Main { public void GameEntry() { } }"
             local hoverPos = source:find(") {", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info when cursor is on a statement semicolon", function()
+            local source = "var playersService = game.GetService<Players>();\nplayersService"
+            local hoverPos = source:find(";", 1, true)
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info when caret is immediately after a statement semicolon", function()
+            local source = "print(d);\nprint(1);"
+            local hoverPos = source:find(";", 1, true) + 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info at end of incomplete assignment", function()
+            local source = "var data ="
+            local hoverPos = #source + 1
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info when cursor is on collection initializer number", function()
+            local source = "List<int> data = new() { 5,10,15,20 };"
+            local hoverPos = source:find("10", 1, true)
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info when cursor is on collection initializer comma", function()
+            local source = "List<int> data = new() { 5,10,15,20 };"
+            local hoverPos = source:find("10,", 1, true) + 2
+            local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
+            expect(info):toBeNil()
+        end)
+
+        it("does not show hover info on trailing collection initializer number near foreach", function()
+            local source = "foreach (var item in data) { }\nList<int> data = new() { 5,10,15,20 };"
+            local hoverPos = source:find("20", 1, true)
             local info = IntelliSense.getHoverInfo(source, hoverPos, { searchNearby = true, nearbyRadius = 20 })
             expect(info):toBeNil()
         end)

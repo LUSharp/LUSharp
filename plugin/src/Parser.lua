@@ -33,6 +33,7 @@ local function MethodNode(name, returnType, parameters, body, modifiers)
         isOverride = modifiers.isOverride or false,
         isVirtual = modifiers.isVirtual or false,
         isAbstract = modifiers.isAbstract or false,
+        isAsync = modifiers.isAsync or false,
     }
 end
 
@@ -253,7 +254,7 @@ function Parser.parse(tokens, options)
     local function parseModifiers()
         local mods = { access = nil, isStatic = false, isOverride = false,
             isVirtual = false, isAbstract = false, isReadonly = false,
-            isConst = false, isSealed = false }
+            isConst = false, isSealed = false, isAsync = false }
         while true do
             if check("keyword", "public") then mods.access = "public"; advance()
             elseif check("keyword", "private") then mods.access = "private"; advance()
@@ -266,6 +267,7 @@ function Parser.parse(tokens, options)
             elseif check("keyword", "readonly") then mods.isReadonly = true; advance()
             elseif check("keyword", "const") then mods.isConst = true; advance()
             elseif check("keyword", "sealed") then mods.isSealed = true; advance()
+            elseif check("keyword", "async") then mods.isAsync = true; advance()
             else break
             end
         end
@@ -309,58 +311,83 @@ function Parser.parse(tokens, options)
         return args
     end
 
+    local function isParenthesizedLambdaAt(startIndex)
+        if not tokens[startIndex] then
+            return false
+        end
+
+        if tokens[startIndex].type ~= "punctuation" or tokens[startIndex].value ~= "(" then
+            return false
+        end
+
+        local isLambda = false
+        local depth = 0
+        local i = startIndex
+
+        while i <= #tokens do
+            local tok = tokens[i]
+            if tok.type == "punctuation" and tok.value == "(" then
+                depth += 1
+            elseif tok.type == "punctuation" and tok.value == ")" then
+                depth -= 1
+                if depth == 0 then
+                    if i + 1 <= #tokens and tokens[i + 1].type == "operator" and tokens[i + 1].value == "=>" then
+                        local valid = true
+                        for j = startIndex + 1, i - 1 do
+                            local t = tokens[j]
+                            if t.type ~= "identifier" and not (t.type == "punctuation" and t.value == ",")
+                                and not (t.type == "keyword" and TYPE_KEYWORDS[t.value]) then
+                                valid = false
+                                break
+                            end
+                        end
+                        isLambda = valid
+                    end
+                    break
+                end
+            elseif tok.type == "eof" then
+                break
+            end
+            i += 1
+        end
+
+        return isLambda
+    end
+
     -- Helper: check if current position is a lambda expression
-    -- Single-param: identifier =>
-    -- Multi-param: ( identifiers... ) =>
+    -- Supports: x => ..., (x, y) => ..., async x => ..., async (x, y) => ...
     local function isLambdaExpression()
-        -- Single-param lambda: identifier =>
+        if check("keyword", "async") then
+            if peek(1).type == "identifier" and peek(2).type == "operator" and peek(2).value == "=>" then
+                return true
+            end
+
+            if peek(1).type == "punctuation" and peek(1).value == "(" then
+                return isParenthesizedLambdaAt(pos + 1)
+            end
+        end
+
         if check("identifier") and peek(1).type == "operator" and peek(1).value == "=>" then
             return true
         end
-        -- Multi-param lambda: (x, y) => ...
-        -- We need lookahead to distinguish from parenthesized expression
+
         if check("punctuation", "(") then
-            local savePos = pos
-            local isLambda = false
-            -- Try to scan past matching parens to see if => follows
-            local depth = 0
-            local i = pos
-            while i <= #tokens do
-                local tok = tokens[i]
-                if tok.type == "punctuation" and tok.value == "(" then
-                    depth += 1
-                elseif tok.type == "punctuation" and tok.value == ")" then
-                    depth -= 1
-                    if depth == 0 then
-                        -- Check if next token is =>
-                        if i + 1 <= #tokens and tokens[i + 1].type == "operator" and tokens[i + 1].value == "=>" then
-                            -- Check contents are valid lambda params (identifiers and commas only)
-                            local valid = true
-                            for j = savePos + 1, i - 1 do
-                                local t = tokens[j]
-                                if t.type ~= "identifier" and not (t.type == "punctuation" and t.value == ",")
-                                    and not (t.type == "keyword" and TYPE_KEYWORDS[t.value]) then
-                                    valid = false
-                                    break
-                                end
-                            end
-                            isLambda = valid
-                        end
-                        break
-                    end
-                elseif tok.type == "eof" then
-                    break
-                end
-                i += 1
-            end
-            return isLambda
+            return isParenthesizedLambdaAt(pos)
         end
+
         return false
     end
 
     -- Parse lambda expression: x => expr  or  (x, y) => { stmts } / (x, y) => expr
     local function parseLambda()
         local params = {}
+        local isAsync = false
+
+        if check("keyword", "async") then
+            isAsync = true
+            advance() -- async
+        end
+
         if check("punctuation", "(") then
             advance() -- (
             while not check("punctuation", ")") and not check("eof") do
@@ -381,7 +408,7 @@ function Parser.parse(tokens, options)
         else
             body = parseExpression()
         end
-        return { type = "lambda", parameters = params, body = body }
+        return { type = "lambda", parameters = params, body = body, isAsync = isAsync }
     end
 
     -- Parse a primary expression (atom): literal, identifier, new, parenthesized, lambda
@@ -624,8 +651,14 @@ function Parser.parse(tokens, options)
         return expr
     end
 
-    -- Parse unary prefix: !, -, ++, --
+    -- Parse unary prefix: !, -, ++, --, await
     parseUnary = function()
+        if check("keyword", "await") then
+            advance() -- await
+            local awaitedExpression = parseUnary()
+            return { type = "await", expression = awaitedExpression }
+        end
+
         if check("operator", "!") or check("operator", "-") then
             local op = advance().value
             local operand = parseUnary()

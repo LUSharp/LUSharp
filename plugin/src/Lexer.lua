@@ -3,7 +3,7 @@
 local Lexer = {}
 
 local KEYWORDS = {
-    "abstract", "as", "base", "bool", "break", "byte", "case", "catch",
+    "abstract", "as", "async", "await", "base", "bool", "break", "byte", "case", "catch",
     "char", "class", "const", "continue", "decimal", "default", "delegate",
     "do", "double", "else", "enum", "event", "false", "finally", "float",
     "for", "foreach", "get", "if", "in", "int", "interface", "internal",
