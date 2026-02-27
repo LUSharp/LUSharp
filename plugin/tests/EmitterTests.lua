@@ -145,6 +145,23 @@ class Foo {
             expect(out):toContain("local xs = List.new(1)")
         end)
 
+        it("emits primary constructor parameters in constructor helper", function()
+            local out = emit("class Foo(int health) { }")
+            expect(out):toContain("function Foo.new(health)")
+            expect(out):toContain("self.health = health")
+        end)
+
+        it("emits collection expressions as table literals", function()
+            local out = emit("class Foo { public void M() { var xs = [1, 2, 3]; } }")
+            expect(out):toContain("local xs = {1, 2, 3}")
+        end)
+
+        it("emits lambda default parameter nil guards", function()
+            local out = emit("class Foo { public void M() { var f = (int x = 5) => x; } }")
+            expect(out):toContain("if (x == nil) then")
+            expect(out):toContain("x = 5")
+        end)
+
         it("lowers event += and -= using Connect/Disconnect cache", function()
             local out = emit([[
 class Foo {
