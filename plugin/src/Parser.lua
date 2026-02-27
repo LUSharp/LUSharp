@@ -61,8 +61,13 @@ local function PropertyNode(name, propType, accessModifier, hasGet, hasSet, init
     }
 end
 
-local function ParameterNode(name, paramType, defaultValue)
-    return { name = name, type = paramType, defaultValue = defaultValue }
+local function ParameterNode(name, paramType, defaultValue, modifier)
+    return {
+        name = name,
+        type = paramType,
+        defaultValue = defaultValue,
+        modifier = modifier,
+    }
 end
 
 local function EnumNode(name, values, accessModifier)
@@ -86,6 +91,7 @@ end
 function Parser.parse(tokens, options)
     local pos = 1
     local diagnostics = {}
+    local typeAliases = {}
 
     options = type(options) == "table" and options or {}
 
@@ -225,6 +231,10 @@ function Parser.parse(tokens, options)
         else
             name = expect("identifier").value
         end
+
+        if typeAliases[name] then
+            name = typeAliases[name]
+        end
         if check("operator", "<") then
             advance() -- <
             name ..= "<"
@@ -279,13 +289,24 @@ function Parser.parse(tokens, options)
         local params = {}
         expect("punctuation", "(")
         while not check("punctuation", ")") and not check("eof") do
+            local modifier = nil
+            if check("keyword", "ref") then
+                advance()
+                if check("keyword", "readonly") then
+                    advance()
+                    modifier = "ref_readonly"
+                else
+                    modifier = "ref"
+                end
+            end
+
             local paramType = parseTypeName()
             local paramName = expect("identifier").value
             local default = nil
             if match("operator", "=") then
-                default = advance().value
+                default = parseExpression()
             end
-            table.insert(params, ParameterNode(paramName, paramType, default))
+            table.insert(params, ParameterNode(paramName, paramType, default, modifier))
             if not match("punctuation", ",") then break end
         end
         expect("punctuation", ")")
@@ -332,16 +353,7 @@ function Parser.parse(tokens, options)
                 depth -= 1
                 if depth == 0 then
                     if i + 1 <= #tokens and tokens[i + 1].type == "operator" and tokens[i + 1].value == "=>" then
-                        local valid = true
-                        for j = startIndex + 1, i - 1 do
-                            local t = tokens[j]
-                            if t.type ~= "identifier" and not (t.type == "punctuation" and t.value == ",")
-                                and not (t.type == "keyword" and TYPE_KEYWORDS[t.value]) then
-                                valid = false
-                                break
-                            end
-                        end
-                        isLambda = valid
+                        isLambda = true
                     end
                     break
                 end
@@ -383,6 +395,43 @@ function Parser.parse(tokens, options)
         local params = {}
         local isAsync = false
 
+        local function parseLambdaParameter()
+            local modifier = nil
+            if check("keyword", "ref") then
+                advance()
+                if check("keyword", "readonly") then
+                    advance()
+                    modifier = "ref_readonly"
+                else
+                    modifier = "ref"
+                end
+            end
+
+            local paramType = nil
+            local savePos = pos
+            local ok, parsedType = pcall(function()
+                return parseTypeName()
+            end)
+            if ok and check("identifier") then
+                paramType = parsedType
+            else
+                pos = savePos
+            end
+
+            local paramName = expect("identifier").value
+            local default = nil
+            if match("operator", "=") then
+                default = parseExpression()
+            end
+
+            return {
+                name = paramName,
+                type = paramType,
+                modifier = modifier,
+                defaultValue = default,
+            }
+        end
+
         if check("keyword", "async") then
             isAsync = true
             advance() -- async
@@ -391,16 +440,23 @@ function Parser.parse(tokens, options)
         if check("punctuation", "(") then
             advance() -- (
             while not check("punctuation", ")") and not check("eof") do
-                local paramName = expect("identifier").value
-                table.insert(params, paramName)
+                table.insert(params, parseLambdaParameter())
                 if not match("punctuation", ",") then break end
             end
             expect("punctuation", ")")
         else
             -- Single parameter
             local paramName = expect("identifier").value
-            table.insert(params, paramName)
+            local default = nil
+            if match("operator", "=") then
+                default = parseExpression()
+            end
+            table.insert(params, {
+                name = paramName,
+                defaultValue = default,
+            })
         end
+
         expect("operator", "=>") -- =>
         local body
         if check("punctuation", "{") then
@@ -455,6 +511,23 @@ function Parser.parse(tokens, options)
             local expr = parseExpression()
             expect("punctuation", ")")
             return expr
+        end
+
+        -- Collection expression: [expr, expr, ...]
+        if check("punctuation", "[") then
+            advance() -- [
+            local elements = {}
+            while not check("punctuation", "]") and not check("eof") do
+                table.insert(elements, parseExpression())
+                if not match("punctuation", ",") then
+                    break
+                end
+            end
+            expect("punctuation", "]")
+            return {
+                type = "collection_expression",
+                elements = elements,
+            }
         end
 
         -- new ClassName(args) OR target-typed new(), optionally with collection initializer
@@ -1163,11 +1236,18 @@ function Parser.parse(tokens, options)
     local function parseClass(mods)
         expect("keyword", "class")
         local name = expect("identifier").value
+        local primaryConstructorParameters = nil
+        if check("punctuation", "(") then
+            primaryConstructorParameters = parseParameterList()
+        end
+
         local baseClass = nil
         if match("punctuation", ":") then
             baseClass = parseTypeName()
         end
         local cls = ClassNode(name, baseClass, mods.access, mods.isStatic, mods.isAbstract)
+        cls.primaryConstructorParameters = primaryConstructorParameters
+
         expect("punctuation", "{")
         while not check("punctuation", "}") and not check("eof") do
             local memberStartPos = pos
@@ -1188,6 +1268,13 @@ function Parser.parse(tokens, options)
             end
         end
         expect("punctuation", "}")
+
+        if cls.constructor == nil and type(primaryConstructorParameters) == "table" and #primaryConstructorParameters > 0 then
+            cls.constructor = MethodNode(name, nil, primaryConstructorParameters, {}, {
+                access = "public",
+            })
+        end
+
         return cls
     end
 
@@ -1236,6 +1323,7 @@ function Parser.parse(tokens, options)
     -- Parse top-level
     local ast = {
         usings = {},
+        typeAliases = typeAliases,
         namespace = nil,
         classes = {},
         enums = {},
@@ -1247,22 +1335,38 @@ function Parser.parse(tokens, options)
         -- using directives
         if check("keyword", "using") then
             advance()
-            local parts = {}
-            local lastPartToken = expect("identifier")
-            table.insert(parts, lastPartToken.value)
-            while match("punctuation", ".") do
-                lastPartToken = expect("identifier")
-                table.insert(parts, lastPartToken.value)
+            local firstPartToken = expect("identifier")
+
+            if match("operator", "=") then
+                local aliasType = parseTypeName()
+                typeAliases[firstPartToken.value] = aliasType
+                ast.typeAliases[firstPartToken.value] = aliasType
+
+                if not match("punctuation", ";") then
+                    local anchorToken = {
+                        line = firstPartToken.line,
+                        column = firstPartToken.column + math.max(1, #tostring(firstPartToken.value or "")),
+                        value = ";",
+                    }
+                    addDiagnostic("error", "Expected ';' after using directive", anchorToken)
+                end
+            else
+                local parts = { firstPartToken.value }
+                local lastPartToken = firstPartToken
+                while match("punctuation", ".") do
+                    lastPartToken = expect("identifier")
+                    table.insert(parts, lastPartToken.value)
+                end
+                if not match("punctuation", ";") then
+                    local anchorToken = {
+                        line = lastPartToken.line,
+                        column = lastPartToken.column + math.max(1, #tostring(lastPartToken.value or "")),
+                        value = ";",
+                    }
+                    addDiagnostic("error", "Expected ';' after using directive", anchorToken)
+                end
+                table.insert(ast.usings, table.concat(parts, "."))
             end
-            if not match("punctuation", ";") then
-                local anchorToken = {
-                    line = lastPartToken.line,
-                    column = lastPartToken.column + math.max(1, #tostring(lastPartToken.value or "")),
-                    value = ";",
-                }
-                addDiagnostic("error", "Expected ';' after using directive", anchorToken)
-            end
-            table.insert(ast.usings, table.concat(parts, "."))
 
         -- namespace
         elseif check("keyword", "namespace") then

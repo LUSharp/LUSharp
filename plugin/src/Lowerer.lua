@@ -335,12 +335,60 @@ lowerExpression = function(expr)
         }
     end
 
+    -- C# 12 collection expression: [a, b, c] → array literal
+    if t == "collection_expression" then
+        local elements = {}
+        for _, element in ipairs(expr.elements or {}) do
+            table.insert(elements, lowerExpression(element))
+        end
+
+        return {
+            type = "array_literal",
+            elements = elements,
+        }
+    end
+
     -- Lambda: (x, y) => body
     if t == "lambda" then
         local params = {}
+        local defaultGuards = {}
+
         for _, p in ipairs(expr.parameters or {}) do
-            table.insert(params, p)
+            local paramName
+            local defaultValue = nil
+
+            if type(p) == "table" then
+                paramName = p.name
+                defaultValue = p.defaultValue
+            else
+                paramName = p
+            end
+
+            if type(paramName) == "string" and paramName ~= "" then
+                table.insert(params, paramName)
+
+                if defaultValue ~= nil then
+                    table.insert(defaultGuards, {
+                        type = "if_stmt",
+                        condition = {
+                            type = "binary_op",
+                            left = { type = "identifier", name = paramName },
+                            op = "==",
+                            right = { type = "literal", value = "nil", literalType = "nil" },
+                        },
+                        body = {
+                            {
+                                type = "assignment",
+                                target = { type = "identifier", name = paramName },
+                                value = lowerExpression(defaultValue),
+                            },
+                        },
+                        elseBody = nil,
+                    })
+                end
+            end
         end
+
         local body
         if type(expr.body) == "table" and expr.body.type then
             -- Single expression body → wrap in return
@@ -349,6 +397,18 @@ lowerExpression = function(expr)
             -- Block body
             body = lowerBlock(expr.body)
         end
+
+        if #defaultGuards > 0 then
+            local guardedBody = {}
+            for _, guard in ipairs(defaultGuards) do
+                table.insert(guardedBody, guard)
+            end
+            for _, stmt in ipairs(body) do
+                table.insert(guardedBody, stmt)
+            end
+            body = guardedBody
+        end
+
         return {
             type = "function_expr",
             params = params,
@@ -1139,6 +1199,26 @@ local function lowerClass(classNode)
             table.insert(cls.staticFields, irField)
         else
             table.insert(cls.instanceFields, irField)
+        end
+    end
+
+    -- Primary constructor parameters become captured instance fields.
+    for _, parameter in ipairs(classNode.primaryConstructorParameters or {}) do
+        if type(parameter) == "table" and type(parameter.name) == "string" and parameter.name ~= "" then
+            local exists = false
+            for _, existingField in ipairs(cls.instanceFields) do
+                if existingField.name == parameter.name then
+                    exists = true
+                    break
+                end
+            end
+
+            if not exists then
+                table.insert(cls.instanceFields, {
+                    name = parameter.name,
+                    value = { type = "identifier", name = parameter.name },
+                })
+            end
         end
     end
 

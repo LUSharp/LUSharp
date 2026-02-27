@@ -325,6 +325,53 @@ class Foo {
         end)
     end)
 
+    describe("Parser: C# 12", function()
+        it("parses class primary constructor parameters", function()
+            local ast = parse("class Foo(int health, string name) { }")
+            local cls = ast.classes[1]
+            expect(type(cls.primaryConstructorParameters)):toBe("table")
+            expect(#cls.primaryConstructorParameters):toBe(2)
+            expect(cls.primaryConstructorParameters[1].name):toBe("health")
+            expect(cls.primaryConstructorParameters[1].type):toBe("int")
+            expect(cls.constructor):toNotBeNil()
+        end)
+
+        it("parses collection expression literal", function()
+            local ast = parse("class C { void M() { var xs = [1, 2, 3]; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("collection_expression")
+            expect(#(init.elements or {})):toBe(3)
+        end)
+
+        it("parses lambda default parameter values", function()
+            local ast = parse("class C { void M() { var f = (int x = 1, int y = 2) => x + y; } }")
+            local init = ast.classes[1].methods[1].body[1].initializer
+            expect(init.type):toBe("lambda")
+            expect(type(init.parameters[1])):toBe("table")
+            expect(init.parameters[1].name):toBe("x")
+            expect(init.parameters[1].defaultValue.type):toBe("literal")
+            expect(init.parameters[1].defaultValue.value):toBe("1")
+        end)
+
+        it("parses ref readonly parameter modifiers", function()
+            local ast = parse("class C { void M(ref readonly int value) { } }")
+            local param = ast.classes[1].methods[1].parameters[1]
+            expect(param.modifier):toBe("ref_readonly")
+            expect(param.type):toBe("int")
+            expect(param.name):toBe("value")
+        end)
+
+        it("parses using alias and resolves alias type names", function()
+            local ast = parse("using AnyList = List<int>; class C { void M() { AnyList values; } }")
+            expect(type(ast.typeAliases)):toBe("table")
+            expect(ast.typeAliases.AnyList):toBe("List<int>")
+
+            local decl = ast.classes[1].methods[1].body[1]
+            expect(decl.type):toBe("local_var")
+            expect(decl.varType):toBe("List<int>")
+        end)
+    end)
+
     describe("Parser: Diagnostics", function()
         it("includes range data for parse errors", function()
             local ast = parse("class Foo { void M( { }")

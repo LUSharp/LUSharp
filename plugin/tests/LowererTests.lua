@@ -144,6 +144,32 @@ class Foo {
             local ir = lower("class Foo : ModuleScript { }")
             expect(ir.modules[1].scriptType):toBe("ModuleScript")
         end)
+
+        it("lowers primary constructor parameters into ctor and fields", function()
+            local ir = lower("class Foo(int health) { }")
+            local cls = ir.modules[1].classes[1]
+            expect(cls.constructor):toNotBeNil()
+            expect(cls.constructor.params[1]):toBe("health")
+            expect(cls.instanceFields[1].name):toBe("health")
+            expect(cls.instanceFields[1].value.type):toBe("identifier")
+            expect(cls.instanceFields[1].value.name):toBe("health")
+        end)
+
+        it("lowers collection expressions to array literals", function()
+            local ir = lower("class Foo { void M() { var xs = [1, 2, 3]; } }")
+            local stmt = ir.modules[1].classes[1].methods[1].body[1]
+            expect(stmt.type):toBe("local_decl")
+            expect(stmt.value.type):toBe("array_literal")
+            expect(#(stmt.value.elements or {})):toBe(3)
+        end)
+
+        it("lowers lambda default parameters to nil guards", function()
+            local ir = lower("class Foo { void M() { var f = (int x = 5) => x; } }")
+            local fn = ir.modules[1].classes[1].methods[1].body[1].value
+            expect(fn.type):toBe("function_expr")
+            expect(fn.params[1]):toBe("x")
+            expect(fn.body[1].type):toBe("if_stmt")
+        end)
     end)
 end
 
