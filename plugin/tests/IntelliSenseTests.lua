@@ -135,6 +135,25 @@ class Foo {
             expect(hasLabel(completions, "Diagnostics")):toBe(true)
         end)
 
+        it("returns validity-profile namespaces in general namespace chain context", function()
+            local source = "Roblox."
+            local completions = IntelliSense.getCompletions(source, #source + 1, {
+                validityProfile = {
+                    namespaces = {
+                        Roblox = true,
+                        ["Roblox.Services"] = true,
+                        ["Roblox.Classes"] = true,
+                    },
+                    classes = {
+                        Players = true,
+                    },
+                },
+            })
+
+            expect(hasLabel(completions, "Services")):toBe(true)
+            expect(hasLabel(completions, "Classes")):toBe(true)
+        end)
+
         it("keeps namespace/type members in namespace chain context", function()
             local source = "System."
             local completions = IntelliSense.getCompletions(source, #source + 1, nil)
@@ -268,6 +287,25 @@ class Foo {
             expect(hasLabel(completions, "Console")):toBe(false)
             expect(hasLabel(completions, "String")):toBe(false)
             expect(hasLabel(completions, "Int32")):toBe(false)
+        end)
+
+        it("includes baseline dotnet namespaces alongside provided validity profile namespaces", function()
+            local source = "using "
+            local completions = IntelliSense.getCompletions(source, #source + 1, {
+                validityProfile = {
+                    namespaces = {
+                        Roblox = true,
+                        ["Roblox.Services"] = true,
+                    },
+                    classes = {
+                        Players = true,
+                    },
+                },
+            })
+
+            expect(#completions > 0):toBe(true)
+            expect(hasLabel(completions, "Roblox")):toBe(true)
+            expect(hasLabel(completions, "System")):toBe(true)
         end)
 
         it("surfaces includable LUSharpAPI namespaces in using directives", function()
@@ -543,6 +581,81 @@ class Foo {
             expect(unknownUsingDiagnostic.line):toBe(1)
             expect(unknownUsingDiagnostic.column):toBe(source:find("NotAReal.Namespace", 1, true))
             expect(unknownUsingDiagnostic.endColumn > unknownUsingDiagnostic.column):toBe(true)
+        end)
+
+        it("does not add unknown-namespace diagnostics for baseline dotnet namespaces with provided validity profile", function()
+            local source = "using System;\nusing System.Collections.Generic;\nclass Main { }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source, {
+                validityProfile = {
+                    namespaces = {
+                        Roblox = true,
+                        ["Roblox.Services"] = true,
+                    },
+                    classes = {
+                        Players = true,
+                    },
+                },
+            })
+
+            local unknownUsingDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Unknown using namespace", 1, true) ~= nil then
+                    unknownUsingDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(unknownUsingDiagnostic):toBeNil()
+        end)
+
+        it("emits unsupported compile diagnostic for interceptors preview syntax", function()
+            local source = "class Main { [InterceptsLocation(\"Main.cs\", 1, 1)] void GameEntry() { } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local interceptorDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.code) == "csharp12.unsupported_compile.interceptors_preview" then
+                    interceptorDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(interceptorDiagnostic):toNotBeNil()
+        end)
+
+        it("emits unsupported compile diagnostic for Experimental attribute", function()
+            local source = "[Experimental(\"id\")] class Main { }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local experimentalDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.code) == "csharp12.unsupported_compile.experimental_attribute" then
+                    experimentalDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(experimentalDiagnostic):toNotBeNil()
+        end)
+
+        it("emits unsupported compile diagnostic for ref readonly semantics", function()
+            local source = "class Main { void M(ref readonly int value) { } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local refReadonlyDiagnostic = nil
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.code) == "csharp12.unsupported_compile.ref_readonly_parameters" then
+                    refReadonlyDiagnostic = diagnostic
+                    break
+                end
+            end
+
+            expect(refReadonlyDiagnostic):toNotBeNil()
         end)
 
         it("adds diagnostics when known types are used without required namespace imports", function()
@@ -870,6 +983,74 @@ class Foo {
 
             expect(sawUndeclaredAsync):toBe(false)
             expect(sawUndeclaredAwait):toBe(false)
+        end)
+
+        it("does not mark typed lambda callback parameter as undeclared in Connect", function()
+            local source = "class Main { void GameEntry() { Players players = game.GetService(\"Players\"); players.PlayerAdded.Connect((Player p) => { print(p.Name + \" has joined the game\"); }); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawUndeclaredP = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("p", 1, true) ~= nil then
+                    sawUndeclaredP = true
+                    break
+                end
+            end
+
+            expect(sawUndeclaredP):toBe(false)
+        end)
+
+        it("does not mark inferred lambda callback parameter as undeclared in Connect", function()
+            local source = "class Main { void GameEntry() { Players players = game.GetService(\"Players\"); players.PlayerAdded.Connect(p => { print(p.Name + \" has joined the game\"); }); } }"
+            local parseResult = parseSource(source)
+            local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+
+            local sawUndeclaredP = false
+            for _, diagnostic in ipairs(diagnostics) do
+                if tostring(diagnostic.severity) == "error"
+                    and tostring(diagnostic.message):find("Undeclared identifier", 1, true) ~= nil
+                    and tostring(diagnostic.message):find("p", 1, true) ~= nil then
+                    sawUndeclaredP = true
+                    break
+                end
+            end
+
+            expect(sawUndeclaredP):toBe(false)
+        end)
+
+        it("returns lambda parameter hover info for typed Connect callback parameter", function()
+            local source = "class Main { void GameEntry() { Players players = game.GetService(\"Players\"); players.PlayerAdded.Connect((Player p) => { print(p.Name + \" has joined the game\"); }); } }"
+            local pHoverPos = source:find("p.Name", 1, true)
+            local pInfo = IntelliSense.getHoverInfo(source, pHoverPos, nil)
+            expect(pInfo):toNotBeNil()
+            expect(pInfo.kind):toBe("variable")
+            expect(pInfo.label):toBe("p")
+            expect(pInfo.detail):toContain("Player")
+
+            local nameHoverPos = source:find("Name", 1, true) + 1
+            local nameInfo = IntelliSense.getHoverInfo(source, nameHoverPos, nil)
+            expect(nameInfo):toNotBeNil()
+            expect(nameInfo.kind):toBe("property")
+            expect(nameInfo.label):toBe("Name")
+        end)
+
+        it("returns lambda parameter hover info for inferred Connect callback parameter", function()
+            local source = "class Main { void GameEntry() { Players players = game.GetService(\"Players\"); players.PlayerAdded.Connect(p => { print(p.Name + \" has joined the game\"); }); } }"
+            local pHoverPos = source:find("p.Name", 1, true)
+            local pInfo = IntelliSense.getHoverInfo(source, pHoverPos, nil)
+            expect(pInfo):toNotBeNil()
+            expect(pInfo.kind):toBe("variable")
+            expect(pInfo.label):toBe("p")
+            expect(pInfo.detail):toContain("Player")
+
+            local nameHoverPos = source:find("Name", 1, true) + 1
+            local nameInfo = IntelliSense.getHoverInfo(source, nameHoverPos, nil)
+            expect(nameInfo):toNotBeNil()
+            expect(nameInfo.kind):toBe("property")
+            expect(nameInfo.label):toBe("Name")
         end)
 
         it("returns diagnostic hover info when cursor is inside diagnostic span", function()

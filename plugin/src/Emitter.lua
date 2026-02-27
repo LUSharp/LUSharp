@@ -82,6 +82,14 @@ emitExpression = function(expr)
         return "`" .. value .. "`"
     end
 
+    if t == "array_literal" then
+        local elements = {}
+        for _, element in ipairs(expr.elements or {}) do
+            table.insert(elements, emitExpression(element))
+        end
+        return "{" .. join(elements) .. "}"
+    end
+
     if t == "index_access" then
         return emitExpression(expr.object) .. "[" .. emitExpression(expr.key) .. "]"
     end
