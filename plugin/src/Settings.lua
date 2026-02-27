@@ -15,6 +15,7 @@ end
 local TypeDatabase = requireModule("TypeDatabase")
 
 local SETTINGS_KEY = "LUSharp.Settings"
+local ROBLOX_VALIDITY_PROFILE_CACHE_KEY = "LUSharp.RobloxValidityProfileCache"
 
 local DEFAULT_VISIBLE_SERVICES = {
     "Workspace",
@@ -571,6 +572,14 @@ end
 
 function Settings:get()
     return copyTable(self.values)
+end
+
+function Settings:getCachedRobloxValidityProfile()
+    return self.plugin:GetSetting(ROBLOX_VALIDITY_PROFILE_CACHE_KEY)
+end
+
+function Settings:setCachedRobloxValidityProfile(profile)
+    self.plugin:SetSetting(ROBLOX_VALIDITY_PROFILE_CACHE_KEY, profile)
 end
 
 function Settings:set(values)

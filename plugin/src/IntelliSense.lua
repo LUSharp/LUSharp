@@ -11,6 +11,7 @@ end
 
 local Lexer = requireModule("Lexer")
 local TypeDatabase = requireModule("TypeDatabase")
+local CSharp12SupportMatrix = requireModule("CSharp12SupportMatrix")
 
 local IntelliSense = {}
 
@@ -633,6 +634,71 @@ local function inferLocalSymbols(sourceUpToCursor)
     local tokens = Lexer.tokenize(sourceUpToCursor)
     local symbols = {}
 
+    local function extractSignalLambdaParameterType(signalTypeName)
+        local signalType = tostring(signalTypeName or "")
+        if signalType == "" then
+            return nil
+        end
+
+        local firstArg = signalType:match("^RBXScriptSignal<%s*([^,>]+)")
+        if not firstArg or firstArg == "" then
+            return nil
+        end
+
+        return normalizeTypeName(firstArg) or firstArg
+    end
+
+    local function inferConnectLambdaParameterType(paramIndex)
+        local openParen = tokens[paramIndex - 1]
+        local connectToken = tokens[paramIndex - 2]
+        local connectDot = tokens[paramIndex - 3]
+        local signalToken = tokens[paramIndex - 4]
+        local signalDot = tokens[paramIndex - 5]
+        local objectToken = tokens[paramIndex - 6]
+
+        if not (openParen and openParen.type == "punctuation" and openParen.value == "(") then
+            return nil
+        end
+
+        if not (connectToken and connectToken.type == "identifier" and connectToken.value == "Connect") then
+            return nil
+        end
+
+        if not (connectDot and connectDot.type == "punctuation" and connectDot.value == ".") then
+            return nil
+        end
+
+        if not (signalToken and signalToken.type == "identifier") then
+            return nil
+        end
+
+        if not (signalDot and signalDot.type == "punctuation" and signalDot.value == ".") then
+            return nil
+        end
+
+        if not (objectToken and objectToken.type == "identifier") then
+            return nil
+        end
+
+        local objectType = symbols[objectToken.value]
+        if type(objectType) ~= "string" or objectType == "" then
+            return nil
+        end
+
+        local members = {}
+        collectMembers(objectType, nil, members)
+        for _, member in ipairs(members) do
+            if member.name == signalToken.value and member.kind == "property" then
+                local inferred = extractSignalLambdaParameterType(member.type)
+                if inferred then
+                    return inferred
+                end
+            end
+        end
+
+        return nil
+    end
+
     for i = 1, #tokens - 2 do
         local token = tokens[i]
         local nextToken = tokens[i + 1]
@@ -646,6 +712,9 @@ local function inferLocalSymbols(sourceUpToCursor)
             end
 
             symbols[declaredName] = inferred or "Object"
+        elseif token.type == "identifier" and nextToken.type == "operator" and nextToken.value == "=>" then
+            local inferred = inferConnectLambdaParameterType(i)
+            symbols[token.value] = inferred or symbols[token.value] or "Object"
         elseif token.type == "identifier" or token.type == "keyword" then
             local parsedType, afterTypeIndex = parseGenericTypeSuffix(tokens, i)
             if parsedType then
@@ -934,7 +1003,7 @@ local function getDotnetBaselineCompletions(prefix)
     return sortAndLimit(result, 80)
 end
 
-local function getNamespaceCompletions(left)
+local function getNamespaceCompletions(left, opts)
     local namespacePath, memberPrefix = left:match("([%a_][%w_%.]*)%.([%a_][%w_]*)$")
     if not namespacePath then
         namespacePath = left:match("([%a_][%w_%.]*)%.$")
@@ -945,24 +1014,57 @@ local function getNamespaceCompletions(left)
         return nil
     end
 
-    local members = DOTNET_NAMESPACE_MEMBERS[namespacePath]
-    if not members then
-        return nil
-    end
-
     local result = {}
     local seen = {}
     local normalizedPrefix = string.lower(memberPrefix or "")
 
-    for _, member in ipairs(members) do
-        if normalizedPrefix == "" or string.sub(string.lower(member.label), 1, #normalizedPrefix) == normalizedPrefix then
-            addUniqueCompletion(result, seen, makeCompletion(
-                member.label,
-                member.kind,
-                member.detail,
-                member.documentation
-            ))
+    local members = DOTNET_NAMESPACE_MEMBERS[namespacePath]
+    if members then
+        for _, member in ipairs(members) do
+            if normalizedPrefix == "" or string.sub(string.lower(member.label), 1, #normalizedPrefix) == normalizedPrefix then
+                addUniqueCompletion(result, seen, makeCompletion(
+                    member.label,
+                    member.kind,
+                    member.detail,
+                    member.documentation
+                ))
+            end
         end
+    end
+
+    local validityNamespaces = opts and opts.validityProfile and opts.validityProfile.namespaces
+    if type(validityNamespaces) == "table" then
+        local childPrefix = namespacePath .. "."
+        local childPrefixLower = string.lower(childPrefix)
+        local seenChildren = {}
+
+        for fullName, isValid in pairs(validityNamespaces) do
+            if isValid then
+                local fullNameText = tostring(fullName or "")
+                local fullNameLower = string.lower(fullNameText)
+                if string.sub(fullNameLower, 1, #childPrefixLower) == childPrefixLower then
+                    local remainder = fullNameText:sub(#childPrefix + 1)
+                    local child = remainder:match("^([%a_][%w_]*)")
+                    if child then
+                        local lowerChild = string.lower(child)
+                        if (normalizedPrefix == "" or string.sub(lowerChild, 1, #normalizedPrefix) == normalizedPrefix)
+                            and not seenChildren[lowerChild] then
+                            seenChildren[lowerChild] = true
+                            addUniqueCompletion(result, seen, makeCompletion(
+                                child,
+                                "namespace",
+                                "namespace",
+                                namespacePath .. "." .. child
+                            ))
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #result == 0 then
+        return nil
     end
 
     return sortAndLimit(result, 150)
@@ -994,7 +1096,28 @@ local function addNamespaceWithParents(out, seen, namespaceName)
     end
 end
 
-local function getUsingNamespaceNames()
+local function getUsingNamespaceNames(validityProfile)
+    if type(validityProfile) == "table" and type(validityProfile.namespaces) == "table" then
+        local out = {}
+        local seen = {}
+
+        for _, namespaceName in ipairs(getUsingNamespaceNames(nil)) do
+            addNamespaceWithParents(out, seen, namespaceName)
+        end
+
+        for namespaceName, isValid in pairs(validityProfile.namespaces) do
+            if isValid then
+                addNamespaceWithParents(out, seen, namespaceName)
+            end
+        end
+
+        table.sort(out, function(a, b)
+            return string.lower(a) < string.lower(b)
+        end)
+
+        return out
+    end
+
     if USING_NAMESPACE_NAMES then
         return USING_NAMESPACE_NAMES
     end
@@ -1069,7 +1192,7 @@ local function extractIncludedUsingNamespaces(source, left)
     return result
 end
 
-local function getUsingNamespaceCompletions(source, left)
+local function getUsingNamespaceCompletions(source, left, opts)
     local path, namespacePath, memberPrefix = parseUsingDirectivePath(left)
     if path == nil then
         return nil
@@ -1080,7 +1203,7 @@ local function getUsingNamespaceCompletions(source, left)
     local seenChildren = {}
     local includedNamespaces = extractIncludedUsingNamespaces(source, left)
     local normalizedPrefix = string.lower(memberPrefix or "")
-    local namespaceNames = getUsingNamespaceNames()
+    local namespaceNames = getUsingNamespaceNames(opts and opts.validityProfile)
 
     local function maybeAddNamespace(label, fullName)
         local lowerLabel = string.lower(label)
@@ -2262,14 +2385,14 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     end
 
     do
-        local usingNamespaceCompletions = getUsingNamespaceCompletions(source, left)
+        local usingNamespaceCompletions = getUsingNamespaceCompletions(source, left, opts)
         if usingNamespaceCompletions ~= nil then
             return usingNamespaceCompletions
         end
     end
 
     do
-        local namespaceCompletions = getNamespaceCompletions(left)
+        local namespaceCompletions = getNamespaceCompletions(left, opts)
         if namespaceCompletions then
             return namespaceCompletions
         end
@@ -3118,10 +3241,10 @@ local function appendNormalizedDiagnostic(out, diagnostic)
     })
 end
 
-local function collectUnknownUsingNamespaceDiagnostics(source)
+local function collectUnknownUsingNamespaceDiagnostics(source, opts)
     local diagnostics = {}
     local knownNamespaces = {}
-    for _, namespaceName in ipairs(getUsingNamespaceNames()) do
+    for _, namespaceName in ipairs(getUsingNamespaceNames(opts and opts.validityProfile)) do
         knownNamespaces[string.lower(namespaceName)] = true
     end
 
@@ -3734,8 +3857,19 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
 
         if exprType == "lambda" then
             local lambdaScope = createScope(scope)
-            for _, parameterName in ipairs(expr.parameters or {}) do
+            for _, parameter in ipairs(expr.parameters or {}) do
+                local parameterName = parameter
+                local parameterType = nil
+
+                if type(parameter) == "table" then
+                    parameterName = parameter.name
+                    parameterType = normalizeTypeName(parameter.type)
+                end
+
                 declareInScope(lambdaScope, allDeclared, parameterName)
+                if type(parameterType) == "string" and parameterType ~= "" then
+                    declareTypeInScope(lambdaScope, parameterName, parameterType)
+                end
             end
 
             if type(expr.body) == "table" and expr.body[1] ~= nil then
@@ -4004,10 +4138,117 @@ local function collectIncompleteMemberAccessDiagnostics(source)
     return diagnostics
 end
 
-local function collectSemanticDiagnostics(parseResult, source)
+local function collectCSharp12UnsupportedCompileDiagnostics(parseResult, source)
     local diagnostics = {}
 
-    for _, diagnostic in ipairs(collectUnknownUsingNamespaceDiagnostics(source)) do
+    if type(source) ~= "string" or source == "" then
+        return diagnostics
+    end
+
+    local lineStarts = buildLineStarts(source)
+
+    local function addPatternDiagnostic(featureKey, pattern, message)
+        local support = CSharp12SupportMatrix[featureKey]
+        if type(support) ~= "table" or support.compile ~= false then
+            return
+        end
+
+        local startPos, endPos = source:find(pattern)
+        if not startPos then
+            return
+        end
+
+        local line, column = sourceIndexToLineColumn(lineStarts, startPos)
+        local length = math.max(1, (endPos or startPos) - startPos + 1)
+
+        table.insert(diagnostics, {
+            severity = "error",
+            message = message,
+            line = line,
+            column = column,
+            endLine = line,
+            endColumn = column + length,
+            length = length,
+            code = support.diagnosticCode,
+        })
+    end
+
+    addPatternDiagnostic(
+        "interceptors",
+        "%f[%w_]InterceptsLocation%f[^%w_]",
+        "Interceptors preview syntax is not supported by the compiler."
+    )
+
+    addPatternDiagnostic(
+        "experimental_attribute",
+        "%f[%w_]Experimental%f[^%w_]",
+        "Experimental attribute semantics are not supported by the compiler."
+    )
+
+    local refReadonlySupport = CSharp12SupportMatrix.ref_readonly_parameters
+    if type(refReadonlySupport) == "table" and refReadonlySupport.compile == false then
+        local hasRefReadonlyParameter = false
+        for _, classNode in ipairs((parseResult and parseResult.classes) or {}) do
+            if hasRefReadonlyParameter then
+                break
+            end
+
+            for _, methodNode in ipairs(classNode.methods or {}) do
+                if hasRefReadonlyParameter then
+                    break
+                end
+
+                for _, parameter in ipairs(methodNode.parameters or {}) do
+                    if type(parameter) == "table" and parameter.modifier == "ref_readonly" then
+                        hasRefReadonlyParameter = true
+                        break
+                    end
+                end
+            end
+
+            if not hasRefReadonlyParameter and classNode.constructor then
+                for _, parameter in ipairs(classNode.constructor.parameters or {}) do
+                    if type(parameter) == "table" and parameter.modifier == "ref_readonly" then
+                        hasRefReadonlyParameter = true
+                        break
+                    end
+                end
+            end
+        end
+
+        if hasRefReadonlyParameter then
+            local startPos, endPos = source:find("ref%s+readonly")
+            local line, column
+            local length
+
+            if startPos then
+                line, column = sourceIndexToLineColumn(lineStarts, startPos)
+                length = math.max(1, (endPos or startPos) - startPos + 1)
+            else
+                line, column = 1, 1
+                length = 1
+            end
+
+            table.insert(diagnostics, {
+                severity = "error",
+                message = "ref readonly parameter semantics are not supported by the compiler.",
+                line = line,
+                column = column,
+                endLine = line,
+                endColumn = column + length,
+                length = length,
+                code = refReadonlySupport.diagnosticCode,
+            })
+        end
+    end
+
+    return diagnostics
+end
+
+local function collectSemanticDiagnostics(parseResult, source, opts)
+    local diagnostics = {}
+
+    for _, diagnostic in ipairs(collectUnknownUsingNamespaceDiagnostics(source, opts)) do
         table.insert(diagnostics, diagnostic)
     end
 
@@ -4020,6 +4261,10 @@ local function collectSemanticDiagnostics(parseResult, source)
     end
 
     for _, diagnostic in ipairs(collectIncompleteMemberAccessDiagnostics(source)) do
+        table.insert(diagnostics, diagnostic)
+    end
+
+    for _, diagnostic in ipairs(collectCSharp12UnsupportedCompileDiagnostics(parseResult, source)) do
         table.insert(diagnostics, diagnostic)
     end
 
@@ -4092,7 +4337,7 @@ buildDiagnosticHoverInfo = function(diagnostic)
     }
 end
 
-function IntelliSense.getDiagnostics(parseResult, source)
+function IntelliSense.getDiagnostics(parseResult, source, opts)
     local diagnostics = {}
 
     if parseResult and type(parseResult) == "table" then
@@ -4102,7 +4347,7 @@ function IntelliSense.getDiagnostics(parseResult, source)
     end
 
     if type(source) == "string" and source ~= "" then
-        for _, diagnostic in ipairs(collectSemanticDiagnostics(parseResult, source)) do
+        for _, diagnostic in ipairs(collectSemanticDiagnostics(parseResult, source, opts)) do
             appendNormalizedDiagnostic(diagnostics, diagnostic)
         end
     end

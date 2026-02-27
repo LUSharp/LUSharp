@@ -4,6 +4,7 @@
 local Selection = game:GetService("Selection")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
 
 local ENABLE_DEV_MODULE_ROOT = false
 
@@ -53,6 +54,7 @@ local ProjectView = requireModule("ProjectView")
 local ScriptManager = requireModule("ScriptManager")
 local Settings = requireModule("Settings")
 local IntelliSense = requireModule("IntelliSense")
+local RobloxValidityLiveUpdater = requireModule("RobloxValidityLiveUpdater")
 
 local Lexer = requireModule("Lexer")
 local Parser = requireModule("Parser")
@@ -226,6 +228,7 @@ local diagnosticsRequestToken = 0
 local diagnosticsWorkerRunning = false
 local pendingDiagnosticsRequest = nil
 local diagnosticsCacheSource = nil
+local diagnosticsCacheProfileStamp = nil
 local diagnosticsCacheResult = nil
 local MAX_DIAGNOSTICS_SOURCE_LENGTH = 120000
 local MAX_DIAGNOSTICS_TOKEN_COUNT = 10000
@@ -233,6 +236,11 @@ local PARSER_YIELD_EVERY = 1200
 local DIAGNOSTICS_MAX_PARSE_OPERATIONS = 180000
 local LARGE_DIAGNOSTICS_MAX_PARSE_OPERATIONS = 60000
 local BUILD_MAX_PARSE_OPERATIONS = 500000
+
+local ROBLOX_VALIDITY_PROFILE_URL_KEY = "LUSharp.RobloxValidityProfileUrl"
+local ROBLOX_VALIDITY_REFRESH_SECONDS_KEY = "LUSharp.RobloxValidityRefreshSeconds"
+local DEFAULT_ROBLOX_VALIDITY_REFRESH_SECONDS = 900
+local validityUpdater = nil
 
 local function computeDiagnosticsDebounceSeconds(source)
     local length = #(source or "")
@@ -248,10 +256,36 @@ local function computeDiagnosticsDebounceSeconds(source)
     return 0.18
 end
 
+local function getActiveValidityProfile()
+    if not validityUpdater then
+        return nil
+    end
+
+    local profile = validityUpdater:getActiveProfile()
+    if type(profile) ~= "table" then
+        return nil
+    end
+
+    return profile
+end
+
+local function getValidityProfileStamp(profile)
+    local metadata = type(profile) == "table" and profile.metadata or nil
+    local stamp = type(metadata) == "table" and metadata.retrievedAtUtc or nil
+    if type(stamp) ~= "string" then
+        return ""
+    end
+
+    return stamp
+end
+
 local function parseDiagnostics(source)
     source = source or ""
 
-    if diagnosticsCacheSource == source and diagnosticsCacheResult ~= nil then
+    local validityProfile = getActiveValidityProfile()
+    local profileStamp = getValidityProfileStamp(validityProfile)
+
+    if diagnosticsCacheSource == source and diagnosticsCacheProfileStamp == profileStamp and diagnosticsCacheResult ~= nil then
         return diagnosticsCacheResult
     end
 
@@ -267,9 +301,12 @@ local function parseDiagnostics(source)
         yieldEvery = PARSER_YIELD_EVERY,
         maxOperations = maxOperations,
     })
-    local diagnostics = IntelliSense.getDiagnostics(parseResult, source)
+    local diagnostics = IntelliSense.getDiagnostics(parseResult, source, {
+        validityProfile = validityProfile,
+    })
 
     diagnosticsCacheSource = source
+    diagnosticsCacheProfileStamp = profileStamp
     diagnosticsCacheResult = diagnostics
 
     return diagnostics
@@ -343,6 +380,59 @@ local function queueEditorDiagnostics(scriptInstance, source, immediate)
     end)
 end
 
+local function makeRobloxValidityFetchFunction()
+    local profileUrl = plugin:GetSetting(ROBLOX_VALIDITY_PROFILE_URL_KEY)
+    if type(profileUrl) ~= "string" or profileUrl == "" then
+        return nil
+    end
+
+    return function()
+        local body = HttpService:GetAsync(profileUrl, false)
+        local decoded = HttpService:JSONDecode(body)
+        if type(decoded) ~= "table" then
+            error("Roblox validity endpoint returned non-table payload")
+        end
+        return decoded
+    end
+end
+
+local function invalidateDiagnosticsCache()
+    diagnosticsCacheSource = nil
+    diagnosticsCacheProfileStamp = nil
+    diagnosticsCacheResult = nil
+end
+
+local function setupRobloxValidityUpdater()
+    local refreshSeconds = tonumber(plugin:GetSetting(ROBLOX_VALIDITY_REFRESH_SECONDS_KEY))
+        or DEFAULT_ROBLOX_VALIDITY_REFRESH_SECONDS
+
+    local fetchLiveProfile = makeRobloxValidityFetchFunction()
+
+    validityUpdater = RobloxValidityLiveUpdater.new({
+        getCachedProfile = function()
+            return settings:getCachedRobloxValidityProfile()
+        end,
+        setCachedProfile = function(profile)
+            settings:setCachedRobloxValidityProfile(profile)
+        end,
+        fetchLiveProfile = fetchLiveProfile,
+        updateIntervalSeconds = refreshSeconds,
+        onProfileChanged = function()
+            invalidateDiagnosticsCache()
+            if currentScript then
+                queueEditorDiagnostics(currentScript, editor:getSource() or "", true)
+            end
+        end,
+    })
+
+    validityUpdater:refreshNow()
+    if fetchLiveProfile then
+        validityUpdater:start()
+    end
+end
+
+setupRobloxValidityUpdater()
+
 local function inferContextFromParent(parent)
     local fullName = parent:GetFullName()
     if fullName:find("ServerScriptService", 1, true) then
@@ -400,6 +490,7 @@ editor:setOnRequestCompletions(function()
     local completions = IntelliSense.getCompletions(editor:getSource(), cursorPos, {
         context = context,
         visibleServices = settingsValues and settingsValues.intellisenseVisibleServices,
+        validityProfile = getActiveValidityProfile(),
     })
     editor:showCompletions(completions)
     return completions
@@ -434,6 +525,7 @@ editor:setOnRequestHoverInfo(function(cursorPos)
         searchNearby = true,
         nearbyRadius = 20,
         diagnostics = diagnostics,
+        validityProfile = getActiveValidityProfile(),
     })
 end)
 
