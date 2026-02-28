@@ -105,7 +105,7 @@ local settingsButton = toolbar:CreateButton(
     "Settings"
 )
 
-for _, btn in ipairs({ buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton }) do
+for _, btn in { buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton } do
     btn.ClickableWhenViewportHidden = true
 end
 
@@ -213,6 +213,7 @@ local editor = Editor.new(plugin, {
     fileName = "<untitled.cs>",
 })
 warn("[LUSharp SelDbg] editor-created")
+local openEditors = {} -- { [scriptInstance] = { editor = Editor, script = scriptInstance } }
 local projectView = ProjectView.new(plugin)
 
 editor:applySettings(settingsValues)
@@ -303,6 +304,7 @@ local function parseDiagnostics(source)
     })
     local diagnostics = IntelliSense.getDiagnostics(parseResult, source, {
         validityProfile = validityProfile,
+        currentScript = currentScript,
     })
 
     diagnosticsCacheSource = source
@@ -380,6 +382,74 @@ local function queueEditorDiagnostics(scriptInstance, source, immediate)
     end)
 end
 
+local function createEditorForScript(moduleScript)
+    local scriptName = moduleScript.Name
+    local newEditor = Editor.new(plugin, {
+        width = 650,
+        height = 520,
+        widgetId = "LUSharpEditor_" .. scriptName .. "_" .. tostring(moduleScript:GetDebugId()),
+        fileName = scriptName .. ".cs",
+        dockState = Enum.InitialDockState.Right,
+    })
+
+    -- Apply current settings
+    if settingsValues then
+        newEditor:applySettings(settingsValues)
+    end
+
+    -- Set up source
+    local source = ScriptManager.getSource(moduleScript)
+    if source == nil then
+        ScriptManager.setSource(moduleScript, "")
+        source = ""
+    end
+    newEditor:setSource(source, { deferRefresh = true })
+
+    -- Set up callbacks
+    newEditor:setOnSourceChanged(function(newSource)
+        local existing = ScriptManager.getSource(moduleScript)
+        if existing ~= newSource then
+            ScriptManager.setSource(moduleScript, newSource)
+            projectView:setScriptDirty(moduleScript, true)
+        end
+        queueEditorDiagnostics(moduleScript, newSource, false)
+    end)
+
+    newEditor:setOnRequestCompletions(function()
+        local cursorPos = newEditor.textBox.CursorPosition
+        local context = moduleScript:GetAttribute("LUSharpContext")
+        local completions = IntelliSense.getCompletions(newEditor:getSource(), cursorPos, {
+            context = context,
+            currentScript = moduleScript,
+            visibleServices = settingsValues and settingsValues.intellisenseVisibleServices,
+            validityProfile = getActiveValidityProfile(),
+        })
+        newEditor:showCompletions(completions)
+        return completions
+    end)
+
+    newEditor:setOnRequestHoverInfo(function(cursorPos)
+        local hoverSource = newEditor:getSource() or ""
+        local context = moduleScript:GetAttribute("LUSharpContext")
+        return IntelliSense.getHoverInfo(hoverSource, cursorPos, {
+            context = context,
+            currentScript = moduleScript,
+            searchNearby = true,
+            nearbyRadius = 20,
+            validityProfile = getActiveValidityProfile(),
+        })
+    end)
+
+    -- Run initial diagnostics
+    queueEditorDiagnostics(moduleScript, source, true)
+
+    newEditor:show()
+    newEditor:focus()
+
+    openEditors[moduleScript] = { editor = newEditor, script = moduleScript }
+    return newEditor
+end
+
 local function makeRobloxValidityFetchFunction()
     local profileUrl = plugin:GetSetting(ROBLOX_VALIDITY_PROFILE_URL_KEY)
     if type(profileUrl) ~= "string" or profileUrl == "" then
@@ -450,24 +520,35 @@ local function inferContextFromParent(parent)
 end
 
 local function openScript(moduleScript)
-    currentScript = moduleScript
+    -- If script has a secondary editor window, focus it
+    local existing = openEditors[moduleScript]
+    if existing and existing.editor then
+        existing.editor:show()
+        existing.editor:focus()
+        local source = ScriptManager.getSource(moduleScript)
+        if source then
+            existing.editor:setSource(source, { deferRefresh = true })
+        end
+        return
+    end
 
+    -- Switch the main editor to this script
+    currentScript = moduleScript
     editor:setFilename(moduleScript.Name .. ".cs")
 
+    suppressDirtyTracking = true
     local source = ScriptManager.getSource(moduleScript)
     if source == nil then
         ScriptManager.setSource(moduleScript, "")
-        source = ScriptManager.getSource(moduleScript) or ""
+        source = ""
     end
-
-    suppressDirtyTracking = true
     editor:setSource(source, { deferRefresh = true })
     suppressDirtyTracking = false
 
-    queueEditorDiagnostics(moduleScript, source, true)
-
     editor:show()
     editor:focus()
+
+    queueEditorDiagnostics(moduleScript, source, true)
 end
 
 editor:setOnSourceChanged(function(source)
@@ -489,6 +570,7 @@ editor:setOnRequestCompletions(function()
     local context = currentScript and currentScript:GetAttribute("LUSharpContext")
     local completions = IntelliSense.getCompletions(editor:getSource(), cursorPos, {
         context = context,
+        currentScript = currentScript,
         visibleServices = settingsValues and settingsValues.intellisenseVisibleServices,
         validityProfile = getActiveValidityProfile(),
     })
@@ -522,6 +604,7 @@ editor:setOnRequestHoverInfo(function(cursorPos)
 
     return IntelliSense.getHoverInfo(source, cursorPos, {
         context = context,
+        currentScript = currentScript,
         searchNearby = true,
         nearbyRadius = 20,
         diagnostics = diagnostics,
@@ -544,7 +627,7 @@ local function countErrorDiagnostics(parseResult)
     end
 
     local errorCount = 0
-    for _, diagnostic in ipairs(parseResult.diagnostics) do
+    for _, diagnostic in parseResult.diagnostics do
         local severity = string.lower(tostring(diagnostic.severity or ""))
         if severity == "error" then
             errorCount += 1
@@ -554,11 +637,63 @@ local function countErrorDiagnostics(parseResult)
     return errorCount
 end
 
+local LUSHARP_RUNTIME_SOURCE = [=[
+-- LUSharp Runtime (do not edit)
+local registry = {}
+registry.__loaded = {}
+
+function registry.resolve(caller, name)
+    if registry[name] then return registry[name] end
+    local m = caller.Parent:FindFirstChild(name)
+    if m and m:IsA("ModuleScript") then return require(m) end
+    for _ = 1, 300 do
+        task.wait(0.1)
+        if registry[name] then return registry[name] end
+    end
+    error("[LUSharp] Could not resolve: " .. name)
+end
+
+function registry.register(name, class)
+    if not registry[name] then registry[name] = {} end
+    for k, v in pairs(class) do registry[name][k] = v end
+    setmetatable(registry[name], getmetatable(class))
+    registry.__loaded[name] = true
+end
+
+function registry.ready(deps, fn)
+    task.spawn(function()
+        for _, dep in deps do
+            while not registry.__loaded[dep] do task.wait() end
+        end
+        fn()
+    end)
+end
+
+return registry
+]=]
+
+local function ensureRuntimeModule(parent)
+    if not parent or typeof(parent) ~= "Instance" then return end
+    local existing = parent:FindFirstChild("_LUSharpRuntime")
+    if existing and existing:IsA("ModuleScript") then
+        if existing.Source ~= LUSHARP_RUNTIME_SOURCE then
+            existing.Source = LUSHARP_RUNTIME_SOURCE
+        end
+        return
+    end
+    local mod = Instance.new("ModuleScript")
+    mod.Name = "_LUSharpRuntime"
+    mod.Source = LUSHARP_RUNTIME_SOURCE
+    mod.Parent = parent
+end
+
 local function compileOne(scriptInstance)
     local source = ScriptManager.getSource(scriptInstance)
     if source == nil then
         return false, "missing_source"
     end
+
+    ensureRuntimeModule(scriptInstance.Parent)
 
     local sourceSnapshot = source
 
@@ -584,13 +719,27 @@ local function compileOne(scriptInstance)
 
     if parseResult.diagnostics and #parseResult.diagnostics > 0 then
         warn("[LUSharp] Parse diagnostics in " .. scriptInstance:GetFullName())
-        for _, diagnostic in ipairs(parseResult.diagnostics) do
+        for _, diagnostic in parseResult.diagnostics do
             warn(string.format("  %s (%d:%d): %s", diagnostic.severity, diagnostic.line, diagnostic.column, diagnostic.message))
         end
     end
 
     local ir = Lowerer.lower(parseResult)
     task.wait()
+
+    -- Check for lowerer diagnostics (CS0176, CS0120, etc.)
+    if ir.diagnostics and #ir.diagnostics > 0 then
+        warn("[LUSharp] Lowerer diagnostics in " .. scriptInstance:GetFullName())
+        for _, diagnostic in ir.diagnostics do
+            warn(string.format("  %s: %s", diagnostic.code or "error", diagnostic.message))
+        end
+        projectView:setScriptBuildStatus(scriptInstance, {
+            ok = false,
+            errors = #ir.diagnostics + errorCount,
+            dirty = true,
+        })
+        return false, "lowerer_errors"
+    end
 
     local desiredType = "ModuleScript"
     if scriptInstance:IsA("Script") then
@@ -689,7 +838,7 @@ local function compileAll()
         local okCount = 0
         local total = #scripts
 
-        for index, moduleScript in ipairs(scripts) do
+        for index, moduleScript in scripts do
             local ok, err = pcall(function()
                 if compileOne(moduleScript) then
                     okCount += 1
@@ -738,7 +887,7 @@ local function gatherBuildTargets(target, includeSubtree)
         return targets
     end
 
-    for _, scriptInstance in ipairs(ScriptManager.getAll()) do
+    for _, scriptInstance in ScriptManager.getAll() do
         if includeSubtree then
             if scriptInstance == target or scriptInstance:IsDescendantOf(target) then
                 addIfManaged(scriptInstance)
@@ -761,7 +910,7 @@ local function buildTargets(targets)
     local okCount = 0
     local total = #targets
 
-    for index, scriptInstance in ipairs(targets) do
+    for index, scriptInstance in targets do
         local ok, err = pcall(function()
             if compileOne(scriptInstance) then
                 okCount += 1
@@ -911,6 +1060,22 @@ projectView:setOnRequestBuild(function(instance, includeSubtree)
     buildFromProjectNode(instance, includeSubtree and true or false)
 end)
 
+projectView:setOnRequestOpenNewWindow(function(scriptInstance)
+    if scriptInstance and scriptInstance:IsA("LuaSourceContainer") then
+        createEditorForScript(scriptInstance)
+    end
+end)
+
+projectView:setOnRequestOpenLuauView(function(scriptInstance)
+    if scriptInstance and scriptInstance:IsA("LuaSourceContainer") then
+        -- Open the compiled Luau source view
+        local ScriptEditorService = game:GetService("ScriptEditorService")
+        pcall(function()
+            ScriptEditorService:OpenScriptDocument(scriptInstance)
+        end)
+    end
+end)
+
 buildButton.Click:Connect(compileActiveOrSelected)
 buildAllButton.Click:Connect(compileAll)
 newScriptButton.Click:Connect(createNewScript)
@@ -946,5 +1111,13 @@ projectView:refresh()
 
 editor:show()
 editor:focus()
+
+-- Auto-load the first available script on startup
+do
+    local scripts = ScriptManager.getAll()
+    if #scripts > 0 then
+        openScript(scripts[1])
+    end
+end
 
 print("[LUSharp] Plugin loaded")

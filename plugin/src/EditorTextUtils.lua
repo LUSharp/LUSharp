@@ -67,7 +67,7 @@ local function isHorizontalWhitespace(char)
 end
 
 local function findTokenCoveringColumn(tokens, column)
-    for _, token in ipairs(tokens) do
+    for _, token in tokens do
         if token.type ~= "eof" then
             local value = tostring(token.value or "")
             if #value > 0 then
@@ -259,7 +259,7 @@ function EditorTextUtils.autoDedentClosingBrace(text, cursorPos, indentText)
     if type(indentText) == "string" and indentText ~= "" then
         local tokens = Lexer.tokenize(text:sub(1, lineStart - 1))
         local depth = 0
-        for _, token in ipairs(tokens) do
+        for _, token in tokens do
             if token.type == "punctuation" then
                 if token.value == "{" then
                     depth += 1
@@ -396,26 +396,19 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
     local leadingWhitespace = prevLine:match("^([ \t]*)") or ""
     local trimmed = prevLine:match("^(.-)%s*$") or ""
 
-    local desiredIndent = leadingWhitespace
-    if trimmed ~= "" and trimmed:sub(-1) == "{" then
-        desiredIndent ..= tabText
-    elseif trimmed == "" then
-        local tokens = Lexer.tokenize(newText:sub(1, insertedNewlinePos - 1))
-        local depth = 0
-        for _, token in ipairs(tokens) do
-            if token.type == "punctuation" then
-                if token.value == "{" then
-                    depth += 1
-                elseif token.value == "}" then
-                    depth = math.max(0, depth - 1)
-                end
+    local tokens = Lexer.tokenize(newText:sub(1, insertedNewlinePos - 1))
+    local depth = 0
+    for _, token in tokens do
+        if token.type == "punctuation" then
+            if token.value == "{" then
+                depth += 1
+            elseif token.value == "}" then
+                depth = math.max(0, depth - 1)
             end
         end
-
-        if depth > 0 then
-            desiredIndent = string.rep(tabText, depth)
-        end
     end
+
+    local desiredIndent = string.rep(tabText, depth)
 
     if insertedLeadingWhitespace ~= "" then
         if desiredIndent:sub(1, #insertedLeadingWhitespace) == insertedLeadingWhitespace then
@@ -651,7 +644,7 @@ end
 local function buildStopCharSet(stopChars)
     if type(stopChars) == "table" then
         local set = {}
-        for key, value in pairs(stopChars) do
+        for key, value in stopChars do
             if type(key) == "string" and #key == 1 then
                 if value == true then
                     set[key] = true
@@ -843,14 +836,14 @@ function EditorTextUtils.resolveRetokenizeCursorForSelection(text, selectionStar
     local candidates = {}
     if type(preferredCursors) == "table" then
         local numericIndexes = {}
-        for key, _ in pairs(preferredCursors) do
+        for key, _ in preferredCursors do
             if type(key) == "number" and key >= 1 and key % 1 == 0 then
                 table.insert(numericIndexes, key)
             end
         end
         table.sort(numericIndexes)
 
-        for _, key in ipairs(numericIndexes) do
+        for _, key in numericIndexes do
             local value = preferredCursors[key]
             if type(value) == "number" then
                 table.insert(candidates, math.floor(value))
@@ -875,7 +868,7 @@ function EditorTextUtils.resolveRetokenizeCursorForSelection(text, selectionStar
     end
 
     local firstDirectCandidate = nil
-    for _, rawCandidate in ipairs(candidates) do
+    for _, rawCandidate in candidates do
         local candidate = clampToSelection(rawCandidate)
         local ch = text:sub(candidate, candidate)
         if isIdentifierChar(ch) and not (type(stopCharSet) == "table" and stopCharSet[ch] == true) then
@@ -896,7 +889,7 @@ function EditorTextUtils.resolveRetokenizeCursorForSelection(text, selectionStar
         return firstDirectCandidate
     end
 
-    for _, rawCandidate in ipairs(candidates) do
+    for _, rawCandidate in candidates do
         local candidate = clampToSelection(rawCandidate)
         for distance = 1, (endPosInclusive - startPos) do
             local rightPos = candidate + distance
@@ -958,7 +951,7 @@ function EditorTextUtils.resolveRetokenizeSearchRange(text, selectionStart, sele
     end
 
     if type(preferredCursors) == "table" then
-        for _, value in pairs(preferredCursors) do
+        for _, value in preferredCursors do
             evaluatePreferredCursor(value)
             if shouldExpandToLine then
                 break

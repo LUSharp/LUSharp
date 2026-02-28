@@ -53,11 +53,11 @@ local function getAllServiceNames()
         table.insert(out, name)
     end
 
-    for _, defaultName in ipairs(DEFAULT_VISIBLE_SERVICES) do
+    for _, defaultName in DEFAULT_VISIBLE_SERVICES do
         addName(defaultName)
     end
 
-    for alias, fullName in pairs(TypeDatabase.aliases or {}) do
+    for alias, fullName in (TypeDatabase.aliases or {}) do
         if type(alias) == "string" and alias ~= "" and type(fullName) == "string" and fullName:find("%.Services%.") then
             addName(alias)
         end
@@ -72,7 +72,7 @@ end
 
 local ALL_SERVICE_NAMES = getAllServiceNames()
 local ALL_SERVICE_NAME_SET = {}
-for _, name in ipairs(ALL_SERVICE_NAMES) do
+for _, name in ALL_SERVICE_NAMES do
     ALL_SERVICE_NAME_SET[string.lower(name)] = name
 end
 
@@ -92,10 +92,10 @@ local DEFAULTS = {
 
 local function copyTable(input)
     local out = {}
-    for k, v in pairs(input) do
+    for k, v in input do
         if type(v) == "table" then
             local nested = {}
-            for nk, nv in pairs(v) do
+            for nk, nv in v do
                 nested[nk] = nv
             end
             out[k] = nested
@@ -114,7 +114,7 @@ local function sanitizeVisibleServices(input)
     local out = {}
     local seen = {}
 
-    for _, name in ipairs(input) do
+    for _, name in input do
         if type(name) == "string" and name ~= "" then
             local key = string.lower(name)
             local canonical = ALL_SERVICE_NAME_SET[key]
@@ -360,7 +360,7 @@ function Settings.new(pluginObject, options)
 
     local function getVisibleServiceSet()
         local out = {}
-        for _, serviceName in ipairs(self.values.intellisenseVisibleServices or {}) do
+        for _, serviceName in (self.values.intellisenseVisibleServices or {}) do
             if type(serviceName) == "string" and serviceName ~= "" then
                 out[string.lower(serviceName)] = true
             end
@@ -370,7 +370,7 @@ function Settings.new(pluginObject, options)
 
     local function setVisibleServicesFromSet(visibleSet)
         local out = {}
-        for _, serviceName in ipairs(ALL_SERVICE_NAMES) do
+        for _, serviceName in ALL_SERVICE_NAMES do
             if visibleSet[string.lower(serviceName)] then
                 table.insert(out, serviceName)
             end
@@ -399,7 +399,7 @@ function Settings.new(pluginObject, options)
         local query = string.lower(serviceSearchInput.Text or "")
         local visibleSet = getVisibleServiceSet()
 
-        for _, serviceName in ipairs(ALL_SERVICE_NAMES) do
+        for _, serviceName in ALL_SERVICE_NAMES do
             local button = serviceButtons[serviceName]
             if button then
                 local matches = query == "" or string.find(string.lower(serviceName), query, 1, true) ~= nil
@@ -410,7 +410,7 @@ function Settings.new(pluginObject, options)
         end
     end
 
-    for index, serviceName in ipairs(ALL_SERVICE_NAMES) do
+    for index, serviceName in ALL_SERVICE_NAMES do
         local button = Instance.new("TextButton")
         button.Size = UDim2.new(1, 0, 0, 24)
         button.BackgroundColor3 = Color3.fromRGB(52, 52, 52)
@@ -587,7 +587,7 @@ function Settings:set(values)
         return false
     end
 
-    for key, value in pairs(values) do
+    for key, value in values do
         self.values[key] = value
     end
 
@@ -632,7 +632,7 @@ function Settings:toggle()
 end
 
 function Settings:destroy()
-    for _, connection in ipairs(self._connections) do
+    for _, connection in self._connections do
         connection:Disconnect()
     end
     self._connections = {}

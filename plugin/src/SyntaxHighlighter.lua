@@ -354,7 +354,7 @@ local function classifyIdentifierTokens(tokens)
     local enumTypes = {}
     local localVars = {}
 
-    for i, token in ipairs(tokens) do
+    for i, token in tokens do
         if token.type == "keyword" and token.value == "enum" then
             local nextToken = tokens[i + 1]
             if nextToken and nextToken.type == "identifier" then
@@ -364,7 +364,7 @@ local function classifyIdentifierTokens(tokens)
         end
     end
 
-    for i, token in ipairs(tokens) do
+    for i, token in tokens do
         if token.type ~= "identifier" then
             continue
         end
@@ -426,6 +426,15 @@ local function classifyIdentifierTokens(tokens)
             and isLikelyTypeIdentifierValue(token.value) then
             identifierKinds[i] = "type"
             continue
+        end
+
+        -- PascalCase identifier followed by another identifier = type declaration (e.g., "Player myPlayer")
+        if nextTok and nextTok.type == "identifier" and isLikelyTypeIdentifierValue(token.value) then
+            -- Make sure previous token isn't a dot (not member access like obj.TypeName identifier)
+            if not (prev and prev.type == "punctuation" and prev.value == ".") then
+                identifierKinds[i] = "type"
+                continue
+            end
         end
 
         if prev and prev.type == "punctuation" and prev.value == "." then
@@ -502,12 +511,12 @@ local function makeStyleMap(options)
     end
 
     local styleMap = {}
-    for k, v in pairs(base) do
+    for k, v in base do
         styleMap[k] = v
     end
 
     if options and options.styles then
-        for k, v in pairs(options.styles) do
+        for k, v in options.styles do
             styleMap[k] = v
         end
     end
@@ -529,7 +538,7 @@ local function styleInterpolatedExpression(expression, styleMap)
     local out = {}
     local cursor = 1
 
-    for i, token in ipairs(tokens) do
+    for i, token in tokens do
         if token.type == "eof" then
             break
         end
@@ -675,7 +684,7 @@ function SyntaxHighlighter.highlight(source, options)
     local cursor = 1
     local sourceLength = #source
 
-    for i, token in ipairs(tokens) do
+    for i, token in tokens do
         if token.type == "eof" then
             break
         end

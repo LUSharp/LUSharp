@@ -45,7 +45,7 @@ emitExpression = function(expr)
 
     if t == "call" then
         local args = {}
-        for _, arg in ipairs(expr.args or {}) do
+        for _, arg in expr.args or {} do
             table.insert(args, emitExpression(arg))
         end
         return emitExpression(expr.callee) .. "(" .. join(args) .. ")"
@@ -53,7 +53,7 @@ emitExpression = function(expr)
 
     if t == "method_call" then
         local args = {}
-        for _, arg in ipairs(expr.args or {}) do
+        for _, arg in expr.args or {} do
             table.insert(args, emitExpression(arg))
         end
         return emitExpression(expr.object) .. ":" .. (expr.method or "") .. "(" .. join(args) .. ")"
@@ -65,7 +65,7 @@ emitExpression = function(expr)
 
     if t == "new_object" then
         local args = {}
-        for _, arg in ipairs(expr.args or {}) do
+        for _, arg in expr.args or {} do
             table.insert(args, emitExpression(arg))
         end
 
@@ -84,7 +84,7 @@ emitExpression = function(expr)
 
     if t == "array_literal" then
         local elements = {}
-        for _, element in ipairs(expr.elements or {}) do
+        for _, element in expr.elements or {} do
             table.insert(elements, emitExpression(element))
         end
         return "{" .. join(elements) .. "}"
@@ -123,7 +123,7 @@ emitExpression = function(expr)
 end
 
 emitBlock = function(stmts, lines, level)
-    for _, stmt in ipairs(stmts or {}) do
+    for _, stmt in stmts or {} do
         emitStatement(stmt, lines, level)
     end
 end
@@ -260,7 +260,7 @@ end
 local function emitClass(cls, lines)
     appendLine(lines, 0, "local " .. cls.name .. " = {}")
 
-    for _, field in ipairs(cls.staticFields or {}) do
+    for _, field in cls.staticFields or {} do
         appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. emitExpression(field.value))
     end
 
@@ -270,7 +270,7 @@ local function emitClass(cls, lines)
         appendLine(lines, 0, "function " .. cls.name .. ".new(" .. params .. ")")
         appendLine(lines, 1, "local self = {}")
 
-        for _, field in ipairs(cls.instanceFields or {}) do
+        for _, field in cls.instanceFields or {} do
             appendLine(lines, 1, "self." .. field.name .. " = " .. emitExpression(field.value))
         end
 
@@ -279,7 +279,7 @@ local function emitClass(cls, lines)
         appendLine(lines, 0, "end")
     end
 
-    for _, method in ipairs(cls.methods or {}) do
+    for _, method in cls.methods or {} do
         appendLine(lines, 0, "")
         local params = join(method.params or {})
         if method.isStatic then
@@ -295,7 +295,7 @@ local function emitClass(cls, lines)
 end
 
 local function findClass(moduleIR, className)
-    for _, cls in ipairs(moduleIR.classes or {}) do
+    for _, cls in moduleIR.classes or {} do
         if cls.name == className then
             return cls
         end
@@ -304,7 +304,7 @@ local function findClass(moduleIR, className)
 end
 
 local function findMethod(classIR, methodName)
-    for _, m in ipairs(classIR.methods or {}) do
+    for _, m in classIR.methods or {} do
         if m.name == methodName then
             return m
         end
@@ -315,34 +315,74 @@ end
 function Emitter.emit(moduleIR)
     local lines = {}
 
+    -- Determine return class name
+    local returnClass = moduleIR.entryClass
+    if not returnClass and moduleIR.classes and moduleIR.classes[1] then
+        returnClass = moduleIR.classes[1].name
+    end
+
+    -- Runtime require
+    local needsRegistry = returnClass or (moduleIR.requires and #moduleIR.requires > 0)
+    if needsRegistry then
+        appendLine(lines, 0, "local __r = require(script.Parent:FindFirstChild(\"_LUSharpRuntime\"))")
+    end
+
+    -- Circular dependency guard
+    if returnClass then
+        appendLine(lines, 0, "if __r[\"" .. returnClass .. "\"] then return __r[\"" .. returnClass .. "\"] end")
+        appendLine(lines, 0, "__r[\"" .. returnClass .. "\"] = {}")
+        appendLine(lines, 0, "")
+    end
+
     if moduleIR.needsEventConnectionCache then
         appendLine(lines, 0, "local __eventConnections = setmetatable({}, { __mode = \"k\" })")
         appendLine(lines, 0, "")
     end
 
-    for _, cls in ipairs(moduleIR.classes or {}) do
+    -- Emit service locals
+    for _, svc in moduleIR.services or {} do
+        appendLine(lines, 0, "local " .. svc.name .. " = game:GetService(\"" .. svc.name .. "\")")
+    end
+    if moduleIR.services and #moduleIR.services > 0 then
+        appendLine(lines, 0, "")
+    end
+
+    -- Emit cross-script requires
+    if moduleIR.requires and #moduleIR.requires > 0 then
+        for _, req in moduleIR.requires do
+            appendLine(lines, 0, "local " .. req.name .. " = __r.resolve(script, \"" .. req.name .. "\")")
+        end
+        appendLine(lines, 0, "")
+    end
+
+    -- Emit classes
+    for _, cls in moduleIR.classes or {} do
         emitClass(cls, lines)
     end
 
-    if moduleIR.scriptType == "ModuleScript" then
-        local returnClass = moduleIR.entryClass
-        if not returnClass and moduleIR.classes and moduleIR.classes[1] then
-            returnClass = moduleIR.classes[1].name
-        end
-        if returnClass then
-            appendLine(lines, 0, "return " .. returnClass)
-        end
-    elseif (moduleIR.scriptType == "Script" or moduleIR.scriptType == "LocalScript") and moduleIR.entryClass then
-        local entryClass = findClass(moduleIR, moduleIR.entryClass)
-        local gameEntry = entryClass and findMethod(entryClass, "GameEntry") or nil
+    -- Register class
+    if returnClass then
+        appendLine(lines, 0, "__r.register(\"" .. returnClass .. "\", " .. returnClass .. ")")
+    end
 
-        if entryClass and gameEntry and gameEntry.isStatic then
-            appendLine(lines, 0, entryClass.name .. ".GameEntry()")
-        elseif entryClass and entryClass.constructor then
-            appendLine(lines, 0, entryClass.name .. ".new():GameEntry()")
-        elseif entryClass then
-            appendLine(lines, 0, entryClass.name .. ":GameEntry()")
+    -- Auto-invoke Main() for Script/LocalScript entry points
+    local scriptType = moduleIR.scriptType
+    local entryClass = moduleIR.entryClass
+    if entryClass and (scriptType == "Script" or scriptType == "LocalScript") then
+        local deps = moduleIR.requires or {}
+        if #deps > 0 then
+            local depList = {}
+            for _, req in deps do
+                table.insert(depList, "\"" .. req.name .. "\"")
+            end
+            appendLine(lines, 0, "__r.ready({" .. table.concat(depList, ", ") .. "}, " .. entryClass .. ".Main)")
+        else
+            appendLine(lines, 0, entryClass .. ".Main()")
         end
+    end
+
+    if returnClass then
+        appendLine(lines, 0, "return __r[\"" .. returnClass .. "\"]")
     end
 
     return table.concat(lines, "\n")

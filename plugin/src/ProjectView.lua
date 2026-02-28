@@ -268,6 +268,8 @@ function ProjectView.new(pluginObject, options)
         move = "lusharp_projectview_move",
         build = "lusharp_projectview_build",
         buildSubtree = "lusharp_projectview_buildSubtree",
+        openNewWindow = "lusharp_projectview_openNewWindow",
+        openLuauView = "lusharp_projectview_openLuauView",
     }
 
     local menu = self.plugin:CreatePluginMenu("LUSharpProjectViewContextMenu", "Project Actions")
@@ -286,6 +288,8 @@ function ProjectView.new(pluginObject, options)
     addContextAction(self._contextActionIds.move, "Move To...")
     addContextAction(self._contextActionIds.build, "Build")
     addContextAction(self._contextActionIds.buildSubtree, "Build with Descendants")
+    addContextAction(self._contextActionIds.openNewWindow, "Open in New Window")
+    addContextAction(self._contextActionIds.openLuauView, "Open Luau Script View")
     self._contextMenu = menu
 
     table.insert(self._connections, UserInputService.InputEnded:Connect(function(input)
@@ -343,6 +347,14 @@ end
 
 function ProjectView:setOnRequestBuild(callback)
     self._onRequestBuild = callback
+end
+
+function ProjectView:setOnRequestOpenNewWindow(callback)
+    self._onRequestOpenNewWindow = callback
+end
+
+function ProjectView:setOnRequestOpenLuauView(callback)
+    self._onRequestOpenLuauView = callback
 end
 
 function ProjectView:_getClassIconData(instance)
@@ -443,6 +455,14 @@ function ProjectView:_runContextAction(actionId, target)
         self:_requestBuild(target, false)
     elseif actionId == self._contextActionIds.buildSubtree then
         self:_requestBuild(target, true)
+    elseif actionId == self._contextActionIds.openNewWindow then
+        if target and self._onRequestOpenNewWindow then
+            self._onRequestOpenNewWindow(target)
+        end
+    elseif actionId == self._contextActionIds.openLuauView then
+        if target and self._onRequestOpenLuauView then
+            self._onRequestOpenLuauView(target)
+        end
     end
 end
 
@@ -474,7 +494,7 @@ function ProjectView:_normalizeContextActionId(action)
         pushCandidate(action.Name)
         pushCandidate(action.Text)
     else
-        for _, field in ipairs({ "ActionId", "Id", "Name", "Text" }) do
+        for _, field in { "ActionId", "Id", "Name", "Text" } do
             local ok, value = pcall(function()
                 return action[field]
             end)
@@ -492,7 +512,7 @@ function ProjectView:_normalizeContextActionId(action)
     end
 
     local ids = self._contextActionIds
-    for _, raw in ipairs(candidates) do
+    for _, raw in candidates do
         if raw == ids.newScript then
             return ids.newScript
         elseif raw == ids.rename then
@@ -505,10 +525,18 @@ function ProjectView:_normalizeContextActionId(action)
             return ids.build
         elseif raw == ids.buildSubtree then
             return ids.buildSubtree
+        elseif raw == ids.openNewWindow then
+            return ids.openNewWindow
+        elseif raw == ids.openLuauView then
+            return ids.openLuauView
         end
 
         local lowered = string.lower(raw)
-        if string.find(lowered, "new", 1, true) and string.find(lowered, "script", 1, true) then
+        if string.find(lowered, "new", 1, true) and string.find(lowered, "window", 1, true) then
+            return ids.openNewWindow
+        elseif string.find(lowered, "luau", 1, true) and string.find(lowered, "view", 1, true) then
+            return ids.openLuauView
+        elseif string.find(lowered, "new", 1, true) and string.find(lowered, "script", 1, true) then
             return ids.newScript
         elseif string.find(lowered, "rename", 1, true) then
             return ids.rename
@@ -582,12 +610,12 @@ function ProjectView:setScriptDirty(scriptInstance, dirty)
 end
 
 function ProjectView:_clearEntries()
-    for _, connection in ipairs(self._rowConnections) do
+    for _, connection in self._rowConnections do
         connection:Disconnect()
     end
     self._rowConnections = {}
 
-    for _, child in ipairs(self.content:GetChildren()) do
+    for _, child in self.content:GetChildren() do
         if not child:IsA("UIListLayout") then
             child:Destroy()
         end
@@ -597,7 +625,7 @@ end
 function ProjectView:_getVisibleChildren(instance)
     local children = {}
 
-    for _, child in ipairs(instance:GetChildren()) do
+    for _, child in instance:GetChildren() do
         if shouldShowInstance(child) then
             if self.searchText == "" or self:_subtreeMatchesSearch(child) then
                 table.insert(children, child)
@@ -625,7 +653,7 @@ function ProjectView:_subtreeMatchesSearch(instance)
 
     local matched = self:_nameMatchesSearch(instance)
     if not matched then
-        for _, child in ipairs(instance:GetChildren()) do
+        for _, child in instance:GetChildren() do
             if shouldShowInstance(child) and self:_subtreeMatchesSearch(child) then
                 matched = true
                 break
@@ -864,7 +892,7 @@ function ProjectView:_appendNode(instance, depth)
     end))
 
     if expanded then
-        for _, child in ipairs(children) do
+        for _, child in children do
             self:_appendNode(child, depth + 1)
         end
     end
@@ -892,7 +920,7 @@ end
 function ProjectView:destroy()
     self:_clearEntries()
 
-    for _, connection in ipairs(self._connections) do
+    for _, connection in self._connections do
         connection:Disconnect()
     end
     self._connections = {}
