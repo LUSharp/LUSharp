@@ -12,6 +12,8 @@ end
 local Lexer = requireModule("Lexer")
 local TypeDatabase = requireModule("TypeDatabase")
 local CSharp12SupportMatrix = requireModule("CSharp12SupportMatrix")
+local ScriptManager = requireModule("ScriptManager")
+local Parser = requireModule("Parser")
 
 local IntelliSense = {}
 
@@ -33,7 +35,7 @@ local KEYWORDS = {
 }
 
 local KEYWORD_SET = {}
-for _, keyword in ipairs(KEYWORDS) do
+for _, keyword in KEYWORDS do
     KEYWORD_SET[keyword] = true
 end
 
@@ -165,6 +167,11 @@ local DOTNET_NAMESPACE_MEMBERS = {
             documentation = "System.Collections.Generic.Dictionary<TKey, TValue>",
         },
     },
+    ["Game"] = {
+        { label = "Server", kind = "namespace", detail = "namespace", documentation = "Game.Server" },
+        { label = "Client", kind = "namespace", detail = "namespace", documentation = "Game.Client" },
+        { label = "Shared", kind = "namespace", detail = "namespace", documentation = "Game.Shared" },
+    },
 }
 
 local MANUAL_TYPE_ALIASES = {
@@ -210,6 +217,268 @@ local symbolTable = {
     shared = "List<Object>",
 }
 
+-- Cross-script user type registry
+local userTypeCache = {}
+local userTypesByName = {}
+
+local function hashSource(source)
+    local len = #source
+    if len == 0 then return "empty" end
+    local mid = math.floor(len / 2)
+    return tostring(len) .. ":" .. string.byte(source, 1) .. ":" .. string.byte(source, mid) .. ":" .. string.byte(source, len)
+end
+
+local function extractTypeStubs(parseResult, namespace)
+    local stubs = {}
+    if not parseResult or type(parseResult) ~= "table" then return stubs end
+
+    for _, cls in parseResult.classes or {} do
+        local members = {}
+
+        if cls.constructor then
+            local params = {}
+            for _, param in cls.constructor.parameters or {} do
+                table.insert(params, { name = param.name, type = param.type or "Object" })
+            end
+            table.insert(members, {
+                name = "new",
+                kind = "constructor",
+                type = nil,
+                access = cls.constructor.accessModifier or "private",
+                isStatic = true,
+                parameters = params,
+            })
+        end
+
+        for _, method in cls.methods or {} do
+            local params = {}
+            for _, param in method.parameters or {} do
+                table.insert(params, { name = param.name, type = param.type or "Object" })
+            end
+            table.insert(members, {
+                name = method.name,
+                kind = "method",
+                type = method.returnType or "void",
+                access = method.accessModifier or "private",
+                isStatic = method.isStatic or false,
+                isAsync = method.isAsync or false,
+                isVirtual = method.isVirtual or false,
+                isOverride = method.isOverride or false,
+                isAbstract = method.isAbstract or false,
+                parameters = params,
+            })
+        end
+
+        for _, prop in cls.properties or {} do
+            table.insert(members, {
+                name = prop.name,
+                kind = "property",
+                type = prop.propType or "Object",
+                access = prop.accessModifier or "public",
+                isStatic = false,
+                canRead = prop.hasGet or false,
+                canWrite = prop.hasSet or false,
+            })
+        end
+
+        for _, field in cls.fields or {} do
+            table.insert(members, {
+                name = field.name,
+                kind = "field",
+                type = field.fieldType or "Object",
+                access = field.accessModifier or "private",
+                isStatic = field.isStatic or false,
+                isReadonly = field.isReadonly or false,
+            })
+        end
+
+        table.insert(stubs, {
+            name = cls.name,
+            fullName = (namespace and namespace ~= "") and (namespace .. "." .. cls.name) or cls.name,
+            namespace = namespace or "",
+            kind = "class",
+            baseType = cls.baseClass or "",
+            isStatic = cls.isStatic or false,
+            isAbstract = cls.isAbstract or false,
+            accessModifier = cls.accessModifier or "internal",
+            members = members,
+        })
+    end
+
+    for _, enum in parseResult.enums or {} do
+        local members = {}
+        for _, val in enum.values or {} do
+            table.insert(members, {
+                name = val.name or val,
+                kind = "field",
+                type = enum.name,
+                access = "public",
+                isStatic = true,
+            })
+        end
+
+        table.insert(stubs, {
+            name = enum.name,
+            fullName = (namespace and namespace ~= "") and (namespace .. "." .. enum.name) or enum.name,
+            namespace = namespace or "",
+            kind = "enum",
+            baseType = "",
+            accessModifier = enum.accessModifier or "public",
+            members = members,
+        })
+    end
+
+    return stubs
+end
+
+local function ensureScriptCached(scriptInstance)
+    local source = ScriptManager.getSource(scriptInstance)
+    if type(source) ~= "string" or source == "" then return end
+
+    local hash = hashSource(source)
+    local cached = userTypeCache[scriptInstance]
+    if cached and cached.hash == hash then return end
+
+    local tokens = Lexer.tokenize(source)
+    local parseResult = Parser.parse(tokens)
+    if not parseResult then return end
+
+    local namespace = nil
+    if parseResult.namespace then
+        if type(parseResult.namespace) == "table" and parseResult.namespace.name then
+            namespace = parseResult.namespace.name
+        elseif type(parseResult.namespace) == "string" then
+            namespace = parseResult.namespace
+        end
+    end
+    if not namespace or namespace == "" then
+        namespace = scriptInstance:GetAttribute("LUSharpNamespace") or ""
+    end
+
+    local stubs = extractTypeStubs(parseResult, namespace)
+
+    if cached then
+        for _, oldStub in cached.types or {} do
+            userTypesByName[oldStub.name] = nil
+        end
+    end
+
+    userTypeCache[scriptInstance] = { hash = hash, namespace = namespace, types = stubs }
+    for _, stub in stubs do
+        userTypesByName[stub.name] = stub
+    end
+end
+
+local function ensureNamespaceCached(targetNamespace)
+    if type(targetNamespace) ~= "string" or targetNamespace == "" then return end
+
+    local allScripts = ScriptManager.getAll()
+    for _, scriptInstance in allScripts do
+        local scriptNamespace = scriptInstance:GetAttribute("LUSharpNamespace")
+        if scriptNamespace == targetNamespace then
+            ensureScriptCached(scriptInstance)
+        else
+            local cached = userTypeCache[scriptInstance]
+            if cached then
+                if cached.namespace == targetNamespace then
+                    ensureScriptCached(scriptInstance)
+                end
+            else
+                ensureScriptCached(scriptInstance)
+            end
+        end
+    end
+end
+
+local function ensureUsingsResolved(source, currentScriptInstance)
+    if currentScriptInstance then
+        ensureScriptCached(currentScriptInstance)
+    end
+
+    for line in (source .. "\n"):gmatch("([^\n]*)\n") do
+        local namespaceName = line:match("^%s*using%s+([%a_][%w_%.]*)%s*;%s*$")
+        if namespaceName then
+            ensureNamespaceCached(namespaceName)
+        end
+    end
+
+    if currentScriptInstance then
+        local cached = userTypeCache[currentScriptInstance]
+        if cached and cached.namespace and cached.namespace ~= "" then
+            ensureNamespaceCached(cached.namespace)
+        end
+    end
+end
+
+local function resolveUserType(typeName)
+    return userTypesByName[typeName]
+end
+
+local function isAccessible(member, accessContext)
+    local access = member.access or "private"
+
+    if accessContext.sameClass then
+        return true
+    end
+
+    if access == "public" then
+        return true
+    end
+
+    if access == "private" then
+        return false
+    end
+
+    if access == "protected" then
+        return accessContext.isSubclass or false
+    end
+
+    if access == "internal" then
+        return accessContext.sameNamespace or false
+    end
+
+    return (accessContext.sameNamespace or false) or (accessContext.isSubclass or false)
+end
+
+local function buildAccessContext(currentSource, currentScriptInstance, targetTypeName)
+    local context = {
+        sameClass = false,
+        sameNamespace = false,
+        isSubclass = false,
+    }
+
+    local currentClassName = currentSource:match("class%s+" .. targetTypeName .. "%s*[%{%:]")
+    if currentClassName then
+        context.sameClass = true
+        return context
+    end
+
+    local currentNamespace = ""
+    if currentScriptInstance then
+        local cached = userTypeCache[currentScriptInstance]
+        if cached then
+            currentNamespace = cached.namespace or ""
+        end
+    end
+    if currentNamespace == "" then
+        currentNamespace = currentSource:match("^%s*namespace%s+([%a_][%w_%.]*)")  or ""
+    end
+
+    local targetStub = userTypesByName[targetTypeName]
+    local targetNamespace = targetStub and targetStub.namespace or ""
+
+    if currentNamespace ~= "" and targetNamespace ~= "" and currentNamespace == targetNamespace then
+        context.sameNamespace = true
+    end
+
+    local currentBaseClass = currentSource:match("class%s+[%a_][%w_]*%s*:%s*([%a_][%w_]*)")
+    if currentBaseClass and currentBaseClass == targetTypeName then
+        context.isSubclass = true
+    end
+
+    return context
+end
+
 local DEFAULT_VISIBLE_SERVICES = {
     "Workspace",
     "Players",
@@ -234,7 +503,7 @@ local function toLowerSet(names)
         return out
     end
 
-    for _, name in ipairs(names) do
+    for _, name in names do
         if type(name) == "string" and name ~= "" then
             out[string.lower(name)] = true
         end
@@ -270,11 +539,11 @@ local function getServiceNames()
         table.insert(out, name)
     end
 
-    for _, defaultName in ipairs(DEFAULT_VISIBLE_SERVICES) do
+    for _, defaultName in DEFAULT_VISIBLE_SERVICES do
         addName(defaultName)
     end
 
-    for alias, fullName in pairs(TypeDatabase.aliases or {}) do
+    for alias, fullName in TypeDatabase.aliases or {} do
         if type(alias) == "string" and alias ~= "" and type(fullName) == "string" then
             if fullName:find("%.Services%.") then
                 addName(alias)
@@ -319,7 +588,10 @@ local function resolveType(typeName)
     end
 
     local fullName = TypeDatabase.aliases[normalized] or MANUAL_TYPE_ALIASES[normalized] or normalized
-    return TypeDatabase.types[fullName] or MANUAL_TYPES[fullName]
+    local resolved = TypeDatabase.types[fullName] or MANUAL_TYPES[fullName]
+    if resolved then return resolved end
+
+    return userTypesByName[normalized]
 end
 
 local function collectMembers(typeName, seen, out)
@@ -336,7 +608,7 @@ local function collectMembers(typeName, seen, out)
     end
     seen[typeInfo.fullName] = true
 
-    for _, member in ipairs(typeInfo.members or {}) do
+    for _, member in typeInfo.members or {} do
         table.insert(out, member)
     end
 
@@ -471,7 +743,7 @@ local function getNearbyTokenAnchorPositions(source, cursorPos, opts)
     local lineStarts = buildLineStarts(chunk)
     local candidates = {}
 
-    for _, token in ipairs(tokens) do
+    for _, token in tokens do
         if token.type == "identifier" or token.type == "keyword" then
             local tokenStartInChunk = lineColumnToChunkIndex(lineStarts, token.line, token.column, #chunk)
             if tokenStartInChunk then
@@ -504,7 +776,7 @@ local function getNearbyTokenAnchorPositions(source, cursorPos, opts)
 
     local positions = {}
     local seen = {}
-    for _, candidate in ipairs(candidates) do
+    for _, candidate in candidates do
         if not seen[candidate.pos] then
             seen[candidate.pos] = true
             table.insert(positions, candidate.pos)
@@ -687,7 +959,7 @@ local function inferLocalSymbols(sourceUpToCursor)
 
         local members = {}
         collectMembers(objectType, nil, members)
-        for _, member in ipairs(members) do
+        for _, member in members do
             if member.name == signalToken.value and member.kind == "property" then
                 local inferred = extractSignalLambdaParameterType(member.type)
                 if inferred then
@@ -738,12 +1010,12 @@ end
 local function getMergedSymbolTypes(sourceUpToCursor)
     local merged = {}
 
-    for name, typeName in pairs(symbolTable) do
+    for name, typeName in symbolTable do
         merged[name] = typeName
     end
 
     local locals = inferLocalSymbols(sourceUpToCursor)
-    for name, typeName in pairs(locals) do
+    for name, typeName in locals do
         merged[name] = typeName
     end
 
@@ -870,7 +1142,7 @@ local function memberDetail(member)
         local params = {}
 
         if type(member.parameters) == "table" then
-            for index, param in ipairs(member.parameters) do
+            for index, param in member.parameters do
                 local paramType = displayTypeName(param.type or "Object")
                 local paramName = tostring(param.name or "")
                 if paramName == "" then
@@ -916,7 +1188,7 @@ local function buildMemberDocumentation(ownerTypeName, member)
     return table.concat(lines, "\n")
 end
 
-local function getMemberCompletions(typeName, prefix)
+local function getMemberCompletions(typeName, prefix, accessContext, staticOnly)
     local members = {}
     collectMembers(typeName, nil, members)
 
@@ -924,10 +1196,24 @@ local function getMemberCompletions(typeName, prefix)
     local seen = {}
     local normalizedPrefix = string.lower(prefix or "")
 
-    for _, member in ipairs(members) do
+    for _, member in members do
         local label = member.name
         if type(label) == "string" and label ~= "" then
-            if normalizedPrefix == "" or string.sub(string.lower(label), 1, #normalizedPrefix) == normalizedPrefix then
+            local shouldInclude = true
+
+            if accessContext and member.access then
+                shouldInclude = isAccessible(member, accessContext)
+            end
+
+            if shouldInclude and staticOnly ~= nil then
+                if staticOnly then
+                    shouldInclude = member.isStatic == true or member.kind == "constructor"
+                else
+                    shouldInclude = not member.isStatic
+                end
+            end
+
+            if shouldInclude and (normalizedPrefix == "" or string.sub(string.lower(label), 1, #normalizedPrefix) == normalizedPrefix) then
                 addUniqueCompletion(result, seen, makeCompletion(
                     label,
                     memberKind(member),
@@ -946,7 +1232,7 @@ local function getTypeCompletions(prefix, constructableOnly)
     local seen = {}
     local normalizedPrefix = string.lower(prefix or "")
 
-    for alias, fullName in pairs(TypeDatabase.aliases or {}) do
+    for alias, fullName in TypeDatabase.aliases or {} do
         local typeInfo = TypeDatabase.types[fullName]
         if typeInfo then
             local isConstructable = typeInfo.kind == "class" or typeInfo.kind == "struct"
@@ -963,7 +1249,7 @@ local function getTypeCompletions(prefix, constructableOnly)
         end
     end
 
-    for _, typeInfo in ipairs(DOTNET_BASE_TYPES) do
+    for _, typeInfo in DOTNET_BASE_TYPES do
         local isConstructable = typeInfo.kind == "class" or typeInfo.kind == "struct"
         if (not constructableOnly or isConstructable) then
             if normalizedPrefix == "" or string.sub(string.lower(typeInfo.alias), 1, #normalizedPrefix) == normalizedPrefix then
@@ -973,6 +1259,26 @@ local function getTypeCompletions(prefix, constructableOnly)
                     typeInfo.kind,
                     getRobloxTypeDocumentation(typeInfo.alias, typeInfo.fullName)
                 ))
+            end
+        end
+    end
+
+    -- Include user-defined types
+    for typeName, stub in userTypesByName do
+        if stub.kind == "class" or stub.kind == "struct" or stub.kind == "enum" then
+            local isConstructable = stub.kind == "class" or stub.kind == "struct"
+            if (not constructableOnly or isConstructable) then
+                local typeAccess = stub.accessModifier or "internal"
+                if typeAccess == "public" or typeAccess == "internal" then
+                    if normalizedPrefix == "" or string.sub(string.lower(typeName), 1, #normalizedPrefix) == normalizedPrefix then
+                        addUniqueCompletion(result, seen, makeCompletion(
+                            typeName,
+                            "type",
+                            stub.kind,
+                            stub.namespace ~= "" and ("User type from " .. stub.namespace) or "User type"
+                        ))
+                    end
+                end
             end
         end
     end
@@ -989,7 +1295,7 @@ local function getDotnetBaselineCompletions(prefix)
         addUniqueCompletion(result, seen, makeCompletion("System", "namespace", "namespace", "System"))
     end
 
-    for _, typeInfo in ipairs(DOTNET_BASE_TYPES) do
+    for _, typeInfo in DOTNET_BASE_TYPES do
         if normalizedPrefix == "" or string.sub(string.lower(typeInfo.alias), 1, #normalizedPrefix) == normalizedPrefix then
             addUniqueCompletion(result, seen, makeCompletion(
                 typeInfo.alias,
@@ -1020,7 +1326,7 @@ local function getNamespaceCompletions(left, opts)
 
     local members = DOTNET_NAMESPACE_MEMBERS[namespacePath]
     if members then
-        for _, member in ipairs(members) do
+        for _, member in members do
             if normalizedPrefix == "" or string.sub(string.lower(member.label), 1, #normalizedPrefix) == normalizedPrefix then
                 addUniqueCompletion(result, seen, makeCompletion(
                     member.label,
@@ -1038,7 +1344,7 @@ local function getNamespaceCompletions(left, opts)
         local childPrefixLower = string.lower(childPrefix)
         local seenChildren = {}
 
-        for fullName, isValid in pairs(validityNamespaces) do
+        for fullName, isValid in validityNamespaces do
             if isValid then
                 local fullNameText = tostring(fullName or "")
                 local fullNameLower = string.lower(fullNameText)
@@ -1101,11 +1407,11 @@ local function getUsingNamespaceNames(validityProfile)
         local out = {}
         local seen = {}
 
-        for _, namespaceName in ipairs(getUsingNamespaceNames(nil)) do
+        for _, namespaceName in getUsingNamespaceNames(nil) do
             addNamespaceWithParents(out, seen, namespaceName)
         end
 
-        for namespaceName, isValid in pairs(validityProfile.namespaces) do
+        for namespaceName, isValid in validityProfile.namespaces do
             if isValid then
                 addNamespaceWithParents(out, seen, namespaceName)
             end
@@ -1125,10 +1431,10 @@ local function getUsingNamespaceNames(validityProfile)
     local out = {}
     local seen = {}
 
-    for namespaceName, members in pairs(DOTNET_NAMESPACE_MEMBERS) do
+    for namespaceName, members in DOTNET_NAMESPACE_MEMBERS do
         addNamespaceWithParents(out, seen, namespaceName)
 
-        for _, member in ipairs(members or {}) do
+        for _, member in members or {} do
             if member.kind == "namespace" then
                 local documentation = member.documentation or ""
                 addNamespaceWithParents(out, seen, documentation)
@@ -1137,9 +1443,15 @@ local function getUsingNamespaceNames(validityProfile)
         end
     end
 
-    for _, typeInfo in pairs(TypeDatabase.types or {}) do
+    for _, typeInfo in TypeDatabase.types or {} do
         addNamespaceWithParents(out, seen, typeInfo.namespace)
     end
+
+    -- Add LUSharp user namespace roots
+    addNamespaceWithParents(out, seen, "Game")
+    addNamespaceWithParents(out, seen, "Game.Server")
+    addNamespaceWithParents(out, seen, "Game.Client")
+    addNamespaceWithParents(out, seen, "Game.Shared")
 
     table.sort(out, function(a, b)
         return string.lower(a) < string.lower(b)
@@ -1225,7 +1537,7 @@ local function getUsingNamespaceCompletions(source, left, opts)
     end
 
     if namespacePath == nil then
-        for _, fullName in ipairs(namespaceNames) do
+        for _, fullName in namespaceNames do
             local root = fullName:match("^([%a_][%w_]*)")
             if root then
                 maybeAddNamespace(root, root)
@@ -1239,7 +1551,7 @@ local function getUsingNamespaceCompletions(source, left, opts)
     local childPrefix = namespacePath .. "."
     local childPrefixLower = string.lower(childPrefix)
 
-    for _, fullName in ipairs(namespaceNames) do
+    for _, fullName in namespaceNames do
         local fullNameLower = string.lower(fullName)
         if string.sub(fullNameLower, 1, #childPrefixLower) == childPrefixLower then
             local remainder = fullName:sub(#childPrefix + 1)
@@ -1260,7 +1572,7 @@ local function getKeywordCompletions(prefix)
     local seen = {}
     local normalizedPrefix = string.lower(prefix or "")
 
-    for _, keyword in ipairs(KEYWORDS) do
+    for _, keyword in KEYWORDS do
         if normalizedPrefix == "" or string.sub(keyword, 1, #normalizedPrefix) == normalizedPrefix then
             addUniqueCompletion(result, seen, makeCompletion(keyword, "keyword", "keyword", nil))
         end
@@ -1279,7 +1591,7 @@ local function getGlobalCompletions(prefix)
     local seen = {}
     local normalizedPrefix = string.lower(prefix or "")
 
-    for _, member in ipairs(globalType.members or {}) do
+    for _, member in globalType.members or {} do
         local label = member.name
         if type(label) == "string" and label ~= "" then
             if normalizedPrefix == "" or string.sub(string.lower(label), 1, #normalizedPrefix) == normalizedPrefix then
@@ -1301,7 +1613,7 @@ local function getLocalCompletions(symbolTypes, prefix)
     local seen = {}
     local normalizedPrefix = string.lower(prefix or "")
 
-    for name, typeName in pairs(symbolTypes) do
+    for name, typeName in symbolTypes do
         if normalizedPrefix == "" or string.sub(string.lower(name), 1, #normalizedPrefix) == normalizedPrefix then
             addUniqueCompletion(result, seen, makeCompletion(name, "variable", typeName, nil))
         end
@@ -1314,8 +1626,8 @@ local function mergeCompletions(...)
     local result = {}
     local seen = {}
 
-    for _, list in ipairs({ ... }) do
-        for _, completion in ipairs(list) do
+    for _, list in { ... } do
+        for _, completion in list do
             addUniqueCompletion(result, seen, completion)
         end
     end
@@ -1537,7 +1849,7 @@ local function getServiceNameCompletions(prefix, opts)
     local normalizedPrefix = string.lower(prefix or "")
     local visibleSet = getVisibleServiceSet(opts)
 
-    for _, name in ipairs(getServiceNames()) do
+    for _, name in getServiceNames() do
         local normalizedName = string.lower(name)
         if visibleSet[normalizedName] and (normalizedPrefix == "" or string.sub(normalizedName, 1, #normalizedPrefix) == normalizedPrefix) then
             addUniqueCompletion(result, seen, makeCompletion(name, "service", "service", nil))
@@ -1572,7 +1884,7 @@ local function findMemberInType(typeName, memberName)
     local members = {}
     collectMembers(typeName, nil, members)
 
-    for _, member in ipairs(members) do
+    for _, member in members do
         if member.name == memberName then
             return member
         end
@@ -1586,7 +1898,7 @@ local function findMembersInType(typeName, memberName)
     collectMembers(typeName, nil, members)
 
     local out = {}
-    for _, member in ipairs(members) do
+    for _, member in members do
         if member.name == memberName then
             table.insert(out, member)
         end
@@ -1615,7 +1927,7 @@ local function buildMethodSignature(member, ownerTypeName)
 
     local params = {}
     if type(member.parameters) == "table" then
-        for index, param in ipairs(member.parameters) do
+        for index, param in member.parameters do
             local paramType = displayTypeName(param.type or "Object")
             local paramName = tostring(param.name or "")
             if paramName == "" then
@@ -1633,7 +1945,7 @@ local function getMethodOverloadSignatures(typeName, methodName)
     local overloads = {}
     local seen = {}
 
-    for _, member in ipairs(findMembersInType(typeName, methodName)) do
+    for _, member in findMembersInType(typeName, methodName) do
         if member.kind == "method" then
             local signature = buildMethodSignature(member, typeName)
             if not seen[signature] then
@@ -1664,7 +1976,7 @@ local function buildHoverInfoFromMember(ownerTypeName, identifier, member)
     local alternateCount = 0
     local firstAlternateSignature = nil
 
-    for _, overloadMember in ipairs(allOverloads) do
+    for _, overloadMember in allOverloads do
         if overloadMember.kind == "method" then
             local overloadSignature = buildMethodSignature(overloadMember, ownerTypeName)
             if overloadSignature ~= primarySignature then
@@ -1904,7 +2216,7 @@ local function inferExprTypeFromTokens(tokens, endIndex, symbolTypes)
                 and expr.callee.object and expr.callee.object.kind == "identifier"
                 and expr.callee.object.name == "game"
                 and expr.callee.name == "GetService" then
-                for _, tok in ipairs(expr.args) do
+                for _, tok in expr.args do
                     if tok.type == "string" or tok.type == "interpolated_string" then
                         local serviceName = unquoteStringTokenValue(tok.value)
                         if TypeDatabase.aliases[serviceName] then
@@ -2138,7 +2450,7 @@ local function isTypeLikeDeclarationName(typeName)
         return true
     end
 
-    for _, baseType in ipairs(DOTNET_BASE_TYPES) do
+    for _, baseType in DOTNET_BASE_TYPES do
         if baseType.alias == normalized then
             return true
         end
@@ -2245,7 +2557,7 @@ local function findCallContext(source, cursorPos)
 
     local stack = {}
 
-    for i, token in ipairs(tokens) do
+    for i, token in tokens do
         if token.type == "eof" then
             break
         end
@@ -2295,7 +2607,7 @@ local function findMethod(typeName, methodName)
     local members = {}
     collectMembers(typeName, nil, members)
 
-    for _, member in ipairs(members) do
+    for _, member in members do
         if member.kind == "method" and member.name == methodName then
             return member
         end
@@ -2310,6 +2622,8 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
 
     opts = opts or {}
     local _context = opts.context
+    local currentScriptInstance = opts.currentScript
+    ensureUsingsResolved(source, currentScriptInstance)
 
     local left, prefix = extractPrefix(source, cursorPos)
 
@@ -2352,7 +2666,7 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
                 local seen = {}
                 local normalizedPrefix = string.lower(prefix or "")
 
-                for alias, fullName in pairs(TypeDatabase.aliases or {}) do
+                for alias, fullName in TypeDatabase.aliases or {} do
                     if type(alias) == "string" and alias ~= "" and type(fullName) == "string" then
                         if fullName:find("%.Classes%.") then
                             if normalizedPrefix == "" or string.sub(string.lower(alias), 1, #normalizedPrefix) == normalizedPrefix then
@@ -2904,6 +3218,35 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
         end
     end
 
+    -- Namespace path resolution: collect full dot-path backwards
+    if beforeTrimmed:sub(-1) == "." then
+        local fullPath = identifier
+        local scanBack = beforeTrimmed:sub(1, -2)
+        while true do
+            local prevSegment = scanBack:match("([%a_][%w_]*)%s*$")
+            if not prevSegment then break end
+            fullPath = prevSegment .. "." .. fullPath
+            scanBack = scanBack:sub(1, -(#prevSegment + 1))
+            scanBack = scanBack:gsub("%s*%.%s*$", "")
+            if not scanBack:gsub("%s+$", ""):match("%.$") then
+                break
+            end
+        end
+
+        -- Check if fullPath is a known namespace
+        local knownNamespaces = getUsingNamespaceNames(opts and opts.validityProfile)
+        for _, ns in knownNamespaces do
+            if string.lower(ns) == string.lower(fullPath) then
+                return {
+                    label = fullPath,
+                    kind = "namespace",
+                    detail = "namespace " .. fullPath,
+                    documentation = nil,
+                }
+            end
+        end
+    end
+
     local trailingText = source:sub(endIndex + 1)
 
     if trailingText:match("^%s*%(") then
@@ -2981,6 +3324,20 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
         return typeHover
     end
 
+    local userStub = resolveUserType(identifier)
+    if userStub then
+        local detail = userStub.kind .. " " .. identifier
+        if userStub.namespace and userStub.namespace ~= "" then
+            detail = detail .. " (namespace " .. userStub.namespace .. ")"
+        end
+        return {
+            label = identifier,
+            kind = userStub.kind,
+            detail = detail,
+            documentation = nil,
+        }
+    end
+
     if DOTNET_NAMESPACE_MEMBERS[identifier] ~= nil then
         return {
             label = identifier,
@@ -3007,6 +3364,8 @@ function IntelliSense.getHoverInfo(source, cursorPos, opts)
     cursorPos = math.max(1, math.min(cursorPos or (#source + 1), #source + 1))
 
     opts = opts or {}
+    local currentScriptInstance = opts.currentScript
+    ensureUsingsResolved(source, currentScriptInstance)
 
     local diagnosticAtCursor = getDiagnosticAtCursor(source, cursorPos, opts.diagnostics)
     if diagnosticAtCursor then
@@ -3045,7 +3404,7 @@ function IntelliSense.getHoverInfo(source, cursorPos, opts)
         end
 
         local nearbyTokenAnchors = getNearbyTokenAnchorPositions(source, cursorPos, opts)
-        for _, anchorPos in ipairs(nearbyTokenAnchors) do
+        for _, anchorPos in nearbyTokenAnchors do
             info = resolveHoverInfoAtPosition(source, anchorPos, opts)
             if info then
                 return info
@@ -3244,7 +3603,7 @@ end
 local function collectUnknownUsingNamespaceDiagnostics(source, opts)
     local diagnostics = {}
     local knownNamespaces = {}
-    for _, namespaceName in ipairs(getUsingNamespaceNames(opts and opts.validityProfile)) do
+    for _, namespaceName in getUsingNamespaceNames(opts and opts.validityProfile) do
         knownNamespaces[string.lower(namespaceName)] = true
     end
 
@@ -3286,7 +3645,7 @@ local function getRequiredUsingByTypeAlias()
 
     local out = {}
 
-    for alias, fullName in pairs(TypeDatabase.aliases or {}) do
+    for alias, fullName in TypeDatabase.aliases or {} do
         if type(alias) == "string" and alias ~= "" and type(fullName) == "string" and fullName:sub(1, 7) == "System." then
             local namespaceName = fullNameToNamespace(fullName)
             if namespaceName ~= "" then
@@ -3295,7 +3654,7 @@ local function getRequiredUsingByTypeAlias()
         end
     end
 
-    for _, typeInfo in ipairs(DOTNET_BASE_TYPES) do
+    for _, typeInfo in DOTNET_BASE_TYPES do
         local alias = tostring(typeInfo.alias or "")
         local namespaceName = fullNameToNamespace(typeInfo.fullName)
         if alias ~= "" and namespaceName ~= "" then
@@ -3324,7 +3683,7 @@ local function collectMissingNamespaceImportDiagnostics(source)
     local emitted = {}
     local tokens = Lexer.tokenize(source)
 
-    for index, token in ipairs(tokens) do
+    for index, token in tokens do
         if token.type ~= "identifier" then
             continue
         end
@@ -3487,7 +3846,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             local tokens = Lexer.tokenize(tostring(expression or ""))
             local filtered = {}
 
-            for _, token in ipairs(tokens) do
+            for _, token in tokens do
                 if token.type ~= "eof" then
                     table.insert(filtered, token)
                 end
@@ -3828,7 +4187,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
 
         if exprType == "call" then
             walkExpression(expr.callee, scope)
-            for _, arg in ipairs(expr.arguments or {}) do
+            for _, arg in expr.arguments or {} do
                 walkExpression(arg, scope)
             end
             return
@@ -3846,10 +4205,10 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
         end
 
         if exprType == "new" then
-            for _, arg in ipairs(expr.arguments or {}) do
+            for _, arg in expr.arguments or {} do
                 walkExpression(arg, scope)
             end
-            for _, initializerExpr in ipairs(expr.initializer or {}) do
+            for _, initializerExpr in expr.initializer or {} do
                 walkExpression(initializerExpr, scope)
             end
             return
@@ -3857,7 +4216,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
 
         if exprType == "lambda" then
             local lambdaScope = createScope(scope)
-            for _, parameter in ipairs(expr.parameters or {}) do
+            for _, parameter in expr.parameters or {} do
                 local parameterName = parameter
                 local parameterType = nil
 
@@ -3883,7 +4242,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
         if exprType == "interpolated_string" then
             local interpolationIdentifiers, incompleteMemberBases = extractInterpolatedIdentifiers(expr.value)
 
-            for _, name in ipairs(interpolationIdentifiers) do
+            for _, name in interpolationIdentifiers do
                 if type(name) == "string"
                     and name ~= ""
                     and not isDeclaredInScope(scope, name)
@@ -3892,7 +4251,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
                 end
             end
 
-            for _, baseName in ipairs(incompleteMemberBases) do
+            for _, baseName in incompleteMemberBases do
                 reportIncompleteMemberAccessIssue(baseName)
             end
 
@@ -3911,7 +4270,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
     end
 
     walkStatements = function(statements, scope)
-        for _, statement in ipairs(statements or {}) do
+        for _, statement in statements or {} do
             if type(statement) ~= "table" then
                 continue
             end
@@ -3931,7 +4290,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             elseif statementType == "if" then
                 walkExpression(statement.condition, scope)
                 walkStatements(statement.body, createScope(scope))
-                for _, elseIf in ipairs(statement.elseIfs or {}) do
+                for _, elseIf in statement.elseIfs or {} do
                     walkExpression(elseIf.condition, scope)
                     walkStatements(elseIf.body, createScope(scope))
                 end
@@ -3971,7 +4330,7 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
                 walkExpression(statement.expression, scope)
             elseif statementType == "switch" then
                 walkExpression(statement.expression, scope)
-                for _, caseNode in ipairs(statement.cases or {}) do
+                for _, caseNode in statement.cases or {} do
                     walkStatements(caseNode.body, createScope(scope))
                 end
             elseif statementType == "try_catch" then
@@ -3989,18 +4348,18 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
     local methodScope = createScope(nil)
 
     if type(seedDeclaredNames) == "table" then
-        for name in pairs(seedDeclaredNames) do
+        for name in seedDeclaredNames do
             declareInScope(methodScope, allDeclared, name)
         end
     end
 
     if type(seedDeclaredTypes) == "table" then
-        for name, typeName in pairs(seedDeclaredTypes) do
+        for name, typeName in seedDeclaredTypes do
             declareTypeInScope(methodScope, name, typeName)
         end
     end
 
-    for _, parameter in ipairs(methodNode.parameters or {}) do
+    for _, parameter in methodNode.parameters or {} do
         declareInScope(methodScope, allDeclared, parameter.name)
         declareTypeInScope(methodScope, parameter.name, parameter.type)
     end
@@ -4016,33 +4375,33 @@ local function collectMethodScopeDiagnostics(parseResult, source)
     local diagnostics = {}
     local lineStarts = buildLineStarts(source)
 
-    for _, classNode in ipairs(parseResult.classes or {}) do
+    for _, classNode in parseResult.classes or {} do
         local classScopeNames = {}
         local classScopeTypes = {}
 
-        for _, field in ipairs(classNode.fields or {}) do
+        for _, field in classNode.fields or {} do
             classScopeNames[field.name] = true
             classScopeTypes[field.name] = field.fieldType
         end
 
-        for _, property in ipairs(classNode.properties or {}) do
+        for _, property in classNode.properties or {} do
             classScopeNames[property.name] = true
             classScopeTypes[property.name] = property.propType
         end
 
-        for _, method in ipairs(classNode.methods or {}) do
+        for _, method in classNode.methods or {} do
             classScopeNames[method.name] = true
         end
 
         local methods = {}
-        for _, method in ipairs(classNode.methods or {}) do
+        for _, method in classNode.methods or {} do
             table.insert(methods, method)
         end
         if type(classNode.constructor) == "table" then
             table.insert(methods, classNode.constructor)
         end
 
-        for _, methodNode in ipairs(methods) do
+        for _, methodNode in methods do
             local shimMethod = {
                 parameters = methodNode.parameters,
                 body = methodNode.body,
@@ -4188,17 +4547,17 @@ local function collectCSharp12UnsupportedCompileDiagnostics(parseResult, source)
     local refReadonlySupport = CSharp12SupportMatrix.ref_readonly_parameters
     if type(refReadonlySupport) == "table" and refReadonlySupport.compile == false then
         local hasRefReadonlyParameter = false
-        for _, classNode in ipairs((parseResult and parseResult.classes) or {}) do
+        for _, classNode in (parseResult and parseResult.classes) or {} do
             if hasRefReadonlyParameter then
                 break
             end
 
-            for _, methodNode in ipairs(classNode.methods or {}) do
+            for _, methodNode in classNode.methods or {} do
                 if hasRefReadonlyParameter then
                     break
                 end
 
-                for _, parameter in ipairs(methodNode.parameters or {}) do
+                for _, parameter in methodNode.parameters or {} do
                     if type(parameter) == "table" and parameter.modifier == "ref_readonly" then
                         hasRefReadonlyParameter = true
                         break
@@ -4207,7 +4566,7 @@ local function collectCSharp12UnsupportedCompileDiagnostics(parseResult, source)
             end
 
             if not hasRefReadonlyParameter and classNode.constructor then
-                for _, parameter in ipairs(classNode.constructor.parameters or {}) do
+                for _, parameter in classNode.constructor.parameters or {} do
                     if type(parameter) == "table" and parameter.modifier == "ref_readonly" then
                         hasRefReadonlyParameter = true
                         break
@@ -4245,26 +4604,278 @@ local function collectCSharp12UnsupportedCompileDiagnostics(parseResult, source)
     return diagnostics
 end
 
+local function collectAsyncAwaitDiagnostics(parseResult, source)
+    local diagnostics = {}
+
+    if type(source) ~= "string" or source == "" then
+        return diagnostics
+    end
+
+    if not parseResult or type(parseResult) ~= "table" then
+        return diagnostics
+    end
+
+    local lineStarts = buildLineStarts(source)
+
+    -- Walk expressions to find await nodes
+    local findAwaits
+    local findAwaitsInStatements
+
+    findAwaits = function(expr, out)
+        if type(expr) ~= "table" then return end
+
+        if expr.type == "await" then
+            table.insert(out, expr)
+            findAwaits(expr.expression, out)
+            return
+        end
+
+        -- Recurse into expression children
+        if expr.left then findAwaits(expr.left, out) end
+        if expr.right then findAwaits(expr.right, out) end
+        if expr.operand then findAwaits(expr.operand, out) end
+        if expr.object then findAwaits(expr.object, out) end
+        if expr.expression then findAwaits(expr.expression, out) end
+        if expr.condition then findAwaits(expr.condition, out) end
+        if expr.thenExpr then findAwaits(expr.thenExpr, out) end
+        if expr.elseExpr then findAwaits(expr.elseExpr, out) end
+        if expr.callee then findAwaits(expr.callee, out) end
+        if expr.target then findAwaits(expr.target, out) end
+
+        if type(expr.arguments) == "table" then
+            for _, arg in expr.arguments do findAwaits(arg, out) end
+        end
+        if type(expr.elements) == "table" then
+            for _, el in expr.elements do findAwaits(el, out) end
+        end
+        if type(expr.initializer) == "table" then
+            for _, item in expr.initializer do findAwaits(item, out) end
+        end
+
+        -- Don't recurse into lambdas — they have their own async context
+    end
+
+    findAwaitsInStatements = function(stmts, out)
+        if type(stmts) ~= "table" then return end
+        for _, stmt in stmts do
+            if type(stmt) ~= "table" then continue end
+
+            -- Check expressions in this statement
+            if stmt.expression then findAwaits(stmt.expression, out) end
+            if stmt.value then findAwaits(stmt.value, out) end
+            if stmt.condition then findAwaits(stmt.condition, out) end
+            if stmt.iterable then findAwaits(stmt.iterable, out) end
+            if stmt.init then findAwaits(stmt.init, out) end
+            if stmt.increment then findAwaits(stmt.increment, out) end
+            if stmt.target then findAwaits(stmt.target, out) end
+
+            -- Recurse into sub-blocks
+            if type(stmt.body) == "table" then findAwaitsInStatements(stmt.body, out) end
+            if type(stmt.elseBody) == "table" then findAwaitsInStatements(stmt.elseBody, out) end
+            if type(stmt.tryBody) == "table" then findAwaitsInStatements(stmt.tryBody, out) end
+            if type(stmt.catchBody) == "table" then findAwaitsInStatements(stmt.catchBody, out) end
+            if type(stmt.finallyBody) == "table" then findAwaitsInStatements(stmt.finallyBody, out) end
+            if type(stmt.elseIfs) == "table" then
+                for _, elseIf in stmt.elseIfs do
+                    if type(elseIf) == "table" and type(elseIf.body) == "table" then
+                        findAwaitsInStatements(elseIf.body, out)
+                    end
+                end
+            end
+            if type(stmt.cases) == "table" then
+                for _, caseNode in stmt.cases do
+                    if type(caseNode) == "table" and type(caseNode.body) == "table" then
+                        findAwaitsInStatements(caseNode.body, out)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Check each method: if it's not async but contains await, report error
+    for _, classNode in parseResult.classes or {} do
+        for _, methodNode in classNode.methods or {} do
+            if type(methodNode) ~= "table" then continue end
+
+            local awaits = {}
+            findAwaitsInStatements(methodNode.body, awaits)
+
+            if #awaits > 0 and not methodNode.isAsync then
+                -- await used in non-async method
+                for _, awaitExpr in awaits do
+                    -- Find the await keyword position in source for this expression
+                    -- Use source text search scoped near the method
+                    local searchStart = 1
+                    local startPos = source:find("%f[%w_]await%f[^%w_]", searchStart)
+                    if startPos then
+                        local line, column = sourceIndexToLineColumn(lineStarts, startPos)
+                        table.insert(diagnostics, {
+                            severity = "error",
+                            message = "The 'await' operator can only be used within an async method. Consider marking '" .. (methodNode.name or "method") .. "' with 'async'.",
+                            line = line,
+                            column = column,
+                            endLine = line,
+                            endColumn = column + 5,
+                            length = 5,
+                            code = "semantic.await_in_non_async",
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    return diagnostics
+end
+
+local function collectInvalidUserMemberAccessDiagnostics(source, opts)
+    local diagnostics = {}
+    local tokens = Lexer.tokenize(source)
+    local symbolTypes = getMergedSymbolTypes(source)
+
+    -- Also resolve usings so user types are available
+    local currentScriptInstance = opts and opts.currentScript
+    ensureUsingsResolved(source, currentScriptInstance)
+
+    -- Build a supplemental type map from explicit "TypeName varName" declarations in tokens
+    -- This catches field declarations and patterns that inferLocalSymbols may miss
+    local explicitTypes = {}
+    for j = 1, #tokens - 1 do
+        local tk = tokens[j]
+        local nextTk = tokens[j + 1]
+        if tk.type == "identifier" and nextTk and nextTk.type == "identifier" then
+            -- Check that the first identifier looks like a type (PascalCase) and is a known user type
+            local maybeType = tk.value
+            local maybeVar = nextTk.value
+            if maybeType:sub(1, 1):match("[A-Z]") and resolveUserType(maybeType) then
+                -- Skip if preceded by "." (member access chain like Foo.Bar baz)
+                local prevTk = tokens[j - 1]
+                if not (prevTk and prevTk.type == "punctuation" and prevTk.value == ".") then
+                    explicitTypes[maybeVar] = maybeType
+                end
+            end
+        end
+    end
+
+    for i = 1, #tokens - 2 do
+        local token = tokens[i]
+        local dotToken = tokens[i + 1]
+        local memberToken = tokens[i + 2]
+
+        -- Pattern: identifier.identifier
+        if token.type == "identifier"
+            and dotToken.type == "punctuation" and dotToken.value == "."
+            and memberToken.type == "identifier" then
+
+            local objectName = token.value
+            local memberName = memberToken.value
+
+            -- Resolve the object's type
+            local objectType = symbolTypes[objectName] or explicitTypes[objectName]
+
+            -- If the identifier itself is a type name (static access like ClassName.Method)
+            local isStaticAccess = false
+            if not objectType then
+                local userStub = resolveUserType(objectName)
+                if userStub then
+                    objectType = objectName
+                    isStaticAccess = true
+                end
+            end
+
+            if objectType then
+                local userStub = resolveUserType(objectType)
+                if userStub then
+                    -- Check member existence and static/instance consistency
+                    local members = {}
+                    collectMembers(objectType, nil, members)
+                    local memberExists = false
+                    local memberIsStatic = nil
+                    for _, member in members do
+                        if member.name == memberName then
+                            memberExists = true
+                            memberIsStatic = member.isStatic or false
+                            break
+                        end
+                    end
+
+                    local line = tonumber(memberToken.line) or 1
+                    local column = tonumber(memberToken.column) or 1
+                    local length = #memberName
+
+                    if not memberExists then
+                        -- CS1061: member doesn't exist
+                        table.insert(diagnostics, {
+                            severity = "error",
+                            message = "'" .. objectType .. "' does not contain a definition for '" .. memberName .. "'",
+                            line = line,
+                            column = column,
+                            endLine = line,
+                            endColumn = column + length,
+                            length = length,
+                            code = "CS1061",
+                        })
+                    elseif isStaticAccess and not memberIsStatic and memberName ~= "new" then
+                        -- CS0120: instance member accessed on class name
+                        table.insert(diagnostics, {
+                            severity = "error",
+                            message = "An object reference is required for the non-static field, method, or property '" .. memberName .. "'",
+                            line = line,
+                            column = column,
+                            endLine = line,
+                            endColumn = column + length,
+                            length = length,
+                            code = "CS0120",
+                        })
+                    elseif (not isStaticAccess) and memberIsStatic then
+                        -- CS0176: static member accessed on instance
+                        table.insert(diagnostics, {
+                            severity = "error",
+                            message = "Static member '" .. memberName .. "' cannot be accessed with an instance reference; qualify it with a type name instead",
+                            line = line,
+                            column = column,
+                            endLine = line,
+                            endColumn = column + length,
+                            length = length,
+                            code = "CS0176",
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    return diagnostics
+end
+
 local function collectSemanticDiagnostics(parseResult, source, opts)
     local diagnostics = {}
 
-    for _, diagnostic in ipairs(collectUnknownUsingNamespaceDiagnostics(source, opts)) do
+    for _, diagnostic in collectUnknownUsingNamespaceDiagnostics(source, opts) do
         table.insert(diagnostics, diagnostic)
     end
 
-    for _, diagnostic in ipairs(collectMissingNamespaceImportDiagnostics(source)) do
+    for _, diagnostic in collectMissingNamespaceImportDiagnostics(source) do
         table.insert(diagnostics, diagnostic)
     end
 
-    for _, diagnostic in ipairs(collectMethodScopeDiagnostics(parseResult, source)) do
+    for _, diagnostic in collectMethodScopeDiagnostics(parseResult, source) do
         table.insert(diagnostics, diagnostic)
     end
 
-    for _, diagnostic in ipairs(collectIncompleteMemberAccessDiagnostics(source)) do
+    for _, diagnostic in collectIncompleteMemberAccessDiagnostics(source) do
         table.insert(diagnostics, diagnostic)
     end
 
-    for _, diagnostic in ipairs(collectCSharp12UnsupportedCompileDiagnostics(parseResult, source)) do
+    for _, diagnostic in collectCSharp12UnsupportedCompileDiagnostics(parseResult, source) do
+        table.insert(diagnostics, diagnostic)
+    end
+
+    for _, diagnostic in collectAsyncAwaitDiagnostics(parseResult, source) do
+        table.insert(diagnostics, diagnostic)
+    end
+
+    for _, diagnostic in collectInvalidUserMemberAccessDiagnostics(source, opts) do
         table.insert(diagnostics, diagnostic)
     end
 
@@ -4280,7 +4891,7 @@ getDiagnosticAtCursor = function(source, cursorPos, diagnostics)
     local lineStarts = buildLineStarts(source)
     local cursorIndex = math.max(1, math.min(cursorPos or 1, sourceLength + 1))
 
-    for _, diagnostic in ipairs(diagnostics) do
+    for _, diagnostic in diagnostics do
         local startLine = clampPositiveInt(diagnostic.line, 1)
         local startColumn = clampPositiveInt(diagnostic.column, 1)
         local endLine = clampPositiveInt(diagnostic.endLine, startLine)
@@ -4341,13 +4952,13 @@ function IntelliSense.getDiagnostics(parseResult, source, opts)
     local diagnostics = {}
 
     if parseResult and type(parseResult) == "table" then
-        for _, diagnostic in ipairs(parseResult.diagnostics or {}) do
+        for _, diagnostic in parseResult.diagnostics or {} do
             appendNormalizedDiagnostic(diagnostics, diagnostic)
         end
     end
 
     if type(source) == "string" and source ~= "" then
-        for _, diagnostic in ipairs(collectSemanticDiagnostics(parseResult, source, opts)) do
+        for _, diagnostic in collectSemanticDiagnostics(parseResult, source, opts) do
             appendNormalizedDiagnostic(diagnostics, diagnostic)
         end
     end
@@ -4380,6 +4991,23 @@ end
 
 function IntelliSense.getSymbolType(name)
     return symbolTable[name]
+end
+
+function IntelliSense.invalidateUserTypeCache(scriptInstance)
+    if scriptInstance then
+        local cached = userTypeCache[scriptInstance]
+        if cached then
+            for _, stub in cached.types or {} do
+                userTypesByName[stub.name] = nil
+            end
+        end
+        userTypeCache[scriptInstance] = nil
+    end
+end
+
+function IntelliSense.clearUserTypeCache()
+    userTypeCache = {}
+    userTypesByName = {}
 end
 
 return IntelliSense

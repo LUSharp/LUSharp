@@ -2,9 +2,33 @@
 
 **Write Roblox games in C# — transpiled to Luau.**
 
-LUSharp is a C# to Luau transpiler for Roblox, similar to [roblox-ts](https://roblox-ts.com) but for C# developers. Write your game logic in modern C# with full intellisense, then transpile it to Luau that runs natively in Roblox.
+LUSharp is a C# to Luau transpiler for Roblox, similar to [roblox-ts](https://roblox-ts.com) but for C# developers. Write your game logic in modern C# with full IntelliSense, then transpile it to Luau that runs natively in Roblox.
 
-## Installation
+## Roblox Studio Plugin
+
+LUSharp includes a Roblox Studio plugin with a built-in C# editor, real-time IntelliSense, syntax highlighting, and a project view. Write C# directly inside Studio and compile to Luau with one click.
+
+### Plugin Features
+
+- **C# Editor** — Syntax-highlighted editor with auto-indent, word delete, and tab completion
+- **IntelliSense** — Real-time completions, hover info, and diagnostics with C# error codes (CS0176, CS0120, CS1061)
+- **Static/Instance Validation** — Enforces correct `.` vs `:` call syntax with compiler errors
+- **Cross-Script Resolution** — Automatic dependency resolution between scripts via shared runtime registry
+- **Project View** — Tree view of all LUSharp scripts with build status, rename, delete, and create
+- **Build System** — Single-script or build-all compilation with error reporting
+- **Roblox API Awareness** — Completions and validation for Roblox services, instances, and enums
+
+### Plugin Install
+
+Download `LUSharp-plugin.rbxmx` from the [latest release](../../releases/latest) and place it in your Roblox Studio plugins folder:
+
+```
+%localappdata%\Roblox\Plugins\LUSharp-plugin.rbxmx
+```
+
+Restart Roblox Studio. The LUSharp toolbar will appear with Editor, Project, Build, and New Script buttons.
+
+## CLI Installation
 
 ### Quick Install
 
@@ -48,35 +72,55 @@ rojo serve
 
 ## Example
 
-### C# Input (`src/client/ClientMain.cs`)
+### C# Input
 
 ```csharp
-using LUSharpAPI.Runtime.Internal;
-
-namespace MyGame.Client
+namespace Game.Server
 {
-    internal class ClientMain : RobloxScript
+    public class Helper
     {
-        public override void GameEntry()
+        public static void DoStuff() { print("static call"); }
+        public void DoInstanceStuff() { print("instance call"); }
+    }
+
+    public class Main
+    {
+        public static void Main()
         {
-            print("Hello from C# in Luau!");
+            Helper.DoStuff();           // emits: Helper.DoStuff()
+            Helper helper = new();
+            helper.DoInstanceStuff();   // emits: helper:DoInstanceStuff()
         }
     }
 }
 ```
 
-### Generated Luau (`out/client/ClientMain.lua`)
+### Generated Luau
 
 ```lua
-local ClientMain = {}
+local __r = require(script.Parent:FindFirstChild("_LUSharpRuntime"))
 
-function ClientMain.GameEntry()
-    print("Hello from C# in Luau!")
+local Helper = {}
+function Helper.DoStuff()
+    print("static call")
+end
+function Helper.new()
+    local self = setmetatable({}, { __index = Helper })
+    return self
+end
+function Helper:DoInstanceStuff()
+    print("instance call")
 end
 
-ClientMain.GameEntry()
+local Main = {}
+function Main.Main()
+    Helper.DoStuff()
+    local helper = Helper.new()
+    helper:DoInstanceStuff()
+end
 
-return ClientMain
+__r.register("Main", Main)
+Main.Main()
 ```
 
 ## Project Structure
@@ -128,16 +172,17 @@ LUSharp uses a three-stage pipeline:
 2. **Transform** — Converts the Roslyn syntax tree into a Lua IR (intermediate representation) through a series of passes: symbol collection, type resolution, import resolution, method body lowering, control flow lowering, and optimization
 3. **Backend** — Renders the Lua IR into Luau source code
 
-### MSBuild Integration
+### Cross-Script Runtime
 
-Generated projects include a post-build target that automatically runs `lusharp build` when you `dotnet build`. Transpiler errors appear in MSBuild-compatible format so VS and Rider can click-navigate to the source.
+When scripts reference classes from other scripts, LUSharp generates a shared `_LUSharpRuntime` ModuleScript that handles dependency resolution. Scripts register their classes into a shared registry and entry points are deferred until all dependencies are loaded.
 
 ### C# to Luau Mappings
 
 | C# | Luau |
 |----|------|
 | Class with fields | `local T = {}` table with `.new()` constructor |
-| Static members | Class-level table entries |
+| Static members | Class-level table entries (dot syntax) |
+| Instance members | Colon syntax with implicit `self` |
 | Properties | `get_Prop()` / `set_Prop()` methods |
 | `List<T>` | `{1, 2, 3}` numeric table |
 | `Dictionary<K,V>` | `{key = val}` table |
@@ -157,8 +202,11 @@ Generated projects include a post-build target that automatically runs `lusharp 
 - [x] Build command (`lusharp build`)
 - [x] MSBuild integration (`dotnet build` triggers transpilation)
 - [x] Install scripts (Windows + Linux/macOS)
+- [x] Roblox Studio plugin with C# editor
+- [x] Real-time IntelliSense and diagnostics
+- [x] Static/instance call validation (CS0176, CS0120)
+- [x] Cross-script dependency resolution
 - [ ] Full method body transpilation
-- [ ] Cross-file `require()` references
 - [ ] `async`/`await` to coroutine conversion
 - [ ] Enum and interface support
 - [ ] Watch mode (`lusharp build --watch`)

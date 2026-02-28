@@ -6,14 +6,6 @@ local Lowerer = {}
 
 local TypeDatabase = require("./TypeDatabase")
 
--- Script type determination from base class
-local SCRIPT_BASES = {
-    RobloxScript = "Script",
-    Script = "Script",
-    LocalScript = "LocalScript",
-    ModuleScript = "ModuleScript",
-}
-
 -- C# type to Lua type mapping
 local TYPE_MAP = {
     string = "string",
@@ -56,12 +48,26 @@ local UNARY_OP_MAP = {
     ["-"] = "-",
 }
 
+-- Collection types that map to plain Lua tables (no wrappers)
+local COLLECTION_TYPES = {
+    List = "array",
+    ["IList"] = "array",
+    ["ICollection"] = "array",
+    ["IEnumerable"] = "array",
+    Queue = "array",
+    Stack = "array",
+    Dictionary = "dict",
+    ["IDictionary"] = "dict",
+    HashSet = "set",
+}
+
 -- Forward declarations
 local lowerExpression
 local lowerStatement
 local lowerBlock
 
 local needsEventConnectionCache = false
+local loweringContext = nil
 
 local function normalizeTypeName(typeName)
     typeName = tostring(typeName or "")
@@ -69,6 +75,14 @@ local function normalizeTypeName(typeName)
     typeName = typeName:gsub("%?", "")
     typeName = typeName:gsub("%[%]$", "")
     return typeName:match("([%w_]+)$") or typeName
+end
+
+local function getCollectionKind(typeName)
+    if type(typeName) ~= "string" then
+        return nil
+    end
+    local normalized = normalizeTypeName(typeName)
+    return COLLECTION_TYPES[normalized]
 end
 
 local function tryUnquoteStringLiteral(astExpr)
@@ -103,7 +117,7 @@ local function getMemberType(objectTypeName, memberName)
         return nil
     end
 
-    for _, member in ipairs(typeInfo.members) do
+    for _, member in typeInfo.members do
         if member.name == memberName then
             return member.type
         end
@@ -173,6 +187,186 @@ local function isSignalType(typeName)
     return typeName:sub(1, #"RBXScriptSignal") == "RBXScriptSignal"
 end
 
+local function rewriteCollectionCall(methodName, objectExpr, args)
+    if methodName == "Add" and #args == 1 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "insert" },
+            args = { objectExpr, args[1] },
+        }
+    end
+    if methodName == "Remove" and #args == 1 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "remove" },
+            args = {
+                objectExpr,
+                {
+                    type = "call",
+                    callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "find" },
+                    args = { objectExpr, args[1] },
+                },
+            },
+        }
+    end
+    if methodName == "RemoveAt" and #args == 1 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "remove" },
+            args = {
+                objectExpr,
+                { type = "binary_op", op = "+", left = args[1], right = { type = "literal", value = 1 } },
+            },
+        }
+    end
+    if methodName == "Insert" and #args == 2 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "insert" },
+            args = {
+                objectExpr,
+                { type = "binary_op", op = "+", left = args[1], right = { type = "literal", value = 1 } },
+                args[2],
+            },
+        }
+    end
+    if methodName == "Contains" and #args == 1 then
+        return {
+            type = "binary_op",
+            op = "~=",
+            left = {
+                type = "call",
+                callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "find" },
+                args = { objectExpr, args[1] },
+            },
+            right = { type = "literal", value = "nil" },
+        }
+    end
+    if methodName == "Clear" and #args == 0 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "clear" },
+            args = { objectExpr },
+        }
+    end
+    if methodName == "IndexOf" and #args == 1 then
+        return {
+            type = "binary_op",
+            op = "-",
+            left = {
+                type = "binary_op",
+                op = "or",
+                left = {
+                    type = "call",
+                    callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "find" },
+                    args = { objectExpr, args[1] },
+                },
+                right = { type = "literal", value = 0 },
+            },
+            right = { type = "literal", value = 1 },
+        }
+    end
+    return nil
+end
+
+local function rewriteDictCall(methodName, objectExpr, args)
+    if methodName == "Add" and #args == 2 then
+        return "assignment", {
+            type = "assignment",
+            target = { type = "index_access", object = objectExpr, key = args[1] },
+            value = args[2],
+        }
+    end
+    if methodName == "Remove" and #args == 1 then
+        return "assignment", {
+            type = "assignment",
+            target = { type = "index_access", object = objectExpr, key = args[1] },
+            value = { type = "literal", value = "nil" },
+        }
+    end
+    if methodName == "ContainsKey" and #args == 1 then
+        return "expression", {
+            type = "binary_op",
+            op = "~=",
+            left = { type = "index_access", object = objectExpr, key = args[1] },
+            right = { type = "literal", value = "nil" },
+        }
+    end
+    return nil, nil
+end
+
+local function rewriteSetCall(methodName, objectExpr, args)
+    if methodName == "Add" and #args == 1 then
+        return "assignment", {
+            type = "assignment",
+            target = { type = "index_access", object = objectExpr, key = args[1] },
+            value = { type = "literal", value = "true" },
+        }
+    end
+    if methodName == "Remove" and #args == 1 then
+        return "assignment", {
+            type = "assignment",
+            target = { type = "index_access", object = objectExpr, key = args[1] },
+            value = { type = "literal", value = "nil" },
+        }
+    end
+    if methodName == "Contains" and #args == 1 then
+        return "expression", {
+            type = "binary_op",
+            op = "~=",
+            left = { type = "index_access", object = objectExpr, key = args[1] },
+            right = { type = "literal", value = "nil" },
+        }
+    end
+    return nil, nil
+end
+
+local function rewriteQueueCall(methodName, objectExpr, args)
+    if methodName == "Enqueue" and #args == 1 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "insert" },
+            args = { objectExpr, args[1] },
+        }
+    end
+    if methodName == "Dequeue" and #args == 0 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "remove" },
+            args = { objectExpr, { type = "literal", value = 1 } },
+        }
+    end
+    if methodName == "Peek" and #args == 0 then
+        return { type = "index_access", object = objectExpr, key = { type = "literal", value = 1 } }
+    end
+    return nil
+end
+
+local function rewriteStackCall(methodName, objectExpr, args)
+    if methodName == "Push" and #args == 1 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "insert" },
+            args = { objectExpr, args[1] },
+        }
+    end
+    if methodName == "Pop" and #args == 0 then
+        return {
+            type = "call",
+            callee = { type = "dot_access", object = { type = "identifier", name = "table" }, field = "remove" },
+            args = { objectExpr },
+        }
+    end
+    if methodName == "Peek" and #args == 0 then
+        return {
+            type = "index_access",
+            object = objectExpr,
+            key = { type = "unary_op", op = "#", operand = objectExpr },
+        }
+    end
+    return nil
+end
+
 -- Lower an expression AST node to IR expression node
 lowerExpression = function(expr)
     if not expr then
@@ -205,6 +399,11 @@ lowerExpression = function(expr)
     -- this → self
     if t == "this" then
         return { type = "identifier", name = "self" }
+    end
+
+    -- await expr → just lower the inner expression (async/await not supported, strip it)
+    if t == "await" then
+        return lowerExpression(expr.expression)
     end
 
     -- base → self (Lua doesn't have base, handled by method resolution)
@@ -250,29 +449,130 @@ lowerExpression = function(expr)
         if expr.target and expr.target.type == "identifier" and expr.target.name == "Console"
             and expr.name == "WriteLine" then
             local args = {}
-            for _, arg in ipairs(expr.arguments) do
+            for _, arg in expr.arguments do
                 table.insert(args, lowerExpression(arg))
             end
             return { type = "call", callee = { type = "identifier", name = "print" }, args = args }
         end
 
+        -- Collection method rewrites (before generic method_call)
+        if expr.target and expr.name then
+            local objectExpr = lowerExpression(expr.target)
+            local args = {}
+            for _, arg in expr.arguments do
+                table.insert(args, lowerExpression(arg))
+            end
+
+            local arrayResult = rewriteCollectionCall(expr.name, objectExpr, args)
+            if arrayResult then return arrayResult end
+
+            local queueResult = rewriteQueueCall(expr.name, objectExpr, args)
+            if queueResult then return queueResult end
+
+            local stackResult = rewriteStackCall(expr.name, objectExpr, args)
+            if stackResult then return stackResult end
+
+            local dictKind, dictResult = rewriteDictCall(expr.name, objectExpr, args)
+            if dictResult then return dictResult end
+
+            local setKind, setResult = rewriteSetCall(expr.name, objectExpr, args)
+            if setResult then return setResult end
+        end
+
         -- Regular method call on an object: obj.method(args)
         if expr.target then
             local args = {}
-            for _, arg in ipairs(expr.arguments) do
+            for _, arg in expr.arguments do
                 table.insert(args, lowerExpression(arg))
             end
+
+            local targetName = expr.target.type == "identifier" and expr.target.name or nil
+            local methodName = expr.name
+
+            if loweringContext and targetName then
+                -- Check if target is a class name (static access)
+                if loweringContext.moduleSymbols[targetName] then
+                    local classSym = loweringContext.moduleSymbols[targetName]
+                    local methodSym = classSym.methods[methodName]
+                    if methodSym then
+                        if methodSym.isStatic then
+                            return {
+                                type = "call",
+                                callee = {
+                                    type = "dot_access",
+                                    object = { type = "identifier", name = targetName },
+                                    field = methodName,
+                                },
+                                args = args,
+                            }
+                        else
+                            table.insert(loweringContext.diagnostics, {
+                                severity = "error",
+                                code = "CS0120",
+                                message = "An object reference is required for the non-static field, method, or property '" .. methodName .. "'",
+                                target = targetName,
+                                member = methodName,
+                            })
+                        end
+                    else
+                        -- Method doesn't exist on this class
+                        table.insert(loweringContext.diagnostics, {
+                            severity = "error",
+                            code = "CS1061",
+                            message = "'" .. targetName .. "' does not contain a definition for '" .. methodName .. "'",
+                            target = targetName,
+                            member = methodName,
+                        })
+                    end
+                -- Check if target is a local variable with known type
+                elseif loweringContext.localTypes[targetName] then
+                    local varType = loweringContext.localTypes[targetName]
+                    local classSym = loweringContext.moduleSymbols[varType]
+                    if classSym then
+                        local methodSym = classSym.methods[methodName]
+                        if methodSym then
+                            if methodSym.isStatic then
+                                table.insert(loweringContext.diagnostics, {
+                                    severity = "error",
+                                    code = "CS0176",
+                                    message = "Static member '" .. methodName .. "' cannot be accessed with an instance reference; qualify it with a type name instead",
+                                    target = targetName,
+                                    member = methodName,
+                                })
+                            else
+                                return {
+                                    type = "method_call",
+                                    object = lowerExpression(expr.target),
+                                    method = methodName,
+                                    args = args,
+                                }
+                            end
+                        else
+                            -- Method doesn't exist on the resolved type
+                            table.insert(loweringContext.diagnostics, {
+                                severity = "error",
+                                code = "CS1061",
+                                message = "'" .. varType .. "' does not contain a definition for '" .. methodName .. "'",
+                                target = targetName,
+                                member = methodName,
+                            })
+                        end
+                    end
+                end
+            end
+
+            -- Fallback: unknown target type → default to method_call (colon)
             return {
                 type = "method_call",
                 object = lowerExpression(expr.target),
-                method = expr.name,
+                method = expr.name or methodName,
                 args = args,
             }
         end
 
         -- Simple function call: name(args)
         local args = {}
-        for _, arg in ipairs(expr.arguments) do
+        for _, arg in expr.arguments do
             table.insert(args, lowerExpression(arg))
         end
         local callee
@@ -284,8 +584,15 @@ lowerExpression = function(expr)
         return { type = "call", callee = callee, args = args }
     end
 
-    -- Member access: obj.field
     if t == "member_access" then
+        if expr.member == "Count" or expr.member == "Length" then
+            return {
+                type = "unary_op",
+                op = "#",
+                operand = lowerExpression(expr.object),
+            }
+        end
+
         return {
             type = "dot_access",
             object = lowerExpression(expr.object),
@@ -304,11 +611,24 @@ lowerExpression = function(expr)
 
     -- new ClassName(args)
     if t == "new" then
+        -- Collection types → plain empty table or table with initializer
+        local collectionKind = getCollectionKind(expr.className)
+        if collectionKind then
+            local elements = {}
+            for _, item in expr.initializer or {} do
+                table.insert(elements, lowerExpression(item))
+            end
+            return {
+                type = "array_literal",
+                elements = elements,
+            }
+        end
+
         local args = {}
-        for _, arg in ipairs(expr.arguments or {}) do
+        for _, arg in expr.arguments or {} do
             table.insert(args, lowerExpression(arg))
         end
-        for _, item in ipairs(expr.initializer or {}) do
+        for _, item in expr.initializer or {} do
             table.insert(args, lowerExpression(item))
         end
         return {
@@ -338,7 +658,7 @@ lowerExpression = function(expr)
     -- C# 12 collection expression: [a, b, c] → array literal
     if t == "collection_expression" then
         local elements = {}
-        for _, element in ipairs(expr.elements or {}) do
+        for _, element in expr.elements or {} do
             table.insert(elements, lowerExpression(element))
         end
 
@@ -353,7 +673,7 @@ lowerExpression = function(expr)
         local params = {}
         local defaultGuards = {}
 
-        for _, p in ipairs(expr.parameters or {}) do
+        for _, p in expr.parameters or {} do
             local paramName
             local defaultValue = nil
 
@@ -400,10 +720,10 @@ lowerExpression = function(expr)
 
         if #defaultGuards > 0 then
             local guardedBody = {}
-            for _, guard in ipairs(defaultGuards) do
+            for _, guard in defaultGuards do
                 table.insert(guardedBody, guard)
             end
-            for _, stmt in ipairs(body) do
+            for _, stmt in body do
                 table.insert(guardedBody, stmt)
             end
             body = guardedBody
@@ -507,7 +827,7 @@ local function lowerFieldInitializer(initializer)
             end
             -- Multi-token initializer: concatenate values as a simple representation
             local parts = {}
-            for _, tok in ipairs(initializer) do
+            for _, tok in initializer do
                 table.insert(parts, tok.value)
             end
             return { type = "literal", value = table.concat(parts, " "), literalType = "unknown" }
@@ -536,6 +856,15 @@ lowerStatement = function(stmt)
                 arguments = init.arguments,
                 initializer = init.initializer,
             }
+        end
+
+        -- Track variable type for call resolution
+        if loweringContext then
+            if stmt.varType and stmt.varType ~= "var" then
+                loweringContext.localTypes[stmt.name] = normalizeTypeName(stmt.varType)
+            elseif stmt.varType == "var" and init and init.type == "new" and init.className then
+                loweringContext.localTypes[stmt.name] = normalizeTypeName(init.className)
+            end
         end
 
         return {
@@ -818,11 +1147,7 @@ lowerStatement = function(stmt)
         return {
             type = "for_in",
             vars = { "_", stmt.variable },
-            iterator = {
-                type = "call",
-                callee = { type = "identifier", name = "pairs" },
-                args = { lowerExpression(stmt.iterable) },
-            },
+            iterator = lowerExpression(stmt.iterable),
             body = lowerBlock(stmt.body),
         }
     end
@@ -923,7 +1248,7 @@ lowerStatement = function(stmt)
         -- Build if/elseif chain
         local firstCase = nil
         local lastIf = nil
-        for _, case in ipairs(cases) do
+        for _, case in cases do
             if case.type == "case" then
                 local caseBody = stripSwitchBreak(lowerBlock(case.body))
                 local cond = {
@@ -978,11 +1303,11 @@ end
 lowerBlock = function(stmts)
     if not stmts then return {} end
     local result = {}
-    for _, stmt in ipairs(stmts) do
+    for _, stmt in stmts do
         local lowered = lowerStatement(stmt)
         if lowered then
             if lowered.type == "compound" and lowered.statements then
-                for _, inner in ipairs(lowered.statements) do
+                for _, inner in lowered.statements do
                     table.insert(result, inner)
                 end
             else
@@ -995,7 +1320,7 @@ end
 
 local function cloneSet(set)
     local out = {}
-    for k, v in pairs(set or {}) do
+    for k, v in set or {} do
         if v then
             out[k] = true
         end
@@ -1004,7 +1329,7 @@ local function cloneSet(set)
 end
 
 local function addListToSet(set, list)
-    for _, name in ipairs(list or {}) do
+    for _, name in list or {} do
         set[name] = true
     end
 end
@@ -1020,7 +1345,7 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
 
     if t == "call" then
         expr.callee = rewriteSelfCallsInExpression(expr.callee, ctx, locals)
-        for i, arg in ipairs(expr.args or {}) do
+        for i, arg in expr.args or {} do
             expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
         end
 
@@ -1055,7 +1380,7 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
 
     if t == "method_call" then
         expr.object = rewriteSelfCallsInExpression(expr.object, ctx, locals)
-        for i, arg in ipairs(expr.args or {}) do
+        for i, arg in expr.args or {} do
             expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
         end
         return expr
@@ -1101,7 +1426,7 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
     end
 
     if t == "new_object" then
-        for i, arg in ipairs(expr.args or {}) do
+        for i, arg in expr.args or {} do
             expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
         end
         return expr
@@ -1120,7 +1445,7 @@ end
 rewriteSelfCallsInBlock = function(stmts, ctx, locals)
     locals = locals or {}
 
-    for _, stmt in ipairs(stmts or {}) do
+    for _, stmt in stmts or {} do
         local t = stmt.type
 
         if t == "local_decl" then
@@ -1190,7 +1515,7 @@ local function lowerClass(classNode)
     }
 
     -- Lower fields
-    for _, field in ipairs(classNode.fields or {}) do
+    for _, field in classNode.fields or {} do
         local irField = {
             name = field.name,
             value = lowerFieldInitializer(field.initializer),
@@ -1200,13 +1525,20 @@ local function lowerClass(classNode)
         else
             table.insert(cls.instanceFields, irField)
         end
+
+        if loweringContext and field.fieldType then
+            local normalizedType = normalizeTypeName(field.fieldType)
+            if normalizedType and normalizedType ~= "" then
+                loweringContext.localTypes[field.name] = normalizedType
+            end
+        end
     end
 
     -- Primary constructor parameters become captured instance fields.
-    for _, parameter in ipairs(classNode.primaryConstructorParameters or {}) do
+    for _, parameter in classNode.primaryConstructorParameters or {} do
         if type(parameter) == "table" and type(parameter.name) == "string" and parameter.name ~= "" then
             local exists = false
-            for _, existingField in ipairs(cls.instanceFields) do
+            for _, existingField in cls.instanceFields do
                 if existingField.name == parameter.name then
                     exists = true
                     break
@@ -1224,7 +1556,7 @@ local function lowerClass(classNode)
 
     local instanceMethodNames = {}
     local staticMethodNames = {}
-    for _, m in ipairs(classNode.methods or {}) do
+    for _, m in classNode.methods or {} do
         if m.isStatic then
             staticMethodNames[m.name] = true
         else
@@ -1233,9 +1565,22 @@ local function lowerClass(classNode)
     end
 
     -- Lower methods
-    for _, method in ipairs(classNode.methods or {}) do
+    for _, method in classNode.methods or {} do
+        if loweringContext then
+            loweringContext.localTypes = {}
+            -- Re-track fields for this method's scope
+            for _, field in classNode.fields or {} do
+                if field.fieldType then
+                    local normalizedType = normalizeTypeName(field.fieldType)
+                    if normalizedType and normalizedType ~= "" then
+                        loweringContext.localTypes[field.name] = normalizedType
+                    end
+                end
+            end
+        end
+
         local params = {}
-        for _, p in ipairs(method.parameters or {}) do
+        for _, p in method.parameters or {} do
             table.insert(params, p.name)
         end
         local irMethod = {
@@ -1260,7 +1605,7 @@ local function lowerClass(classNode)
     -- Lower constructor
     if classNode.constructor then
         local params = {}
-        for _, p in ipairs(classNode.constructor.parameters or {}) do
+        for _, p in classNode.constructor.parameters or {} do
             table.insert(params, p.name)
         end
         cls.constructor = {
@@ -1279,7 +1624,7 @@ local function lowerClass(classNode)
     end
 
     -- Lower properties
-    for _, prop in ipairs(classNode.properties or {}) do
+    for _, prop in classNode.properties or {} do
         table.insert(cls.properties, {
             name = prop.name,
             hasGet = prop.hasGet or false,
@@ -1294,7 +1639,7 @@ end
 -- Lower an enum AST node to IR enum
 local function lowerEnum(enumNode)
     local values = {}
-    for i, v in ipairs(enumNode.values or {}) do
+    for i, v in enumNode.values or {} do
         table.insert(values, {
             name = v.name,
             value = v.value or tostring(i - 1),
@@ -1306,21 +1651,11 @@ local function lowerEnum(enumNode)
     }
 end
 
--- Determine script type from classes in a module
-local function determineScriptType(classes)
-    for _, cls in ipairs(classes) do
-        if cls.baseClass and SCRIPT_BASES[cls.baseClass] then
-            return SCRIPT_BASES[cls.baseClass]
-        end
-    end
-    return "ModuleScript"
-end
-
--- Find the entry class (one with GameEntry method)
+-- Find the entry class (one with Main method)
 local function findEntryClass(classNodes)
-    for _, cls in ipairs(classNodes) do
-        for _, method in ipairs(cls.methods or {}) do
-            if method.name == "GameEntry" then
+    for _, cls in classNodes do
+        for _, method in cls.methods or {} do
+            if method.name == "Main" then
                 return cls.name
             end
         end
@@ -1328,8 +1663,139 @@ local function findEntryClass(classNodes)
     return nil
 end
 
+-- Collect all game:GetService("X") calls from IR nodes
+local function collectServiceCallsFromExpr(node, found)
+    if type(node) ~= "table" then return end
+
+    -- Match: game:GetService("ServiceName") or game.GetService("ServiceName")
+    if node.type == "method_call" and node.method == "GetService" then
+        if node.object and node.object.type == "identifier" and node.object.name == "game" then
+            if node.args and #node.args >= 1 then
+                local firstArg = node.args[1]
+                if firstArg.type == "literal" and type(firstArg.value) == "string" then
+                    local serviceName = firstArg.value:gsub('^"', ""):gsub('"$', "")
+                    if serviceName ~= "" then
+                        found[serviceName] = true
+                    end
+                end
+            end
+        end
+    elseif node.type == "call" and node.callee then
+        if node.callee.type == "dot_access" and node.callee.field == "GetService" then
+            if node.callee.object and node.callee.object.type == "identifier" and node.callee.object.name == "game" then
+                if node.args and #node.args >= 1 then
+                    local firstArg = node.args[1]
+                    if firstArg.type == "literal" and type(firstArg.value) == "string" then
+                        local serviceName = firstArg.value:gsub('^"', ""):gsub('"$', "")
+                        if serviceName ~= "" then
+                            found[serviceName] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Recurse into all table children
+    for k, v in node do
+        if type(v) == "table" then
+            collectServiceCallsFromExpr(v, found)
+        end
+    end
+end
+
+-- Replace game:GetService("X") nodes in IR with identifier "X"
+local function replaceServiceCalls(node)
+    if type(node) ~= "table" then return node end
+
+    -- Check if this node is a GetService call
+    local serviceName = nil
+
+    if node.type == "method_call" and node.method == "GetService" then
+        if node.object and node.object.type == "identifier" and node.object.name == "game" then
+            if node.args and #node.args >= 1 then
+                local firstArg = node.args[1]
+                if firstArg.type == "literal" and type(firstArg.value) == "string" then
+                    serviceName = firstArg.value:gsub('^"', ""):gsub('"$', "")
+                end
+            end
+        end
+    elseif node.type == "call" and node.callee then
+        if node.callee.type == "dot_access" and node.callee.field == "GetService" then
+            if node.callee.object and node.callee.object.type == "identifier" and node.callee.object.name == "game" then
+                if node.args and #node.args >= 1 then
+                    local firstArg = node.args[1]
+                    if firstArg.type == "literal" and type(firstArg.value) == "string" then
+                        serviceName = firstArg.value:gsub('^"', ""):gsub('"$', "")
+                    end
+                end
+            end
+        end
+    end
+
+    if serviceName and serviceName ~= "" then
+        return { type = "identifier", name = serviceName }
+    end
+
+    -- Recurse
+    for k, v in node do
+        if type(v) == "table" then
+            node[k] = replaceServiceCalls(v)
+        end
+    end
+    return node
+end
+
+-- Collect all identifiers referenced in IR
+local function collectReferencedIdentifiers(node, found)
+    if type(node) ~= "table" then return end
+    found = found or {}
+
+    if node.type == "identifier" and node.name then
+        found[node.name] = true
+    end
+    if node.type == "new_object" and node.class then
+        local className = tostring(node.class):gsub("<.*>", ""):match("([%w_]+)$") or ""
+        if className ~= "" then
+            found[className] = true
+        end
+    end
+
+    for k, v in node do
+        if type(v) == "table" then
+            collectReferencedIdentifiers(v, found)
+        end
+    end
+    return found
+end
+
+local function buildModuleSymbols(classNodes)
+    local symbols = {}
+    for _, cls in classNodes or {} do
+        local classSym = { methods = {}, fields = {} }
+        for _, method in cls.methods or {} do
+            classSym.methods[method.name] = { isStatic = method.isStatic or false }
+        end
+        for _, field in cls.fields or {} do
+            classSym.fields[field.name] = { isStatic = field.isStatic or false, fieldType = field.fieldType }
+        end
+        if cls.constructor then
+            classSym.methods["new"] = { isStatic = true }
+        end
+        symbols[cls.name] = classSym
+    end
+    return symbols
+end
+
 -- Main lowering function: AST → IR
 function Lowerer.lower(ast)
+    local moduleSymbols = buildModuleSymbols(ast.classes)
+    loweringContext = {
+        moduleSymbols = moduleSymbols,
+        localTypes = {},
+        diagnostics = {},
+    }
+
     local ir = {
         modules = {},
     }
@@ -1344,24 +1810,87 @@ function Lowerer.lower(ast)
     }
 
     -- Lower classes
-    for _, classNode in ipairs(ast.classes or {}) do
+    for _, classNode in ast.classes or {} do
         table.insert(module.classes, lowerClass(classNode))
     end
 
     -- Lower enums
-    for _, enumNode in ipairs(ast.enums or {}) do
+    for _, enumNode in ast.enums or {} do
         table.insert(module.enums, lowerEnum(enumNode))
     end
-
-    -- Determine script type from original AST (need base class info)
-    module.scriptType = determineScriptType(ast.classes or {})
 
     -- Find entry class
     module.entryClass = findEntryClass(ast.classes or {})
 
+    -- Service hoisting pass
+    local serviceSet = {}
+    for _, cls in module.classes do
+        for _, method in cls.methods or {} do
+            collectServiceCallsFromExpr(method, serviceSet)
+        end
+        if cls.constructor then
+            collectServiceCallsFromExpr(cls.constructor, serviceSet)
+        end
+    end
+
+    -- Build sorted service list for IR
+    local services = {}
+    for name in serviceSet do
+        table.insert(services, { name = name })
+    end
+    table.sort(services, function(a, b) return a.name < b.name end)
+    module.services = services
+
+    -- Replace GetService calls with identifiers
+    for _, cls in module.classes do
+        for _, method in cls.methods or {} do
+            replaceServiceCalls(method)
+        end
+        if cls.constructor then
+            replaceServiceCalls(cls.constructor)
+        end
+    end
+
+    -- Require generation pass
+    local localNames = {}
+    for _, cls in module.classes do
+        localNames[cls.name] = true
+    end
+    for _, enum in module.enums or {} do
+        localNames[enum.name] = true
+    end
+
+    local referenced = {}
+    for _, cls in module.classes do
+        collectReferencedIdentifiers(cls, referenced)
+    end
+
+    local requires = {}
+    for name in referenced do
+        if not localNames[name] and name:sub(1, 1):match("[A-Z]") then
+            if not serviceSet[name] and name ~= "game" and name ~= "script"
+                and name ~= "workspace" and name ~= "print" and name ~= "warn"
+                and name ~= "error" and name ~= "type" and name ~= "typeof"
+                and name ~= "tostring" and name ~= "tonumber" and name ~= "pcall"
+                and name ~= "table" and name ~= "string" and name ~= "math"
+                and name ~= "Instance" and name ~= "Enum" and name ~= "Vector3"
+                and name ~= "CFrame" and name ~= "Color3" and name ~= "UDim2"
+                and name ~= "UDim" and name ~= "BrickColor" and name ~= "Ray"
+                and name ~= "Region3" and name ~= "TweenInfo" and name ~= "task"
+                and name ~= "coroutine" and name ~= "setmetatable" then
+                table.insert(requires, { name = name })
+            end
+        end
+    end
+    table.sort(requires, function(a, b) return a.name < b.name end)
+    module.requires = requires
+
     module.needsEventConnectionCache = needsEventConnectionCache
 
     table.insert(ir.modules, module)
+
+    ir.diagnostics = loweringContext.diagnostics
+    loweringContext = nil
 
     return ir
 end

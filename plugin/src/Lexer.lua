@@ -15,7 +15,7 @@ local KEYWORDS = {
 }
 
 local KEYWORD_SET = {}
-for _, kw in ipairs(KEYWORDS) do
+for _, kw in KEYWORDS do
     KEYWORD_SET[kw] = true
 end
 

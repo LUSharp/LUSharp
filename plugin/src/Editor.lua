@@ -450,7 +450,7 @@ local function resolveHoverCursorFromCandidates(self)
         end
     end
 
-    for _, candidate in ipairs(candidates) do
+    for _, candidate in candidates do
         local cursorPos = cursorPositionFromScreenPoint(self, candidate.point)
         if cursorPos then
             self._lastResolvedHoverPoint = candidate.point
@@ -658,7 +658,7 @@ local function clearLayerChildren(layer)
         return
     end
 
-    for _, child in ipairs(layer:GetChildren()) do
+    for _, child in layer:GetChildren() do
         child:Destroy()
     end
 end
@@ -781,7 +781,7 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
         { label = "plusInset", x = rawX + insetX, y = rawY + insetY },
     }
 
-    for _, candidate in ipairs(candidates) do
+    for _, candidate in candidates do
         if isInside(candidate.x, candidate.y) then
             self._lastHoverOutsideDebug = nil
             return resolveAtPoint(candidate.x, candidate.y)
@@ -834,7 +834,7 @@ local function renderDiagnostics(self)
 
     local rendered = 0
 
-    for _, diagnostic in ipairs(self.diagnostics) do
+    for _, diagnostic in self.diagnostics do
         if rendered >= MAX_RENDERED_ERROR_SQUIGGLES then
             break
         end
@@ -998,8 +998,9 @@ function Editor.new(pluginObject, options)
         end)
     end
 
+    local dockState = options.dockState or Enum.InitialDockState.Float
     local widgetInfo = DockWidgetPluginGuiInfo.new(
-        Enum.InitialDockState.Float,
+        dockState,
         true,
         false,
         options.width or 650,
@@ -1008,8 +1009,9 @@ function Editor.new(pluginObject, options)
         260
     )
 
-    local widget = pluginObject:CreateDockWidgetPluginGui("LUSharpEditor", widgetInfo)
-    widget.Title = "LUSharp Editor"
+    local widgetId = options.widgetId or "LUSharpEditor"
+    local widget = pluginObject:CreateDockWidgetPluginGui(widgetId, widgetInfo)
+    widget.Title = options.fileName and ("LUSharp — " .. options.fileName) or "LUSharp Editor"
     self.widget = widget
 
     local root = Instance.new("Frame")
@@ -1144,7 +1146,7 @@ function Editor.new(pluginObject, options)
     self.textBox = textBox
 
     local function clearSelectionHighlight()
-        for _, child in ipairs(selectionLayer:GetChildren()) do
+        for _, child in selectionLayer:GetChildren() do
             child:Destroy()
         end
     end
@@ -1851,8 +1853,8 @@ function Editor.new(pluginObject, options)
     end))
 
     self._completionAcceptActionName = COMPLETION_ACCEPT_ACTION_NAME
-    ContextActionService:UnbindAction(self._completionAcceptActionName)
-    ContextActionService:BindActionAtPriority(self._completionAcceptActionName, function(_actionName, inputState, inputObject)
+    pcall(function() ContextActionService:UnbindAction(self._completionAcceptActionName) end)
+    local _casBindOk = pcall(function() ContextActionService:BindActionAtPriority(self._completionAcceptActionName, function(_actionName, inputState, inputObject)
         if inputState ~= Enum.UserInputState.Begin then
             return Enum.ContextActionResult.Pass
         end
@@ -1973,7 +1975,7 @@ function Editor.new(pluginObject, options)
         end
 
         return Enum.ContextActionResult.Pass
-    end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Tab, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.Delete, Enum.KeyCode.Backspace)
+    end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Tab, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.Delete, Enum.KeyCode.Backspace) end)
 
     table.insert(self._connections, UserInputService.InputChanged:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseMovement then
@@ -2900,6 +2902,9 @@ end
 
 function Editor:setFilename(name)
     self.fileName = name or "<untitled.cs>"
+    if self.widget then
+        self.widget.Title = "LUSharp — " .. self.fileName
+    end
     updateStatus(self)
 end
 
@@ -3009,12 +3014,12 @@ function Editor:hideCompletions()
 
     self.completionFrame.Visible = false
 
-    for _, connection in ipairs(self._completionConnections) do
+    for _, connection in self._completionConnections do
         connection:Disconnect()
     end
     self._completionConnections = {}
 
-    for _, child in ipairs(self.completionFrame:GetChildren()) do
+    for _, child in self.completionFrame:GetChildren() do
         if not child:IsA("UIListLayout") then
             child:Destroy()
         end
@@ -3070,7 +3075,7 @@ function Editor:_setActiveCompletionIndex(index)
         return
     end
 
-    for i, row in ipairs(self._completionRows) do
+    for i, row in self._completionRows do
         if row and row.Parent then
             if self._activeCompletionIndex and i == self._activeCompletionIndex then
                 row.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
@@ -3200,7 +3205,7 @@ function Editor:setDiagnostics(diagnostics)
     end
 
     local errorCount = 0
-    for _, diagnostic in ipairs(self.diagnostics) do
+    for _, diagnostic in self.diagnostics do
         if string.lower(tostring(diagnostic.severity or "")) == "error" then
             errorCount += 1
         end
@@ -3435,7 +3440,6 @@ function Editor:showCompletions(items)
         table.insert(self._completionConnections, button.Activated:Connect(function()
             self:_setActiveCompletionIndex(i)
 
-            local beforeText = self.textBox.Text
             local activeCursor = self._completionActiveCursor
             if type(activeCursor) ~= "number" then
                 activeCursor = self.textBox.CursorPosition
@@ -3448,10 +3452,11 @@ function Editor:showCompletions(items)
 
             task.defer(function()
                 if self.textBox and self.textBox.Parent then
-                    if self.textBox.Text ~= beforeText then
+                    local anchorText = self._completionAnchorText
+                    if type(anchorText) == "string" and self.textBox.Text ~= anchorText then
                         self._pendingAutoIndent = nil
                         self._suppressTextChange = true
-                        self.textBox.Text = beforeText
+                        self.textBox.Text = anchorText
                     end
 
                     if type(activeCursor) == "number" and self.textBox.CursorPosition ~= activeCursor then
@@ -3641,11 +3646,11 @@ function Editor:destroy()
     stopCaretBlink(self)
 
     if self._completionAcceptActionName then
-        ContextActionService:UnbindAction(self._completionAcceptActionName)
+        pcall(function() ContextActionService:UnbindAction(self._completionAcceptActionName) end)
         self._completionAcceptActionName = nil
     end
 
-    for _, connection in ipairs(self._connections) do
+    for _, connection in self._connections do
         connection:Disconnect()
     end
     self._connections = {}

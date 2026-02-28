@@ -10,7 +10,7 @@ local NAMESPACE_ATTRIBUTE_NAME = "LUSharpNamespace"
 local DEFAULT_NAMESPACE_ROOT = "Game"
 
 local SOURCE_TEMPLATE = [[public class %s {
-    public static void GameEntry() {
+    public static void Main() {
 
     }
 }
@@ -18,7 +18,7 @@ local SOURCE_TEMPLATE = [[public class %s {
 
 local SOURCE_TEMPLATE_WITH_NAMESPACE = [[namespace %s {
 public class %s {
-    public static void GameEntry() {
+    public static void Main() {
 
     }
 }
@@ -110,7 +110,7 @@ end
 local function getSourceValue(moduleScript)
     local sourceValue = nil
 
-    for _, child in ipairs(moduleScript:GetChildren()) do
+    for _, child in moduleScript:GetChildren() do
         if child.Name == SOURCE_VALUE_NAME then
             if child:IsA("StringValue") then
                 if not sourceValue then
@@ -156,7 +156,7 @@ function ScriptManager.getAll()
     local tagged = getCollectionService():GetTagged(TAG)
     local scripts = {}
 
-    for _, instance in ipairs(tagged) do
+    for _, instance in tagged do
         if instance:IsA("LuaSourceContainer") then
             table.insert(scripts, instance)
         end
