@@ -315,22 +315,19 @@ end
 function Emitter.emit(moduleIR)
     local lines = {}
 
-    -- Determine return class name
+    local hasRequires = moduleIR.requires and #moduleIR.requires > 0
+
+    -- Determine class name to return
     local returnClass = moduleIR.entryClass
     if not returnClass and moduleIR.classes and moduleIR.classes[1] then
         returnClass = moduleIR.classes[1].name
     end
 
-    -- Runtime require
-    local needsRegistry = returnClass or (moduleIR.requires and #moduleIR.requires > 0)
-    if needsRegistry then
-        appendLine(lines, 0, "local __r = require(script.Parent:FindFirstChild(\"_LUSharpRuntime\"))")
-    end
-
-    -- Circular dependency guard
-    if returnClass then
-        appendLine(lines, 0, "if __r[\"" .. returnClass .. "\"] then return __r[\"" .. returnClass .. "\"] end")
-        appendLine(lines, 0, "__r[\"" .. returnClass .. "\"] = {}")
+    -- Forward-declare cross-script deps (resolved via __init by runtime)
+    if hasRequires then
+        for _, req in moduleIR.requires do
+            appendLine(lines, 0, "local " .. req.name)
+        end
         appendLine(lines, 0, "")
     end
 
@@ -347,42 +344,24 @@ function Emitter.emit(moduleIR)
         appendLine(lines, 0, "")
     end
 
-    -- Emit cross-script requires
-    if moduleIR.requires and #moduleIR.requires > 0 then
-        for _, req in moduleIR.requires do
-            appendLine(lines, 0, "local " .. req.name .. " = __r.resolve(script, \"" .. req.name .. "\")")
-        end
-        appendLine(lines, 0, "")
-    end
-
     -- Emit classes
     for _, cls in moduleIR.classes or {} do
         emitClass(cls, lines)
     end
 
-    -- Register class
-    if returnClass then
-        appendLine(lines, 0, "__r.register(\"" .. returnClass .. "\", " .. returnClass .. ")")
-    end
-
-    -- Auto-invoke Main() for Script/LocalScript entry points
-    local scriptType = moduleIR.scriptType
-    local entryClass = moduleIR.entryClass
-    if entryClass and (scriptType == "Script" or scriptType == "LocalScript") then
-        local deps = moduleIR.requires or {}
-        if #deps > 0 then
-            local depList = {}
-            for _, req in deps do
-                table.insert(depList, "\"" .. req.name .. "\"")
-            end
-            appendLine(lines, 0, "__r.ready({" .. table.concat(depList, ", ") .. "}, " .. entryClass .. ".Main)")
-        else
-            appendLine(lines, 0, entryClass .. ".Main()")
+    -- Emit __init for cross-script dep resolution (called by runtime)
+    if hasRequires and returnClass then
+        appendLine(lines, 0, "function " .. returnClass .. ".__init(__shared)")
+        for _, req in moduleIR.requires do
+            appendLine(lines, 1, req.name .. " = __shared." .. req.name)
         end
+        appendLine(lines, 0, "end")
+        appendLine(lines, 0, "")
     end
 
+    -- Return class table (runtime detects and calls Main() if present)
     if returnClass then
-        appendLine(lines, 0, "return __r[\"" .. returnClass .. "\"]")
+        appendLine(lines, 0, "return " .. returnClass)
     end
 
     return table.concat(lines, "\n")
