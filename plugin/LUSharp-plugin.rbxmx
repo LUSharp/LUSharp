@@ -667,7 +667,7 @@ end
 -- Call Main() on entry point modules
 for name, mod in Shared do
     if type(mod) == "table" and type(mod.Main) == "function" then
-        mod.Main()
+        mod:Main()
     end
 end
 ]=]
@@ -6824,9 +6824,40 @@ local function appendLine(lines, level, text)
     table.insert(lines, string.rep(INDENT, level) .. text)
 end
 
+-- Strip matched outer parentheses from an expression string
+local function stripOuterParens(s)
+    if #s < 2 or s:sub(1, 1) ~= "(" or s:sub(-1) ~= ")" then
+        return s
+    end
+    local depth = 0
+    for i = 1, #s do
+        local c = s:sub(i, i)
+        if c == "(" then
+            depth = depth + 1
+        elseif c == ")" then
+            depth = depth - 1
+        end
+        if depth == 0 and i < #s then
+            return s
+        end
+    end
+    return s:sub(2, -2)
+end
+
+-- Post-process: collapse consecutive blank lines, trim trailing blanks
+local function beautify(source)
+    source = source:gsub("\n\n\n+", "\n\n")
+    source = source:gsub("[ \t]+\n", "\n")
+    source = source:gsub("\n+$", "")
+    return source
+end
+
 local emitExpression
 local emitStatement
 local emitBlock
+
+-- Tracks the current statement indent level for multi-line expressions
+local currentBaseLevel = 0
 
 emitExpression = function(expr)
     if not expr then
@@ -6895,7 +6926,7 @@ emitExpression = function(expr)
         for _, element in expr.elements or {} do
             table.insert(elements, emitExpression(element))
         end
-        return "{" .. join(elements) .. "}"
+        return "{ " .. join(elements) .. " }"
     end
 
     if t == "index_access" then
@@ -6919,10 +6950,25 @@ emitExpression = function(expr)
 
     if t == "function_expr" then
         local params = join(expr.params or {})
+        local body = expr.body or {}
+
+        -- Single-statement body: emit inline
+        if #body == 1 and body[1].type ~= "if_stmt" and body[1].type ~= "for_numeric"
+            and body[1].type ~= "for_in" and body[1].type ~= "while_stmt"
+            and body[1].type ~= "repeat_until" and body[1].type ~= "try_catch" then
+            local inner = {}
+            emitStatement(body[1], inner, 0)
+            local inlineBody = inner[1]
+            if inlineBody and not inlineBody:find("\n") and #inlineBody < 60 then
+                return "function(" .. params .. ") " .. inlineBody:match("^%s*(.-)%s*$") .. " end"
+            end
+        end
+
+        -- Multi-line: indent body relative to current statement level
         local nested = {}
-        appendLine(nested, 0, "function(" .. params .. ")")
-        emitBlock(expr.body or {}, nested, 1)
-        appendLine(nested, 0, "end")
+        appendLine(nested, currentBaseLevel, "function(" .. params .. ")")
+        emitBlock(body, nested, currentBaseLevel + 1)
+        appendLine(nested, currentBaseLevel, "end")
         return table.concat(nested, "\n")
     end
 
@@ -6961,11 +7007,13 @@ emitStatement = function(stmt, lines, level)
         return
     end
 
+    currentBaseLevel = level
+
     local t = stmt.type
 
     if t == "local_decl" then
         if stmt.value then
-            appendLine(lines, level, "local " .. stmt.name .. " = " .. emitExpression(stmt.value))
+            appendLine(lines, level, "local " .. stmt.name .. " = " .. stripOuterParens(emitExpression(stmt.value)))
         else
             appendLine(lines, level, "local " .. stmt.name)
         end
@@ -6973,7 +7021,17 @@ emitStatement = function(stmt, lines, level)
     end
 
     if t == "assignment" then
-        appendLine(lines, level, emitExpression(stmt.target) .. " = " .. emitExpression(stmt.value))
+        -- Detect increment/decrement: x = (x + 1) → x += 1
+        if stmt.value and stmt.value.type == "incdec_expr" then
+            local targetStr = emitExpression(stmt.target)
+            local operandStr = emitExpression(stmt.value.operand)
+            if targetStr == operandStr then
+                local op = stmt.value.operator == "--" and "-=" or "+="
+                appendLine(lines, level, targetStr .. " " .. op .. " 1")
+                return
+            end
+        end
+        appendLine(lines, level, emitExpression(stmt.target) .. " = " .. stripOuterParens(emitExpression(stmt.value)))
         return
     end
 
@@ -6994,7 +7052,9 @@ emitStatement = function(stmt, lines, level)
 
     if t == "for_numeric" then
         appendLine(lines, level,
-            "for " .. stmt.var .. " = " .. emitExpression(stmt.start) .. ", " .. emitExpression(stmt.stop) .. ", " .. emitExpression(stmt.step) .. " do")
+            "for " .. stmt.var .. " = " .. stripOuterParens(emitExpression(stmt.start)) .. ", "
+            .. stripOuterParens(emitExpression(stmt.stop)) .. ", "
+            .. stripOuterParens(emitExpression(stmt.step)) .. " do")
         emitBlock(stmt.body, lines, level + 1)
         appendLine(lines, level, "end")
         return
@@ -7023,7 +7083,7 @@ emitStatement = function(stmt, lines, level)
 
     if t == "return_stmt" then
         if stmt.value then
-            appendLine(lines, level, "return " .. emitExpression(stmt.value))
+            appendLine(lines, level, "return " .. stripOuterParens(emitExpression(stmt.value)))
         else
             appendLine(lines, level, "return")
         end
@@ -7040,15 +7100,11 @@ emitStatement = function(stmt, lines, level)
         return
     end
 
-    if t == "compound" then
-        emitBlock(stmt.statements, lines, level)
-        return
-    end
-
     if t == "try_catch" then
         appendLine(lines, level, "local __ok, __err = pcall(function()")
         emitBlock(stmt.tryBody, lines, level + 1)
         appendLine(lines, level, "end)")
+        appendLine(lines, level, "")
         appendLine(lines, level, "if not __ok then")
         if stmt.catchVar then
             appendLine(lines, level + 1, "local " .. stmt.catchVar .. " = __err")
@@ -7056,6 +7112,7 @@ emitStatement = function(stmt, lines, level)
         emitBlock(stmt.catchBody, lines, level + 1)
         appendLine(lines, level, "end")
         if stmt.finallyBody and #stmt.finallyBody > 0 then
+            appendLine(lines, level, "")
             emitBlock(stmt.finallyBody, lines, level)
         end
         return
@@ -7069,7 +7126,7 @@ local function emitClass(cls, lines)
     appendLine(lines, 0, "local " .. cls.name .. " = {}")
 
     for _, field in cls.staticFields or {} do
-        appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. emitExpression(field.value))
+        appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
     end
 
     if cls.constructor then
@@ -7079,7 +7136,7 @@ local function emitClass(cls, lines)
         appendLine(lines, 1, "local self = {}")
 
         for _, field in cls.instanceFields or {} do
-            appendLine(lines, 1, "self." .. field.name .. " = " .. emitExpression(field.value))
+            appendLine(lines, 1, "self." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
         end
 
         emitBlock(cls.constructor.body or {}, lines, 1)
@@ -7090,11 +7147,7 @@ local function emitClass(cls, lines)
     for _, method in cls.methods or {} do
         appendLine(lines, 0, "")
         local params = join(method.params or {})
-        if method.isStatic then
-            appendLine(lines, 0, "function " .. cls.name .. "." .. method.name .. "(" .. params .. ")")
-        else
-            appendLine(lines, 0, "function " .. cls.name .. ":" .. method.name .. "(" .. params .. ")")
-        end
+        appendLine(lines, 0, "function " .. cls.name .. ":" .. method.name .. "(" .. params .. ")")
         emitBlock(method.body or {}, lines, 1)
         appendLine(lines, 0, "end")
     end
@@ -7172,7 +7225,7 @@ function Emitter.emit(moduleIR)
         appendLine(lines, 0, "return " .. returnClass)
     end
 
-    return table.concat(lines, "\n")
+    return beautify(table.concat(lines, "\n"))
 end
 
 function Emitter.emitModule(moduleIR)
@@ -12204,6 +12257,60 @@ return IntelliSense
     </Item>
     <Item class="ModuleScript" referent="6">
       <Properties>
+        <string name="Name">LUSharpLoader</string>
+        <string name="Source"><![CDATA[-- LUSharp Lazy Loader
+-- Discovers, requires, instantiates, and runs all LUSharp ModuleScripts
+
+local CollectionService = game:GetService("CollectionService")
+
+local TAG = "LUSharp"
+
+local _modules = {}
+local _registry = {}
+
+-- Phase 1+2: Discover and require all tagged ModuleScripts
+local tagged = CollectionService:GetTagged(TAG)
+for _, instance in tagged do
+    if instance:IsA("ModuleScript") then
+        local ok, classTable = pcall(require, instance)
+        if ok and type(classTable) == "table" then
+            _modules[instance.Name] = classTable
+        else
+            warn("[LUSharp] Failed to load module: " .. instance:GetFullName())
+        end
+    end
+end
+
+-- Phase 3: Instantiate singletons
+for name, classTable in _modules do
+    if type(classTable.new) == "function" then
+        local ok, instance = pcall(classTable.new)
+        if ok then
+            _registry[name] = instance
+        else
+            warn("[LUSharp] Failed to instantiate: " .. name)
+        end
+    else
+        _registry[name] = classTable
+    end
+end
+
+-- Phase 4: Call Main() on each singleton that has it
+for name, instance in _registry do
+    if type(instance.Main) == "function" then
+        local ok, err = pcall(function()
+            instance:Main()
+        end)
+        if not ok then
+            warn("[LUSharp] Error in " .. name .. ":Main() — " .. tostring(err))
+        end
+    end
+end
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="7">
+      <Properties>
         <string name="Name">Lexer</string>
         <string name="Source"><![CDATA[-- LUSharp Lexer: Tokenizes C# source into a stream of typed tokens
 
@@ -12499,7 +12606,7 @@ return Lexer
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="7">
+    <Item class="ModuleScript" referent="8">
       <Properties>
         <string name="Name">Lowerer</string>
         <string name="Source"><![CDATA[-- LUSharp Lowerer: Transforms C# AST into Lua IR
@@ -13000,13 +13107,21 @@ lowerExpression = function(expr)
                     local methodSym = classSym.methods[methodName]
                     if methodSym then
                         if methodSym.isStatic then
+                            if methodSym.isExplicitCall then
+                                return {
+                                    type = "call",
+                                    callee = {
+                                        type = "dot_access",
+                                        object = { type = "identifier", name = targetName },
+                                        field = methodName,
+                                    },
+                                    args = args,
+                                }
+                            end
                             return {
-                                type = "call",
-                                callee = {
-                                    type = "dot_access",
-                                    object = { type = "identifier", name = targetName },
-                                    field = methodName,
-                                },
+                                type = "method_call",
+                                object = { type = "identifier", name = targetName },
+                                method = methodName,
                                 args = args,
                             }
                         else
@@ -13866,13 +13981,21 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
                 end
 
                 if ctx.staticMethods[name] then
+                    if ctx.explicitCallMethods and ctx.explicitCallMethods[name] then
+                        return {
+                            type = "call",
+                            callee = {
+                                type = "dot_access",
+                                object = { type = "identifier", name = ctx.className },
+                                field = name,
+                            },
+                            args = expr.args,
+                        }
+                    end
                     return {
-                        type = "call",
-                        callee = {
-                            type = "dot_access",
-                            object = { type = "identifier", name = ctx.className },
-                            field = name,
-                        },
+                        type = "method_call",
+                        object = { type = "identifier", name = ctx.className },
+                        method = name,
                         args = expr.args,
                     }
                 end
@@ -14060,9 +14183,15 @@ local function lowerClass(classNode)
 
     local instanceMethodNames = {}
     local staticMethodNames = {}
+    local explicitCallMethodNames = {}
     for _, m in classNode.methods or {} do
         if m.isStatic then
             staticMethodNames[m.name] = true
+            for _, attr in m.attributes or {} do
+                if attr == "ExplicitCall" then
+                    explicitCallMethodNames[m.name] = true
+                end
+            end
         else
             instanceMethodNames[m.name] = true
         end
@@ -14101,6 +14230,7 @@ local function lowerClass(classNode)
             isStatic = irMethod.isStatic,
             instanceMethods = instanceMethodNames,
             staticMethods = staticMethodNames,
+            explicitCallMethods = explicitCallMethodNames,
         }, locals)
 
         table.insert(cls.methods, irMethod)
@@ -14278,7 +14408,14 @@ local function buildModuleSymbols(classNodes)
     for _, cls in classNodes or {} do
         local classSym = { methods = {}, fields = {} }
         for _, method in cls.methods or {} do
-            classSym.methods[method.name] = { isStatic = method.isStatic or false }
+            local isExplicit = false
+            for _, attr in method.attributes or {} do
+                if attr == "ExplicitCall" then isExplicit = true end
+            end
+            classSym.methods[method.name] = {
+                isStatic = method.isStatic or false,
+                isExplicitCall = isExplicit,
+            }
         end
         for _, field in cls.fields or {} do
             classSym.fields[field.name] = { isStatic = field.isStatic or false, fieldType = field.fieldType }
@@ -14403,7 +14540,7 @@ return Lowerer
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="8">
+    <Item class="ModuleScript" referent="9">
       <Properties>
         <string name="Name">Parser</string>
         <string name="Source"><![CDATA[-- LUSharp Parser: Recursive descent C# parser
@@ -14442,6 +14579,7 @@ local function MethodNode(name, returnType, parameters, body, modifiers)
         isVirtual = modifiers.isVirtual or false,
         isAbstract = modifiers.isAbstract or false,
         isAsync = modifiers.isAsync or false,
+        attributes = modifiers.attributes or {},
     }
 end
 
@@ -15556,9 +15694,27 @@ function Parser.parse(tokens, options)
         return { type = "expression_statement", expression = expr }
     end
 
+    -- Parse attributes: [ExplicitCall], [SomeAttr], etc.
+    local function parseAttributes()
+        local attrs = {}
+        while check("punctuation", "[") do
+            advance() -- [
+            while not check("punctuation", "]") and not check("eof") do
+                if check("identifier") then
+                    table.insert(attrs, current().value)
+                end
+                advance()
+            end
+            match("punctuation", "]")
+        end
+        return attrs
+    end
+
     -- Parse a class member (method, field, property, constructor, event)
     local function parseClassMember(className)
+        local attrs = parseAttributes()
         local mods = parseModifiers()
+        mods.attributes = attrs
 
         -- Event: event Action<T> Name;
         if check("keyword", "event") then
@@ -15821,7 +15977,7 @@ return Parser
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="9">
+    <Item class="ModuleScript" referent="10">
       <Properties>
         <string name="Name">ProjectView</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -16761,7 +16917,7 @@ return ProjectView
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="10">
+    <Item class="ModuleScript" referent="11">
       <Properties>
         <string name="Name">ProjectViewStatus</string>
         <string name="Source"><![CDATA[local ProjectViewStatus = {}
@@ -16794,7 +16950,7 @@ return ProjectViewStatus
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="11">
+    <Item class="ModuleScript" referent="12">
       <Properties>
         <string name="Name">RobloxValidityLiveUpdater</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -16915,7 +17071,7 @@ return RobloxValidityLiveUpdater
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="12">
+    <Item class="ModuleScript" referent="13">
       <Properties>
         <string name="Name">RobloxValidityProvider</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -16997,7 +17153,7 @@ return RobloxValidityProvider
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="13">
+    <Item class="ModuleScript" referent="14">
       <Properties>
         <string name="Name">RobloxValiditySnapshot</string>
         <string name="Source"><![CDATA[local RobloxValiditySnapshot = {
@@ -17023,7 +17179,7 @@ return RobloxValiditySnapshot
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="14">
+    <Item class="ModuleScript" referent="15">
       <Properties>
         <string name="Name">ScriptManager</string>
         <string name="Source"><![CDATA[local ScriptManager = {}
@@ -17299,7 +17455,7 @@ return ScriptManager
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="15">
+    <Item class="ModuleScript" referent="16">
       <Properties>
         <string name="Name">Settings</string>
         <string name="Source"><![CDATA[local Settings = {}
@@ -17951,7 +18107,7 @@ return Settings
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="16">
+    <Item class="ModuleScript" referent="17">
       <Properties>
         <string name="Name">SyntaxHighlighter</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -18684,7 +18840,7 @@ return SyntaxHighlighter
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="17">
+    <Item class="ModuleScript" referent="18">
       <Properties>
         <string name="Name">TypeDatabase</string>
         <string name="Source"><![CDATA[-- Auto-generated by `lusharp generate-types`
@@ -92633,7 +92789,7 @@ return TypeDatabase
 ]]></string>
       </Properties>
     </Item>
-    <Item class="Folder" referent="18">
+    <Item class="Folder" referent="19">
       <Properties>
         <string name="Name">images</string>
       </Properties>

@@ -34,6 +34,7 @@ local function MethodNode(name, returnType, parameters, body, modifiers)
         isVirtual = modifiers.isVirtual or false,
         isAbstract = modifiers.isAbstract or false,
         isAsync = modifiers.isAsync or false,
+        attributes = modifiers.attributes or {},
     }
 end
 
@@ -1148,9 +1149,27 @@ function Parser.parse(tokens, options)
         return { type = "expression_statement", expression = expr }
     end
 
+    -- Parse attributes: [ExplicitCall], [SomeAttr], etc.
+    local function parseAttributes()
+        local attrs = {}
+        while check("punctuation", "[") do
+            advance() -- [
+            while not check("punctuation", "]") and not check("eof") do
+                if check("identifier") then
+                    table.insert(attrs, current().value)
+                end
+                advance()
+            end
+            match("punctuation", "]")
+        end
+        return attrs
+    end
+
     -- Parse a class member (method, field, property, constructor, event)
     local function parseClassMember(className)
+        local attrs = parseAttributes()
         local mods = parseModifiers()
+        mods.attributes = attrs
 
         -- Event: event Action<T> Name;
         if check("keyword", "event") then
