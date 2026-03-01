@@ -496,13 +496,21 @@ lowerExpression = function(expr)
                     local methodSym = classSym.methods[methodName]
                     if methodSym then
                         if methodSym.isStatic then
+                            if methodSym.isExplicitCall then
+                                return {
+                                    type = "call",
+                                    callee = {
+                                        type = "dot_access",
+                                        object = { type = "identifier", name = targetName },
+                                        field = methodName,
+                                    },
+                                    args = args,
+                                }
+                            end
                             return {
-                                type = "call",
-                                callee = {
-                                    type = "dot_access",
-                                    object = { type = "identifier", name = targetName },
-                                    field = methodName,
-                                },
+                                type = "method_call",
+                                object = { type = "identifier", name = targetName },
+                                method = methodName,
                                 args = args,
                             }
                         else
@@ -1362,13 +1370,21 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
                 end
 
                 if ctx.staticMethods[name] then
+                    if ctx.explicitCallMethods and ctx.explicitCallMethods[name] then
+                        return {
+                            type = "call",
+                            callee = {
+                                type = "dot_access",
+                                object = { type = "identifier", name = ctx.className },
+                                field = name,
+                            },
+                            args = expr.args,
+                        }
+                    end
                     return {
-                        type = "call",
-                        callee = {
-                            type = "dot_access",
-                            object = { type = "identifier", name = ctx.className },
-                            field = name,
-                        },
+                        type = "method_call",
+                        object = { type = "identifier", name = ctx.className },
+                        method = name,
                         args = expr.args,
                     }
                 end
@@ -1556,9 +1572,15 @@ local function lowerClass(classNode)
 
     local instanceMethodNames = {}
     local staticMethodNames = {}
+    local explicitCallMethodNames = {}
     for _, m in classNode.methods or {} do
         if m.isStatic then
             staticMethodNames[m.name] = true
+            for _, attr in m.attributes or {} do
+                if attr == "ExplicitCall" then
+                    explicitCallMethodNames[m.name] = true
+                end
+            end
         else
             instanceMethodNames[m.name] = true
         end
@@ -1597,6 +1619,7 @@ local function lowerClass(classNode)
             isStatic = irMethod.isStatic,
             instanceMethods = instanceMethodNames,
             staticMethods = staticMethodNames,
+            explicitCallMethods = explicitCallMethodNames,
         }, locals)
 
         table.insert(cls.methods, irMethod)
@@ -1774,7 +1797,14 @@ local function buildModuleSymbols(classNodes)
     for _, cls in classNodes or {} do
         local classSym = { methods = {}, fields = {} }
         for _, method in cls.methods or {} do
-            classSym.methods[method.name] = { isStatic = method.isStatic or false }
+            local isExplicit = false
+            for _, attr in method.attributes or {} do
+                if attr == "ExplicitCall" then isExplicit = true end
+            end
+            classSym.methods[method.name] = {
+                isStatic = method.isStatic or false,
+                isExplicitCall = isExplicit,
+            }
         end
         for _, field in cls.fields or {} do
             classSym.fields[field.name] = { isStatic = field.isStatic or false, fieldType = field.fieldType }

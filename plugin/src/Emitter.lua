@@ -16,9 +16,40 @@ local function appendLine(lines, level, text)
     table.insert(lines, string.rep(INDENT, level) .. text)
 end
 
+-- Strip matched outer parentheses from an expression string
+local function stripOuterParens(s)
+    if #s < 2 or s:sub(1, 1) ~= "(" or s:sub(-1) ~= ")" then
+        return s
+    end
+    local depth = 0
+    for i = 1, #s do
+        local c = s:sub(i, i)
+        if c == "(" then
+            depth = depth + 1
+        elseif c == ")" then
+            depth = depth - 1
+        end
+        if depth == 0 and i < #s then
+            return s
+        end
+    end
+    return s:sub(2, -2)
+end
+
+-- Post-process: collapse consecutive blank lines, trim trailing blanks
+local function beautify(source)
+    source = source:gsub("\n\n\n+", "\n\n")
+    source = source:gsub("[ \t]+\n", "\n")
+    source = source:gsub("\n+$", "")
+    return source
+end
+
 local emitExpression
 local emitStatement
 local emitBlock
+
+-- Tracks the current statement indent level for multi-line expressions
+local currentBaseLevel = 0
 
 emitExpression = function(expr)
     if not expr then
@@ -87,7 +118,7 @@ emitExpression = function(expr)
         for _, element in expr.elements or {} do
             table.insert(elements, emitExpression(element))
         end
-        return "{" .. join(elements) .. "}"
+        return "{ " .. join(elements) .. " }"
     end
 
     if t == "index_access" then
@@ -111,10 +142,25 @@ emitExpression = function(expr)
 
     if t == "function_expr" then
         local params = join(expr.params or {})
+        local body = expr.body or {}
+
+        -- Single-statement body: emit inline
+        if #body == 1 and body[1].type ~= "if_stmt" and body[1].type ~= "for_numeric"
+            and body[1].type ~= "for_in" and body[1].type ~= "while_stmt"
+            and body[1].type ~= "repeat_until" and body[1].type ~= "try_catch" then
+            local inner = {}
+            emitStatement(body[1], inner, 0)
+            local inlineBody = inner[1]
+            if inlineBody and not inlineBody:find("\n") and #inlineBody < 60 then
+                return "function(" .. params .. ") " .. inlineBody:match("^%s*(.-)%s*$") .. " end"
+            end
+        end
+
+        -- Multi-line: indent body relative to current statement level
         local nested = {}
-        appendLine(nested, 0, "function(" .. params .. ")")
-        emitBlock(expr.body or {}, nested, 1)
-        appendLine(nested, 0, "end")
+        appendLine(nested, currentBaseLevel, "function(" .. params .. ")")
+        emitBlock(body, nested, currentBaseLevel + 1)
+        appendLine(nested, currentBaseLevel, "end")
         return table.concat(nested, "\n")
     end
 
@@ -153,11 +199,13 @@ emitStatement = function(stmt, lines, level)
         return
     end
 
+    currentBaseLevel = level
+
     local t = stmt.type
 
     if t == "local_decl" then
         if stmt.value then
-            appendLine(lines, level, "local " .. stmt.name .. " = " .. emitExpression(stmt.value))
+            appendLine(lines, level, "local " .. stmt.name .. " = " .. stripOuterParens(emitExpression(stmt.value)))
         else
             appendLine(lines, level, "local " .. stmt.name)
         end
@@ -165,7 +213,17 @@ emitStatement = function(stmt, lines, level)
     end
 
     if t == "assignment" then
-        appendLine(lines, level, emitExpression(stmt.target) .. " = " .. emitExpression(stmt.value))
+        -- Detect increment/decrement: x = (x + 1) → x += 1
+        if stmt.value and stmt.value.type == "incdec_expr" then
+            local targetStr = emitExpression(stmt.target)
+            local operandStr = emitExpression(stmt.value.operand)
+            if targetStr == operandStr then
+                local op = stmt.value.operator == "--" and "-=" or "+="
+                appendLine(lines, level, targetStr .. " " .. op .. " 1")
+                return
+            end
+        end
+        appendLine(lines, level, emitExpression(stmt.target) .. " = " .. stripOuterParens(emitExpression(stmt.value)))
         return
     end
 
@@ -186,7 +244,9 @@ emitStatement = function(stmt, lines, level)
 
     if t == "for_numeric" then
         appendLine(lines, level,
-            "for " .. stmt.var .. " = " .. emitExpression(stmt.start) .. ", " .. emitExpression(stmt.stop) .. ", " .. emitExpression(stmt.step) .. " do")
+            "for " .. stmt.var .. " = " .. stripOuterParens(emitExpression(stmt.start)) .. ", "
+            .. stripOuterParens(emitExpression(stmt.stop)) .. ", "
+            .. stripOuterParens(emitExpression(stmt.step)) .. " do")
         emitBlock(stmt.body, lines, level + 1)
         appendLine(lines, level, "end")
         return
@@ -215,7 +275,7 @@ emitStatement = function(stmt, lines, level)
 
     if t == "return_stmt" then
         if stmt.value then
-            appendLine(lines, level, "return " .. emitExpression(stmt.value))
+            appendLine(lines, level, "return " .. stripOuterParens(emitExpression(stmt.value)))
         else
             appendLine(lines, level, "return")
         end
@@ -232,15 +292,11 @@ emitStatement = function(stmt, lines, level)
         return
     end
 
-    if t == "compound" then
-        emitBlock(stmt.statements, lines, level)
-        return
-    end
-
     if t == "try_catch" then
         appendLine(lines, level, "local __ok, __err = pcall(function()")
         emitBlock(stmt.tryBody, lines, level + 1)
         appendLine(lines, level, "end)")
+        appendLine(lines, level, "")
         appendLine(lines, level, "if not __ok then")
         if stmt.catchVar then
             appendLine(lines, level + 1, "local " .. stmt.catchVar .. " = __err")
@@ -248,6 +304,7 @@ emitStatement = function(stmt, lines, level)
         emitBlock(stmt.catchBody, lines, level + 1)
         appendLine(lines, level, "end")
         if stmt.finallyBody and #stmt.finallyBody > 0 then
+            appendLine(lines, level, "")
             emitBlock(stmt.finallyBody, lines, level)
         end
         return
@@ -261,7 +318,7 @@ local function emitClass(cls, lines)
     appendLine(lines, 0, "local " .. cls.name .. " = {}")
 
     for _, field in cls.staticFields or {} do
-        appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. emitExpression(field.value))
+        appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
     end
 
     if cls.constructor then
@@ -271,7 +328,7 @@ local function emitClass(cls, lines)
         appendLine(lines, 1, "local self = {}")
 
         for _, field in cls.instanceFields or {} do
-            appendLine(lines, 1, "self." .. field.name .. " = " .. emitExpression(field.value))
+            appendLine(lines, 1, "self." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
         end
 
         emitBlock(cls.constructor.body or {}, lines, 1)
@@ -282,11 +339,7 @@ local function emitClass(cls, lines)
     for _, method in cls.methods or {} do
         appendLine(lines, 0, "")
         local params = join(method.params or {})
-        if method.isStatic then
-            appendLine(lines, 0, "function " .. cls.name .. "." .. method.name .. "(" .. params .. ")")
-        else
-            appendLine(lines, 0, "function " .. cls.name .. ":" .. method.name .. "(" .. params .. ")")
-        end
+        appendLine(lines, 0, "function " .. cls.name .. ":" .. method.name .. "(" .. params .. ")")
         emitBlock(method.body or {}, lines, 1)
         appendLine(lines, 0, "end")
     end
@@ -364,7 +417,7 @@ function Emitter.emit(moduleIR)
         appendLine(lines, 0, "return " .. returnClass)
     end
 
-    return table.concat(lines, "\n")
+    return beautify(table.concat(lines, "\n"))
 end
 
 function Emitter.emitModule(moduleIR)

@@ -662,7 +662,7 @@ end
 -- Call Main() on entry point modules
 for name, mod in Shared do
     if type(mod) == "table" and type(mod.Main) == "function" then
-        mod.Main()
+        mod:Main()
     end
 end
 ]=]
