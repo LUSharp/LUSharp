@@ -643,53 +643,54 @@ local function countErrorDiagnostics(parseResult)
 end
 
 local LUSHARP_RUNTIME_SOURCE = [=[
--- LUSharp Runtime (do not edit)
-local registry = {}
-registry.__loaded = {}
+-- LUSharp Runtime Loader (do not edit)
+local Shared = {}
 
-function registry.resolve(caller, name)
-    if registry[name] then return registry[name] end
-    local m = caller.Parent:FindFirstChild(name)
-    if m and m:IsA("ModuleScript") then return require(m) end
-    for _ = 1, 300 do
-        task.wait(0.1)
-        if registry[name] then return registry[name] end
-    end
-    error("[LUSharp] Could not resolve: " .. name)
-end
-
-function registry.register(name, class)
-    if not registry[name] then registry[name] = {} end
-    for k, v in pairs(class) do registry[name][k] = v end
-    setmetatable(registry[name], getmetatable(class))
-    registry.__loaded[name] = true
-end
-
-function registry.ready(deps, fn)
-    task.spawn(function()
-        for _, dep in deps do
-            while not registry.__loaded[dep] do task.wait() end
+for _, child in script.Parent:GetChildren() do
+    if child:IsA("ModuleScript") then
+        local ok, result = pcall(require, child)
+        if ok then
+            Shared[child.Name] = result
+        else
+            warn("[LUSharp] Failed to load " .. child.Name .. ": " .. tostring(result))
         end
-        fn()
-    end)
+    end
 end
 
-return registry
+-- Late-bind cross-script references
+for name, mod in Shared do
+    if type(mod) == "table" and type(mod.__init) == "function" then
+        mod.__init(Shared)
+    end
+end
+
+-- Call Main() on entry point modules
+for name, mod in Shared do
+    if type(mod) == "table" and type(mod.Main) == "function" then
+        mod.Main()
+    end
+end
 ]=]
 
 local function ensureRuntimeModule(parent)
     if not parent or typeof(parent) ~= "Instance" then return end
     local existing = parent:FindFirstChild("_LUSharpRuntime")
-    if existing and existing:IsA("ModuleScript") then
-        if existing.Source ~= LUSHARP_RUNTIME_SOURCE then
-            existing.Source = LUSHARP_RUNTIME_SOURCE
+    if existing then
+        -- Replace old ModuleScript with Script if needed
+        if existing:IsA("ModuleScript") then
+            existing:Destroy()
+            existing = nil
+        elseif existing:IsA("Script") then
+            if existing.Source ~= LUSHARP_RUNTIME_SOURCE then
+                existing.Source = LUSHARP_RUNTIME_SOURCE
+            end
+            return
         end
-        return
     end
-    local mod = Instance.new("ModuleScript")
-    mod.Name = "_LUSharpRuntime"
-    mod.Source = LUSHARP_RUNTIME_SOURCE
-    mod.Parent = parent
+    local loader = Instance.new("Script")
+    loader.Name = "_LUSharpRuntime"
+    loader.Source = LUSHARP_RUNTIME_SOURCE
+    loader.Parent = parent
 end
 
 local function compileOne(scriptInstance)
@@ -746,15 +747,26 @@ local function compileOne(scriptInstance)
         return false, "lowerer_errors"
     end
 
-    local desiredType = "ModuleScript"
-    if scriptInstance:IsA("Script") then
-        desiredType = "Script"
-    elseif scriptInstance:IsA("LocalScript") then
-        desiredType = "LocalScript"
+    -- All compiled scripts become ModuleScripts (runtime loader calls Main())
+    if not scriptInstance:IsA("ModuleScript") then
+        local newInstance = Instance.new("ModuleScript")
+        newInstance.Name = scriptInstance.Name
+        for _, tag in scriptInstance:GetTags() do
+            newInstance:AddTag(tag)
+        end
+        for attrName, attrValue in scriptInstance:GetAttributes() do
+            newInstance:SetAttribute(attrName, attrValue)
+        end
+        for _, child in scriptInstance:GetChildren() do
+            child.Parent = newInstance
+        end
+        newInstance.Parent = scriptInstance.Parent
+        scriptInstance:Destroy()
+        scriptInstance = newInstance
     end
 
     if ir.modules and ir.modules[1] then
-        ir.modules[1].scriptType = desiredType
+        ir.modules[1].scriptType = "ModuleScript"
     end
 
     local out = Emitter.emit(ir.modules[1])
@@ -7111,22 +7123,19 @@ end
 function Emitter.emit(moduleIR)
     local lines = {}
 
-    -- Determine return class name
+    local hasRequires = moduleIR.requires and #moduleIR.requires > 0
+
+    -- Determine class name to return
     local returnClass = moduleIR.entryClass
     if not returnClass and moduleIR.classes and moduleIR.classes[1] then
         returnClass = moduleIR.classes[1].name
     end
 
-    -- Runtime require
-    local needsRegistry = returnClass or (moduleIR.requires and #moduleIR.requires > 0)
-    if needsRegistry then
-        appendLine(lines, 0, "local __r = require(script.Parent:FindFirstChild(\"_LUSharpRuntime\"))")
-    end
-
-    -- Circular dependency guard
-    if returnClass then
-        appendLine(lines, 0, "if __r[\"" .. returnClass .. "\"] then return __r[\"" .. returnClass .. "\"] end")
-        appendLine(lines, 0, "__r[\"" .. returnClass .. "\"] = {}")
+    -- Forward-declare cross-script deps (resolved via __init by runtime)
+    if hasRequires then
+        for _, req in moduleIR.requires do
+            appendLine(lines, 0, "local " .. req.name)
+        end
         appendLine(lines, 0, "")
     end
 
@@ -7143,42 +7152,24 @@ function Emitter.emit(moduleIR)
         appendLine(lines, 0, "")
     end
 
-    -- Emit cross-script requires
-    if moduleIR.requires and #moduleIR.requires > 0 then
-        for _, req in moduleIR.requires do
-            appendLine(lines, 0, "local " .. req.name .. " = __r.resolve(script, \"" .. req.name .. "\")")
-        end
-        appendLine(lines, 0, "")
-    end
-
     -- Emit classes
     for _, cls in moduleIR.classes or {} do
         emitClass(cls, lines)
     end
 
-    -- Register class
-    if returnClass then
-        appendLine(lines, 0, "__r.register(\"" .. returnClass .. "\", " .. returnClass .. ")")
-    end
-
-    -- Auto-invoke Main() for Script/LocalScript entry points
-    local scriptType = moduleIR.scriptType
-    local entryClass = moduleIR.entryClass
-    if entryClass and (scriptType == "Script" or scriptType == "LocalScript") then
-        local deps = moduleIR.requires or {}
-        if #deps > 0 then
-            local depList = {}
-            for _, req in deps do
-                table.insert(depList, "\"" .. req.name .. "\"")
-            end
-            appendLine(lines, 0, "__r.ready({" .. table.concat(depList, ", ") .. "}, " .. entryClass .. ".Main)")
-        else
-            appendLine(lines, 0, entryClass .. ".Main()")
+    -- Emit __init for cross-script dep resolution (called by runtime)
+    if hasRequires and returnClass then
+        appendLine(lines, 0, "function " .. returnClass .. ".__init(__shared)")
+        for _, req in moduleIR.requires do
+            appendLine(lines, 1, req.name .. " = __shared." .. req.name)
         end
+        appendLine(lines, 0, "end")
+        appendLine(lines, 0, "")
     end
 
+    -- Return class table (runtime detects and calls Main() if present)
     if returnClass then
-        appendLine(lines, 0, "return __r[\"" .. returnClass .. "\"]")
+        appendLine(lines, 0, "return " .. returnClass)
     end
 
     return table.concat(lines, "\n")
@@ -12213,60 +12204,6 @@ return IntelliSense
     </Item>
     <Item class="ModuleScript" referent="6">
       <Properties>
-        <string name="Name">LUSharpLoader</string>
-        <string name="Source"><![CDATA[-- LUSharp Lazy Loader
--- Discovers, requires, instantiates, and runs all LUSharp ModuleScripts
-
-local CollectionService = game:GetService("CollectionService")
-
-local TAG = "LUSharp"
-
-local _modules = {}
-local _registry = {}
-
--- Phase 1+2: Discover and require all tagged ModuleScripts
-local tagged = CollectionService:GetTagged(TAG)
-for _, instance in tagged do
-    if instance:IsA("ModuleScript") then
-        local ok, classTable = pcall(require, instance)
-        if ok and type(classTable) == "table" then
-            _modules[instance.Name] = classTable
-        else
-            warn("[LUSharp] Failed to load module: " .. instance:GetFullName())
-        end
-    end
-end
-
--- Phase 3: Instantiate singletons
-for name, classTable in _modules do
-    if type(classTable.new) == "function" then
-        local ok, instance = pcall(classTable.new)
-        if ok then
-            _registry[name] = instance
-        else
-            warn("[LUSharp] Failed to instantiate: " .. name)
-        end
-    else
-        _registry[name] = classTable
-    end
-end
-
--- Phase 4: Call Main() on each singleton that has it
-for name, instance in _registry do
-    if type(instance.Main) == "function" then
-        local ok, err = pcall(function()
-            instance:Main()
-        end)
-        if not ok then
-            warn("[LUSharp] Error in " .. name .. ":Main() — " .. tostring(err))
-        end
-    end
-end
-]]></string>
-      </Properties>
-    </Item>
-    <Item class="ModuleScript" referent="7">
-      <Properties>
         <string name="Name">Lexer</string>
         <string name="Source"><![CDATA[-- LUSharp Lexer: Tokenizes C# source into a stream of typed tokens
 
@@ -12562,7 +12499,7 @@ return Lexer
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="8">
+    <Item class="ModuleScript" referent="7">
       <Properties>
         <string name="Name">Lowerer</string>
         <string name="Source"><![CDATA[-- LUSharp Lowerer: Transforms C# AST into Lua IR
@@ -14466,7 +14403,7 @@ return Lowerer
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="9">
+    <Item class="ModuleScript" referent="8">
       <Properties>
         <string name="Name">Parser</string>
         <string name="Source"><![CDATA[-- LUSharp Parser: Recursive descent C# parser
@@ -15884,7 +15821,7 @@ return Parser
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="10">
+    <Item class="ModuleScript" referent="9">
       <Properties>
         <string name="Name">ProjectView</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -16824,7 +16761,7 @@ return ProjectView
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="11">
+    <Item class="ModuleScript" referent="10">
       <Properties>
         <string name="Name">ProjectViewStatus</string>
         <string name="Source"><![CDATA[local ProjectViewStatus = {}
@@ -16857,7 +16794,7 @@ return ProjectViewStatus
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="12">
+    <Item class="ModuleScript" referent="11">
       <Properties>
         <string name="Name">RobloxValidityLiveUpdater</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -16978,7 +16915,7 @@ return RobloxValidityLiveUpdater
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="13">
+    <Item class="ModuleScript" referent="12">
       <Properties>
         <string name="Name">RobloxValidityProvider</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -17060,7 +16997,7 @@ return RobloxValidityProvider
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="14">
+    <Item class="ModuleScript" referent="13">
       <Properties>
         <string name="Name">RobloxValiditySnapshot</string>
         <string name="Source"><![CDATA[local RobloxValiditySnapshot = {
@@ -17086,7 +17023,7 @@ return RobloxValiditySnapshot
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="15">
+    <Item class="ModuleScript" referent="14">
       <Properties>
         <string name="Name">ScriptManager</string>
         <string name="Source"><![CDATA[local ScriptManager = {}
@@ -17362,7 +17299,7 @@ return ScriptManager
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="16">
+    <Item class="ModuleScript" referent="15">
       <Properties>
         <string name="Name">Settings</string>
         <string name="Source"><![CDATA[local Settings = {}
@@ -18014,7 +17951,7 @@ return Settings
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="17">
+    <Item class="ModuleScript" referent="16">
       <Properties>
         <string name="Name">SyntaxHighlighter</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -18747,7 +18684,7 @@ return SyntaxHighlighter
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="18">
+    <Item class="ModuleScript" referent="17">
       <Properties>
         <string name="Name">TypeDatabase</string>
         <string name="Source"><![CDATA[-- Auto-generated by `lusharp generate-types`
@@ -92696,7 +92633,7 @@ return TypeDatabase
 ]]></string>
       </Properties>
     </Item>
-    <Item class="Folder" referent="19">
+    <Item class="Folder" referent="18">
       <Properties>
         <string name="Name">images</string>
       </Properties>

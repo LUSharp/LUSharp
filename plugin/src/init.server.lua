@@ -638,53 +638,54 @@ local function countErrorDiagnostics(parseResult)
 end
 
 local LUSHARP_RUNTIME_SOURCE = [=[
--- LUSharp Runtime (do not edit)
-local registry = {}
-registry.__loaded = {}
+-- LUSharp Runtime Loader (do not edit)
+local Shared = {}
 
-function registry.resolve(caller, name)
-    if registry[name] then return registry[name] end
-    local m = caller.Parent:FindFirstChild(name)
-    if m and m:IsA("ModuleScript") then return require(m) end
-    for _ = 1, 300 do
-        task.wait(0.1)
-        if registry[name] then return registry[name] end
-    end
-    error("[LUSharp] Could not resolve: " .. name)
-end
-
-function registry.register(name, class)
-    if not registry[name] then registry[name] = {} end
-    for k, v in pairs(class) do registry[name][k] = v end
-    setmetatable(registry[name], getmetatable(class))
-    registry.__loaded[name] = true
-end
-
-function registry.ready(deps, fn)
-    task.spawn(function()
-        for _, dep in deps do
-            while not registry.__loaded[dep] do task.wait() end
+for _, child in script.Parent:GetChildren() do
+    if child:IsA("ModuleScript") then
+        local ok, result = pcall(require, child)
+        if ok then
+            Shared[child.Name] = result
+        else
+            warn("[LUSharp] Failed to load " .. child.Name .. ": " .. tostring(result))
         end
-        fn()
-    end)
+    end
 end
 
-return registry
+-- Late-bind cross-script references
+for name, mod in Shared do
+    if type(mod) == "table" and type(mod.__init) == "function" then
+        mod.__init(Shared)
+    end
+end
+
+-- Call Main() on entry point modules
+for name, mod in Shared do
+    if type(mod) == "table" and type(mod.Main) == "function" then
+        mod.Main()
+    end
+end
 ]=]
 
 local function ensureRuntimeModule(parent)
     if not parent or typeof(parent) ~= "Instance" then return end
     local existing = parent:FindFirstChild("_LUSharpRuntime")
-    if existing and existing:IsA("ModuleScript") then
-        if existing.Source ~= LUSHARP_RUNTIME_SOURCE then
-            existing.Source = LUSHARP_RUNTIME_SOURCE
+    if existing then
+        -- Replace old ModuleScript with Script if needed
+        if existing:IsA("ModuleScript") then
+            existing:Destroy()
+            existing = nil
+        elseif existing:IsA("Script") then
+            if existing.Source ~= LUSHARP_RUNTIME_SOURCE then
+                existing.Source = LUSHARP_RUNTIME_SOURCE
+            end
+            return
         end
-        return
     end
-    local mod = Instance.new("ModuleScript")
-    mod.Name = "_LUSharpRuntime"
-    mod.Source = LUSHARP_RUNTIME_SOURCE
-    mod.Parent = parent
+    local loader = Instance.new("Script")
+    loader.Name = "_LUSharpRuntime"
+    loader.Source = LUSHARP_RUNTIME_SOURCE
+    loader.Parent = parent
 end
 
 local function compileOne(scriptInstance)
@@ -741,15 +742,26 @@ local function compileOne(scriptInstance)
         return false, "lowerer_errors"
     end
 
-    local desiredType = "ModuleScript"
-    if scriptInstance:IsA("Script") then
-        desiredType = "Script"
-    elseif scriptInstance:IsA("LocalScript") then
-        desiredType = "LocalScript"
+    -- All compiled scripts become ModuleScripts (runtime loader calls Main())
+    if not scriptInstance:IsA("ModuleScript") then
+        local newInstance = Instance.new("ModuleScript")
+        newInstance.Name = scriptInstance.Name
+        for _, tag in scriptInstance:GetTags() do
+            newInstance:AddTag(tag)
+        end
+        for attrName, attrValue in scriptInstance:GetAttributes() do
+            newInstance:SetAttribute(attrName, attrValue)
+        end
+        for _, child in scriptInstance:GetChildren() do
+            child.Parent = newInstance
+        end
+        newInstance.Parent = scriptInstance.Parent
+        scriptInstance:Destroy()
+        scriptInstance = newInstance
     end
 
     if ir.modules and ir.modules[1] then
-        ir.modules[1].scriptType = desiredType
+        ir.modules[1].scriptType = "ModuleScript"
     end
 
     local out = Emitter.emit(ir.modules[1])
