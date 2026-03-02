@@ -295,12 +295,79 @@ function EditorTextUtils.autoDedentClosingBrace(text, cursorPos, indentText)
     return newText, newCursor, true
 end
 
+-- Given text that contains a newline at newlinePos, compute the desired indentation
+-- for the line following that newline based on the previous line's indent/content.
+-- Does not depend on cursor position at all.
+function EditorTextUtils.computeNewlineIndent(text, newlinePos, tabText)
+    text = text or ""
+    tabText = tabText or "    "
+    newlinePos = tonumber(newlinePos) or 0
+
+    if newlinePos < 1 or newlinePos > #text then
+        return ""
+    end
+
+    local lineStart = findLineStart(text, newlinePos)
+    local prevLine = text:sub(lineStart, newlinePos - 1)
+
+    local baseIndent = prevLine:match("^([ \t]*)") or ""
+    local trimmed = prevLine:match("^%s*(.-)%s*$") or ""
+
+    -- If the portion before the cursor is empty or whitespace-only (cursor was at
+    -- column 0 or within leading whitespace), inherit the indentation from the text
+    -- that follows the newline (the rest of the line being split).
+    if trimmed == "" then
+        local afterNewline = text:sub(newlinePos + 1)
+        local followingIndent = afterNewline:match("^([ \t]*)") or ""
+        if followingIndent ~= "" then
+            return followingIndent
+        end
+
+        -- If nothing follows either, try the last non-empty line above
+        local searchPos = lineStart - 1
+        while searchPos >= 1 do
+            local aboveStart = findLineStart(text, searchPos)
+            local aboveLine = text:sub(aboveStart, searchPos - 1)
+            local aboveTrimmed = aboveLine:match("^%s*(.-)%s*$") or ""
+            if aboveTrimmed ~= "" then
+                local aboveIndent = aboveLine:match("^([ \t]*)") or ""
+                local aboveNoComment = aboveTrimmed:gsub("//.*$", "")
+                aboveNoComment = aboveNoComment:match("^(.-)%s*$") or aboveNoComment
+                if aboveNoComment:sub(-1) == "{" then
+                    return aboveIndent .. tabText
+                end
+                return aboveIndent
+            end
+            if aboveStart <= 1 then
+                break
+            end
+            searchPos = aboveStart - 1
+        end
+
+        return baseIndent
+    end
+
+    local noComment = trimmed:gsub("//.*$", "")
+    noComment = noComment:match("^(.-)%s*$") or noComment
+
+    local desiredIndent = baseIndent
+    if noComment:sub(-1) == "{" then
+        desiredIndent = baseIndent .. tabText
+    end
+
+    return desiredIndent
+end
+
 -- If the user just inserted a newline, compute the indentation text that should be inserted at the new cursor.
 -- Pure helper: does not mutate text.
 function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newText, newCursor, tabText)
     prevText = prevText or ""
     newText = newText or ""
     tabText = tabText or "    "
+
+    if prevText == newText then
+        return ""
+    end
 
     local function normalizeCursor(text, cursorPos)
         if type(cursorPos) ~= "number" then
@@ -320,101 +387,88 @@ function EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, newTex
         return cursorPos
     end
 
-    prevCursor = normalizeCursor(prevText, prevCursor)
     newCursor = normalizeCursor(newText, newCursor)
-    if not prevCursor or not newCursor then
+    if not newCursor then
         return ""
     end
 
-    local function findSingleSplice(oldText, updatedText)
-        if oldText == updatedText then
-            return nil
+    -- Detect the inserted newline by finding the first difference between prevText and newText.
+    local oldLen = #prevText
+    local newLen = #newText
+
+    local prefixLen = 0
+    local minLen = math.min(oldLen, newLen)
+    while prefixLen < minLen do
+        local i = prefixLen + 1
+        if prevText:sub(i, i) ~= newText:sub(i, i) then
+            break
         end
-
-        local oldLen = #oldText
-        local newLen = #updatedText
-
-        local prefixLen = 0
-        local minLen = math.min(oldLen, newLen)
-        while prefixLen < minLen do
-            local i = prefixLen + 1
-            if oldText:sub(i, i) ~= updatedText:sub(i, i) then
-                break
-            end
-            prefixLen += 1
-        end
-
-        local oldEnd = oldLen
-        local newEnd = newLen
-        while oldEnd > prefixLen and newEnd > prefixLen do
-            if oldText:sub(oldEnd, oldEnd) ~= updatedText:sub(newEnd, newEnd) then
-                break
-            end
-            oldEnd -= 1
-            newEnd -= 1
-        end
-
-        local startPos = prefixLen + 1
-        local removedText = oldText:sub(startPos, oldEnd)
-        local insertedText = updatedText:sub(startPos, newEnd)
-        return startPos, removedText, insertedText
+        prefixLen += 1
     end
 
-    local insertedNewlinePos
-    local insertedLeadingWhitespace = ""
+    local oldEnd = oldLen
+    local newEnd = newLen
+    while oldEnd > prefixLen and newEnd > prefixLen do
+        if prevText:sub(oldEnd, oldEnd) ~= newText:sub(newEnd, newEnd) then
+            break
+        end
+        oldEnd -= 1
+        newEnd -= 1
+    end
 
-    if prevText ~= newText then
-        -- Text changed: detect a single-splice replacement that starts with '\n'.
-        local startPos, _removedText, insertedText = findSingleSplice(prevText, newText)
-        if type(insertedText) ~= "string" then
+    local startPos = prefixLen + 1
+    local insertedText = newText:sub(startPos, newEnd)
+
+    -- Must start with a newline
+    if type(insertedText) ~= "string" or insertedText:sub(1, 1) ~= "\n" then
+        -- Also handle \r\n
+        if type(insertedText) == "string" and insertedText:sub(1, 2) == "\r\n" then
+            startPos += 1 -- treat \r as part of old text, newline starts at \n
+        else
             return ""
         end
+    end
 
-        local newlinePrefix = insertedText:match("^\n([ \t]*)$")
-        if newlinePrefix == nil then
-            return ""
-        end
+    local insertedLeadingWhitespace = insertedText:match("^\r?\n([ \t]*)") or ""
+    local insertedNewlinePos = startPos
 
-        insertedLeadingWhitespace = newlinePrefix
-
-        -- Only insert auto-indent when cursor remains within the inserted newline segment.
-        local minCursor = startPos + 1
-        local maxCursor = startPos + 1 + #insertedLeadingWhitespace
-        if newCursor < minCursor or newCursor > maxCursor then
-            return ""
-        end
-
-        insertedNewlinePos = startPos
-    else
+    -- If cursor hasn't been updated yet (at or before the newline), defer to pending indent path.
+    -- The cursor must be AFTER the newline (insertedNewlinePos + 1 or later) for insertAtCursor
+    -- to place the indent correctly; otherwise it inserts before the newline.
+    if newCursor <= insertedNewlinePos then
         return ""
     end
 
-    -- Previous line is the line that ends at the inserted newline.
+    -- Find the line before the newline insertion (the "previous line")
     local lineStart = findLineStart(newText, insertedNewlinePos)
     local prevLine = newText:sub(lineStart, insertedNewlinePos - 1)
 
-    local leadingWhitespace = prevLine:match("^([ \t]*)") or ""
-    local trimmed = prevLine:match("^(.-)%s*$") or ""
+    -- Get the previous line's leading whitespace as base indent
+    local baseIndent = prevLine:match("^([ \t]*)") or ""
 
-    local tokens = Lexer.tokenize(newText:sub(1, insertedNewlinePos - 1))
-    local depth = 0
-    for _, token in tokens do
-        if token.type == "punctuation" then
-            if token.value == "{" then
-                depth += 1
-            elseif token.value == "}" then
-                depth = math.max(0, depth - 1)
-            end
-        end
+    -- Check if the previous line ends with an opening brace (after trimming whitespace/comments)
+    local trimmedPrev = prevLine:match("^%s*(.-)%s*$") or ""
+
+    -- Strip trailing single-line comment for brace detection
+    local noComment = trimmedPrev:gsub("//.*$", "")
+    noComment = noComment:match("^(.-)%s*$") or noComment
+
+    local opensBlock = noComment:sub(-1) == "{"
+    local desiredIndent = baseIndent
+    if opensBlock then
+        desiredIndent = baseIndent .. tabText
     end
 
-    local desiredIndent = string.rep(tabText, depth)
-
+    -- Subtract any whitespace already inserted by the TextBox
     if insertedLeadingWhitespace ~= "" then
-        if desiredIndent:sub(1, #insertedLeadingWhitespace) == insertedLeadingWhitespace then
+        if #desiredIndent > #insertedLeadingWhitespace
+            and desiredIndent:sub(1, #insertedLeadingWhitespace) == insertedLeadingWhitespace then
             return desiredIndent:sub(#insertedLeadingWhitespace + 1)
+        elseif desiredIndent == insertedLeadingWhitespace then
+            return ""
         end
-
+        -- TextBox inserted more than desired or different whitespace; replace
+        -- Return nothing — the existing whitespace is close enough
         return ""
     end
 
@@ -1255,6 +1309,11 @@ function EditorTextUtils.shouldAutoTriggerCompletions(text, cursorPos)
     end
 
     if linePrefix:match("[%a_][%w_]*$") then
+        return true
+    end
+
+    -- Trigger after "using " so namespace suggestions appear
+    if linePrefix:match("^%s*using%s+$") then
         return true
     end
 

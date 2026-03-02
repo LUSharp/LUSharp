@@ -691,24 +691,33 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
     local source = self.textBox.Text or ""
     local sourceLength = #source
 
-    local containerPos = self.codeContainer.AbsolutePosition
-    local containerSize = self.codeContainer.AbsoluteSize
+    -- Use scroller for stable screen-space bounds (not affected by scroll offset).
+    -- codeContainer.AbsolutePosition shifts with CanvasPosition inside a ScrollingFrame,
+    -- so using it directly would double-count the scroll offset.
+    local scrollerPos = self.scroller.AbsolutePosition
+    local scrollerSize = self.scroller.AbsoluteSize
     local canvas = self.scroller.CanvasPosition
+
+    -- Compute code area's fixed offset within the scroller canvas.
+    -- This formula works regardless of whether AbsolutePosition accounts for scroll:
+    -- if it does, canvas.X/Y cancel out; if it doesn't, canvas is 0 and the offset is direct.
+    local codeOffsetX = self.codeContainer.AbsolutePosition.X - scrollerPos.X + canvas.X
+    local codeOffsetY = self.codeContainer.AbsolutePosition.Y - scrollerPos.Y + canvas.Y
 
     local lineStarts = buildLineStarts(source)
 
     local function isInside(pointX, pointY)
-        return pointX >= (containerPos.X - HOVER_EDGE_TOLERANCE_PIXELS)
-            and pointY >= (containerPos.Y - HOVER_EDGE_TOLERANCE_PIXELS)
-            and pointX <= (containerPos.X + containerSize.X + HOVER_EDGE_TOLERANCE_PIXELS)
-            and pointY <= (containerPos.Y + containerSize.Y + HOVER_EDGE_TOLERANCE_PIXELS)
+        return pointX >= (scrollerPos.X - HOVER_EDGE_TOLERANCE_PIXELS)
+            and pointY >= (scrollerPos.Y - HOVER_EDGE_TOLERANCE_PIXELS)
+            and pointX <= (scrollerPos.X + scrollerSize.X + HOVER_EDGE_TOLERANCE_PIXELS)
+            and pointY <= (scrollerPos.Y + scrollerSize.Y + HOVER_EDGE_TOLERANCE_PIXELS)
     end
 
     local function resolveAtPoint(pointX, pointY)
-        local minX = containerPos.X
-        local minY = containerPos.Y
-        local maxX = containerPos.X + containerSize.X
-        local maxY = containerPos.Y + containerSize.Y
+        local minX = scrollerPos.X
+        local minY = scrollerPos.Y
+        local maxX = scrollerPos.X + scrollerSize.X
+        local maxY = scrollerPos.Y + scrollerSize.Y
 
         if pointX < minX then
             if (minX - pointX) <= HOVER_EDGE_TOLERANCE_PIXELS then
@@ -738,8 +747,12 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
             end
         end
 
-        local x = (pointX - containerPos.X) + canvas.X
-        local y = (pointY - containerPos.Y) + canvas.Y
+        -- Convert screen position to code content coordinates.
+        -- (pointX/Y - scrollerPos) gives viewport-relative position,
+        -- + canvas gives canvas-relative position,
+        -- - codeOffset gives code-area-relative position.
+        local x = (pointX - scrollerPos.X) + canvas.X - codeOffsetX
+        local y = (pointY - scrollerPos.Y) + canvas.Y - codeOffsetY
 
         if x < 0 or y < 0 then
             return nil
@@ -792,10 +805,10 @@ cursorPositionFromScreenPoint = function(self, screenPosition)
         "(mouse %d,%d | box %d,%d..%d,%d | inset %d,%d | tol %d)",
         math.floor(rawX),
         math.floor(rawY),
-        math.floor(containerPos.X),
-        math.floor(containerPos.Y),
-        math.floor(containerPos.X + containerSize.X),
-        math.floor(containerPos.Y + containerSize.Y),
+        math.floor(scrollerPos.X),
+        math.floor(scrollerPos.Y),
+        math.floor(scrollerPos.X + scrollerSize.X),
+        math.floor(scrollerPos.Y + scrollerSize.Y),
         math.floor(insetX),
         math.floor(insetY),
         HOVER_EDGE_TOLERANCE_PIXELS
@@ -1437,7 +1450,13 @@ function Editor.new(pluginObject, options)
             if self.onSourceChanged then
                 self.onSourceChanged(textBox.Text)
             end
-            self:hideCompletions()
+            local retrigger = self._retriggerAfterCompletion
+            self._retriggerAfterCompletion = false
+            if retrigger and self.options.intellisenseEnabled ~= false and self.onRequestCompletions then
+                self.onRequestCompletions()
+            else
+                self:hideCompletions()
+            end
             self:hideHoverInfo()
             return
         end
@@ -1454,7 +1473,11 @@ function Editor.new(pluginObject, options)
                 local synthKeyCode = Enum.KeyCode.Backspace
                 local synthHadSelection = EditorTextUtils.isSelectionDeleteSplice(lastKnownCursor, lastKnownSelection, synthStartPos)
 
-                if EditorTextUtils.shouldRepairWordDelete(synthKeyCode, synthHadSelection, synthRemovedText, synthInsertedText, false) then
+                -- Skip synthetic repair when removed text contains newlines
+                -- (multi-line selection delete, not a word delete)
+                local isMultiLineDelete = type(synthRemovedText) == "string" and synthRemovedText:find("\n") ~= nil
+
+                if not isMultiLineDelete and EditorTextUtils.shouldRepairWordDelete(synthKeyCode, synthHadSelection, synthRemovedText, synthInsertedText, false) then
                     local synthBeforeCursor = EditorTextUtils.resolveWordDeleteCursorFromSplice(
                         synthStartPos,
                         synthRemovedText,
@@ -1537,7 +1560,10 @@ function Editor.new(pluginObject, options)
                     and type(rawBeforeSelection) == "number"
                     and rawBeforeSelection >= 1
                     and rawBeforeSelection ~= beforeCursor
+                -- Don't force repair for multi-line deletions (selection deletes)
+                local fixIsMultiLine = type(fixRemovedText) == "string" and fixRemovedText:find("\n") ~= nil
                 local forceTokenRepair = not hadRealSelectionBeforeKey
+                    and not fixIsMultiLine
                     and type(fixRemovedText) == "string"
                     and #fixRemovedText > 1
                     and (
@@ -1706,55 +1732,29 @@ function Editor.new(pluginObject, options)
             self._skipEditorTransformsOnce = false
             self._pendingAutoIndent = nil
         else
-            local newText, newCursor, changed = EditorTextUtils.autoDedentClosingBrace(textBox.Text, textBox.CursorPosition, self.options.tabText)
-            if changed then
-                self._suppressTextChange = true
-                textBox.Text = newText
-                textBox.CursorPosition = newCursor
-                return
+            -- Only auto-dedent when a character was typed (text grew), not on deletions
+            if #textBox.Text > #prevText then
+                local newText, newCursor, changed = EditorTextUtils.autoDedentClosingBrace(textBox.Text, textBox.CursorPosition, self.options.tabText)
+                if changed then
+                    self._suppressTextChange = true
+                    textBox.Text = newText
+                    textBox.CursorPosition = newCursor
+                    return
+                end
             end
         end
 
-        local pendingIndent = false
-        if not skipEditorTransforms and self.options.autoIndent and prevText ~= textBox.Text then
-            local indent = EditorTextUtils.computeAutoIndentInsertion(prevText, prevCursor, textBox.Text, textBox.CursorPosition, self.options.tabText)
-            if indent ~= "" then
-                self._pendingAutoIndent = nil
-                self._suppressTextChange = true
-                insertAtCursor(textBox, indent)
-                return
-            end
+        self._pendingAutoIndent = nil
 
-            local startPos, _removedText, insertedText = findSingleSplice(prevText, textBox.Text)
-            if insertedText == "\n" then
-                self._pendingAutoIndent = {
-                    newText = textBox.Text,
-                    expectedCursor = startPos and (startPos + 1) or nil,
-                }
-                pendingIndent = true
-            else
-                self._pendingAutoIndent = nil
-            end
-        else
-            self._pendingAutoIndent = nil
-        end
-
-        if not pendingIndent then
-            self._lastText = textBox.Text
-            self._lastCursorPos = textBox.CursorPosition
-            self._lastSelectionStart = textBox.SelectionStart
-        end
+        self._lastText = textBox.Text
+        self._lastCursorPos = textBox.CursorPosition
+        self._lastSelectionStart = textBox.SelectionStart
 
         refresh(self)
         if self.onSourceChanged then
             self.onSourceChanged(textBox.Text)
         end
         self:hideHoverInfo()
-
-        if pendingIndent then
-            self:hideCompletions()
-            return
-        end
 
         if self.options.intellisenseEnabled == false or not self.onRequestCompletions then
             self:hideCompletions()
@@ -1805,35 +1805,48 @@ function Editor.new(pluginObject, options)
     end))
 
     table.insert(self._connections, textBox:GetPropertyChangedSignal("CursorPosition"):Connect(function()
-        if self._pendingAutoIndent and self.options.autoIndent then
-            local pending = self._pendingAutoIndent
-
-            if textBox.Text == pending.newText then
-                local atExpectedCursor = pending.expectedCursor == nil or textBox.CursorPosition == pending.expectedCursor
-                if atExpectedCursor then
-                    local indent = EditorTextUtils.computeAutoIndentInsertion(self._lastText, self._lastCursorPos, textBox.Text, textBox.CursorPosition, self.options.tabText)
-                    self._pendingAutoIndent = nil
-
-                    if indent ~= "" then
-                        self._suppressTextChange = true
-                        insertAtCursor(textBox, indent)
-                        return
-                    end
-
-                    self._lastText = textBox.Text
-                    self._lastCursorPos = textBox.CursorPosition
-            self._lastSelectionStart = textBox.SelectionStart
-                end
-            else
-                self._pendingAutoIndent = nil
-                self._lastText = textBox.Text
-                self._lastCursorPos = textBox.CursorPosition
-            self._lastSelectionStart = textBox.SelectionStart
-            end
-        elseif not self._pendingAutoIndent then
-            self._lastCursorPos = textBox.CursorPosition
-            self._lastSelectionStart = textBox.SelectionStart
+        -- Skip re-entrant calls from cursor restoration
+        if self._completionArrowNav then
+            self._completionArrowNav = false
+            return
         end
+
+        -- Detect Up/Down arrow keys by checking line changes while completions visible
+        local completionVisible = self.completionFrame and self.completionFrame.Visible
+        local completionCount = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
+
+        if completionVisible and completionCount > 0 then
+            local oldCursor = self._lastCursorPos
+            local newCursor = textBox.CursorPosition
+            local text = textBox.Text
+
+            if type(oldCursor) == "number" and oldCursor ~= newCursor and text == self._lastText then
+                -- Text unchanged + cursor moved = arrow key (not typing)
+                local oldLine, newLine = 1, 1
+                for i = 1, math.min(oldCursor - 1, #text) do
+                    if text:sub(i, i) == "\n" then oldLine = oldLine + 1 end
+                end
+                for i = 1, math.min(newCursor - 1, #text) do
+                    if text:sub(i, i) == "\n" then newLine = newLine + 1 end
+                end
+
+                if oldLine ~= newLine then
+                    local direction = newLine > oldLine and 1 or -1
+                    local nextIndex = EditorTextUtils.resolveNextCompletionIndex(self._activeCompletionIndex, completionCount, direction)
+                    self:_setActiveCompletionIndex(nextIndex)
+                    self:_showActiveCompletionInfo()
+
+                    -- Restore cursor position (sets guard to skip re-entrant call)
+                    self._completionArrowNav = true
+                    textBox.CursorPosition = oldCursor
+                    textBox.SelectionStart = self._lastSelectionStart or -1
+                    return
+                end
+            end
+        end
+
+        self._lastCursorPos = textBox.CursorPosition
+        self._lastSelectionStart = textBox.SelectionStart
 
         updateStatus(self)
         updateCaretPosition(self)
@@ -1852,6 +1865,13 @@ function Editor.new(pluginObject, options)
         stopCaretBlink(self)
     end))
 
+    table.insert(self._connections, scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+        if not self._completionArrowNav then
+            self:hideCompletions()
+        end
+        self:hideHoverInfo()
+    end))
+
     self._completionAcceptActionName = COMPLETION_ACCEPT_ACTION_NAME
     pcall(function() ContextActionService:UnbindAction(self._completionAcceptActionName) end)
     local _casBindOk = pcall(function() ContextActionService:BindActionAtPriority(self._completionAcceptActionName, function(_actionName, inputState, inputObject)
@@ -1864,6 +1884,12 @@ function Editor.new(pluginObject, options)
         end
 
         local keyCode = inputObject and inputObject.KeyCode or nil
+
+        -- Arrow keys: Pass through (completion navigation handled by CursorPosition handler)
+        if keyCode == Enum.KeyCode.Up or keyCode == Enum.KeyCode.Down then
+            return Enum.ContextActionResult.Pass
+        end
+
         local isCompletionAcceptKey = keyCode == Enum.KeyCode.Tab or keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter
         local ctrlDown = resolveCtrlModifierDown(self, inputObject)
         local altDown = resolveAltModifierDown(self, inputObject)
@@ -1974,8 +2000,59 @@ function Editor.new(pluginObject, options)
             return Enum.ContextActionResult.Sink
         end
 
+        -- Handle Enter key: insert newline + auto-indent ourselves
+        if (keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter)
+            and self.textBox:IsFocused() and self.options.autoIndent then
+            local text = self.textBox.Text
+            local cursor = self.textBox.CursorPosition
+            if cursor < 1 then cursor = #text + 1 end
+
+            local startPos = cursor
+            local endPos = cursor
+            if self.textBox.SelectionStart ~= -1 and self.textBox.SelectionStart ~= cursor then
+                startPos = math.min(cursor, self.textBox.SelectionStart)
+                endPos = math.max(cursor, self.textBox.SelectionStart)
+            end
+
+            -- Build the text before cursor (what the previous line looks like)
+            local before = text:sub(1, startPos - 1)
+            local after = text:sub(endPos)
+
+            -- Compute indent from the line before the cursor
+            local prevLineContent = before:match("([^\n]*)$") or ""
+            local baseIndent = prevLineContent:match("^([ \t]*)") or ""
+            local trimmed = prevLineContent:match("^%s*(.-)%s*$") or ""
+            local noComment = trimmed:gsub("//.*$", "")
+            noComment = noComment:match("^(.-)%s*$") or noComment
+
+            local desiredIndent = baseIndent
+            if noComment:sub(-1) == "{" then
+                desiredIndent = baseIndent .. (self.options.tabText or "    ")
+            end
+
+            local newText = before .. "\n" .. desiredIndent .. after
+            self._suppressTextChange = true
+            self.textBox.Text = newText
+            self.textBox.CursorPosition = startPos + 1 + #desiredIndent
+            self.textBox.SelectionStart = -1
+
+            self._lastText = self.textBox.Text
+            self._lastCursorPos = self.textBox.CursorPosition
+            self._lastSelectionStart = self.textBox.SelectionStart
+
+            refresh(self)
+            self:hideCompletions()
+            updateCaretPosition(self)
+
+            if self.onSourceChanged then
+                self.onSourceChanged(self.textBox.Text)
+            end
+
+            return Enum.ContextActionResult.Sink
+        end
+
         return Enum.ContextActionResult.Pass
-    end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Tab, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.Delete, Enum.KeyCode.Backspace) end)
+    end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Tab, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.Delete, Enum.KeyCode.Backspace, Enum.KeyCode.Up, Enum.KeyCode.Down) end)
 
     table.insert(self._connections, UserInputService.InputChanged:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseMovement then
@@ -2252,15 +2329,17 @@ function Editor.new(pluginObject, options)
 
         local currentSource = tostring(sourceLabel or "?")
         local lastSource = tostring(self._lastPrimaryMouseEventSource or "")
-        local shouldDedupe = (lastSource ~= "" and lastSource ~= currentSource)
-            and EditorTextUtils.shouldIgnoreDuplicatePrimaryMouseDown(
-                self._lastPrimaryMouseEventAt,
-                self._lastPrimaryMouseEventCursor,
-                now,
-                clickCursorPos,
-                SMART_PRIMARY_MOUSE_DEDUPE_SECONDS,
-                SMART_PRIMARY_MOUSE_DEDUPE_CURSOR_DELTA
-            )
+        local shouldDedupe = false
+        if lastSource ~= "" and lastSource ~= currentSource then
+            local lastAt = self._lastPrimaryMouseEventAt
+            if type(lastAt) == "number" then
+                local age = now - lastAt
+                -- Cross-source events within the dedupe window are always from the same
+                -- physical click (humans can't click twice in <50ms). Skip cursor delta
+                -- check because different sources may use different coordinate spaces.
+                shouldDedupe = age >= 0 and age <= SMART_PRIMARY_MOUSE_DEDUPE_SECONDS
+            end
+        end
 
         if shouldDedupe then
             setSelectionDebug(self, string.format("SelDbg dedupe src=%s prev=%s click=%s", currentSource, lastSource, tostring(clickCursorPos)), true)
@@ -2535,7 +2614,7 @@ function Editor.new(pluginObject, options)
                     normalizeClickCursor,
                     currentCursor,
                     #(self.textBox.Text or ""),
-                    true
+                    false
                 )
                 if type(collapsePos) ~= "number" then
                     return
@@ -2742,35 +2821,6 @@ function Editor.new(pluginObject, options)
                 end)
             else
                 self.onRequestCompletions()
-            end
-        end
-
-        if input.KeyCode == Enum.KeyCode.Down or input.KeyCode == Enum.KeyCode.Up then
-            local completionVisible = self.completionFrame and self.completionFrame.Visible
-            local completionCount = type(self._visibleCompletions) == "table" and #self._visibleCompletions or 0
-            if completionVisible and completionCount > 0 then
-                local direction = input.KeyCode == Enum.KeyCode.Down and 1 or -1
-                local nextIndex = EditorTextUtils.resolveNextCompletionIndex(self._activeCompletionIndex, completionCount, direction)
-                self:_setActiveCompletionIndex(nextIndex)
-                self:_showActiveCompletionInfo()
-
-                local activeCursor = self._completionActiveCursor
-                local activeSelection = self._completionActiveSelection
-
-                task.defer(function()
-                    if not self.textBox or not self.textBox.Parent then
-                        return
-                    end
-
-                    if type(activeCursor) == "number" and self.textBox.CursorPosition ~= activeCursor then
-                        self.textBox.CursorPosition = activeCursor
-                    end
-
-                    if type(activeSelection) == "number" and self.textBox.SelectionStart ~= activeSelection then
-                        self.textBox.SelectionStart = activeSelection
-                    end
-                end)
-                return
             end
         end
 
@@ -3298,6 +3348,7 @@ function Editor:_applyCompletion(label, activeCursorPos)
 
     self._pendingAutoIndent = nil
     self._suppressTextChange = true
+    self._retriggerAfterCompletion = true
     replaceTextRange(self.textBox, startPos, endPos, label)
     updateCaretPosition(self)
 end
