@@ -99,16 +99,23 @@ All nodes implement `ILuaRenderable` with a `Render(LuaWriter writer)` method fo
 
 | C# Concept | Luau Output |
 |-------------|-------------|
-| Class with instance fields | `local T = {}` table with `.new()` constructor |
-| Static members | Class-level table entries |
+| Class with instance fields | `local T = {}` with `type self`, `export type`, `.new()` constructor |
+| Struct | Same as class — table with `.new()`, typed fields in `type self` |
+| Enum | `local E = ({ ['A'] = "A"; })` + `export type E = keyof<typeof(E)>` |
+| Static members | Class-level table entries (dot syntax) |
+| Instance methods | Dot syntax with explicit `self: ClassName` parameter |
 | Properties | `get_Prop()` / `set_Prop()` methods |
+| Object initializer `new() { F = v }` | `.new()` + field assignments |
 | `List<T>` | `{1, 2, 3}` numeric table |
 | `Dictionary<K,V>` | `{key = val}` table |
+| `foreach (var x in list)` | `for _, x in list do` |
+| `game.GetService<T>()` | `game:GetService("T")` |
+| `array[0]` | `array[1]` (0→1 index conversion) |
 | `Console.WriteLine()` | `print()` |
 | String interpolation `$"..."` | Backtick string `` `...` `` |
 | `string` / `int` / `float` / `bool` | `string` / `number` / `number` / `boolean` |
-| `void` | `nil` |
-| `object` | `table` |
+| `void` | `()` |
+| `object` | `any` |
 
 ## Rojo Integration
 
@@ -139,7 +146,52 @@ Provides C# stub types for the Roblox API so users get IntelliSense in their IDE
 
 `LUSharpApiGenerator` reads the Roblox API JSON dump and generates C# stub classes with correct inheritance, properties, methods, and events. Run it to regenerate stubs when the Roblox API changes.
 
-## Key Files
+## Studio Plugin Pipeline
+
+The Roblox Studio plugin has its own independent C# → Luau pipeline written in Lua:
+
+```
+C# source (StringValue inside tagged script)
+        │
+        ▼
+   ┌────────┐    Tokenizer — keywords, identifiers, literals, operators
+   │ Lexer  │
+   └───┬────┘
+       │
+       ▼
+  ┌────────┐    Recursive descent — classes, structs, enums, methods, fields
+  │ Parser │    Produces AST with .classes[], .structs[], .enums[]
+  └───┬────┘
+      │
+      ▼
+ ┌─────────┐   AST → IR lowering — method bodies, control flow, expressions
+ │ Lowerer │   Handles foreach, GetService<T>, index conversion, namecall
+ └────┬────┘
+      │
+      ▼
+ ┌─────────┐   IR → Luau text with --!strict type annotations
+ │ Emitter │   type self blocks, export type, typed params/returns
+ └────┬────┘
+      │
+      ▼
+ --!strict Luau source (written to script.Source)
+```
+
+### Plugin Key Files
+
+| File | Purpose |
+|------|---------|
+| `plugin/src/init.server.lua` | Plugin entry — toolbar, editor/project wiring, build orchestration |
+| `plugin/src/Editor.lua` | Full C# code editor (syntax highlighting, cursor, diagnostics) |
+| `plugin/src/IntelliSense.lua` | Completions, hover, diagnostics, type resolution (~5000 lines) |
+| `plugin/src/Parser.lua` | C# parser — classes, structs, enums, methods, fields |
+| `plugin/src/Lowerer.lua` | AST → IR lowering (method bodies, control flow) |
+| `plugin/src/Emitter.lua` | IR → `--!strict` Luau with type annotations |
+| `plugin/src/ProjectView.lua` | Tree view widget for LUSharp scripts |
+| `plugin/src/ErrorList.lua` | Dockable error list with severity filtering |
+| `plugin/src/ScriptManager.lua` | CRUD for LUSharp-tagged scripts |
+
+## CLI Key Files
 
 | File | Purpose |
 |------|---------|

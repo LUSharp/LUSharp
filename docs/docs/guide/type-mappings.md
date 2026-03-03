@@ -19,6 +19,14 @@ LUSharp maps C# types to their Luau equivalents during transpilation. This page 
 !!! note
     Luau has a single `number` type that represents all numeric values. C# integer and floating-point types all map to `number`.
 
+## User-Defined Types
+
+| C# Type | Luau Output |
+|---------|-------------|
+| `class MyClass` | `local MyClass = {}` with `type self`, `export type`, `.new()` constructor |
+| `struct MyStruct` | Same as class — table with `.new()`, typed fields in `type self` |
+| `enum MyEnum` | `local MyEnum = ({ ['A'] = "A"; })` with `export type MyEnum = keyof<typeof(MyEnum)>` |
+
 ## Collection Types
 
 | C# Type | Luau Type | Example |
@@ -150,6 +158,22 @@ Instance types are created with `Instance.new()` in Luau:
 | `??` | `or` |
 | `?.` | `and` chaining |
 
+## Service Access
+
+| C# | Luau |
+|----|------|
+| `game.GetService<Players>()` | `game:GetService("Players")` |
+| `game.GetService<Lighting>()` | `game:GetService("Lighting")` |
+
+## Array Indexing
+
+LUSharp automatically converts 0-based C# indices to 1-based Luau indices:
+
+| C# | Luau |
+|----|------|
+| `items[0]` | `items[1]` |
+| `items[i]` | `items[i + 1]` |
+
 ## Control Flow
 
 | C# | Luau |
@@ -164,3 +188,16 @@ Instance types are created with `Instance.new()` in Luau:
 
 !!! note
     Luau supports `continue` natively, so C# `continue` maps directly.
+
+## Type Annotations
+
+Generated Luau uses `--!strict` mode with full type annotations:
+
+| C# | Luau Type Annotation |
+|----|---------------------|
+| `string field` | `field: string` in `type self` |
+| `int field` | `field: number` in `type self` |
+| Uninitialized field (`= nil`) | `field: string?` (nullable) |
+| Method param `string name` | `name: string` |
+| Method return `int` | `(): number` |
+| Cross-script reference | `: any` (forward-declared) |

@@ -231,6 +231,90 @@ Static members become table-level entries, not instance fields.
     end
     ```
 
+## Enums
+
+C# enums are transpiled to string-valued frozen tables with a `keyof<typeof()>` export type.
+
+=== "C#"
+
+    ```csharp
+    public enum GameState
+    {
+        Idle,
+        Running,
+        Paused
+    }
+    ```
+
+=== "Generated Luau"
+
+    ```lua
+    local GameState = ({
+        ['Idle'] = "Idle";
+        ['Running'] = "Running";
+        ['Paused'] = "Paused";
+    })
+
+    export type GameState = keyof<typeof(GameState)>
+    ```
+
+Access enum values with dot syntax: `GameState.Running`.
+
+## Structs
+
+Structs work like classes — they get a `.new()` constructor and typed fields.
+
+=== "C#"
+
+    ```csharp
+    public struct PlayerData
+    {
+        public string Name;
+        public int Score;
+    }
+    ```
+
+=== "Generated Luau"
+
+    ```lua
+    type PlayerData_self = {
+        Name: string?;
+        Score: number?;
+    }
+
+    local PlayerData = {}
+    PlayerData.__index = PlayerData
+
+    export type PlayerData = typeof(setmetatable({} :: PlayerData_self, PlayerData))
+
+    function PlayerData.new(): PlayerData
+        local self = setmetatable({} :: PlayerData_self, PlayerData)
+        return self
+    end
+    ```
+
+### Object Initializers
+
+Use C# object initializer syntax to set fields on creation:
+
+=== "C#"
+
+    ```csharp
+    PlayerData data = new()
+    {
+        Name = "Alice",
+        Score = 100
+    };
+    ```
+
+=== "Generated Luau"
+
+    ```lua
+    local data = PlayerData.new()
+    data.Name = "Alice"
+    data.Score = 100
+    ```
+
 ## Collections
 
 ### Lists

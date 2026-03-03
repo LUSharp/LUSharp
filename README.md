@@ -12,10 +12,16 @@ LUSharp includes a Roblox Studio plugin with a built-in C# editor, real-time Int
 
 - **C# Editor** — Syntax-highlighted editor with auto-indent, word delete, and tab completion
 - **IntelliSense** — Real-time completions, hover info, and diagnostics with C# error codes (CS0176, CS0120, CS1061)
+- **`--!strict` Output** — Generated Luau uses `--!strict` with full type annotations (`type self`, `export type`, typed parameters and returns)
+- **Enums & Structs** — Full support for C# enums (string-valued) and structs with IntelliSense, hover icons, and completions
+- **Object Initializers** — `new() { Field = value }` syntax with field completions
 - **Static/Instance Validation** — Enforces correct `.` vs `:` call syntax with compiler errors
 - **Cross-Script Resolution** — Automatic dependency resolution between scripts via shared runtime registry
+- **Generic `GetService<T>`** — `game.GetService<Players>()` transpiles to `game:GetService("Players")`
+- **0-to-1 Index Conversion** — Array indices automatically adjusted for Luau's 1-based indexing
 - **Project View** — Tree view of all LUSharp scripts with build status, rename, delete, and create
-- **Build System** — Single-script or build-all compilation with error reporting
+- **Error List** — Dockable error list window with severity filtering and click-to-navigate
+- **Build System** — Single-script or build-all compilation with error and warning reporting
 - **Roblox API Awareness** — Completions and validation for Roblox services, instances, and enums
 
 ### Plugin Install
@@ -75,21 +81,48 @@ rojo serve
 ### C# Input
 
 ```csharp
+using System;
+using System.Collections.Generic;
+using Roblox.Classes;
+
 namespace Game.Server
 {
-    public class Helper
+    public class GameScript
     {
-        public static void DoStuff() { print("static call"); }
-        public void DoInstanceStuff() { print("instance call"); }
-    }
+        public enum State
+        {
+            Idle,
+            Running,
+            Paused
+        }
 
-    public class Main
-    {
+        public struct PlayerData
+        {
+            public string Name;
+            public int Score;
+        }
+
         public static void Main()
         {
-            Helper.DoStuff();           // emits: Helper.DoStuff()
-            Helper helper = new();
-            helper.DoInstanceStuff();   // emits: helper:DoInstanceStuff()
+            PlayerData data = new()
+            {
+                Name = "Alice",
+                Score = 100
+            };
+
+            Console.WriteLine($"Player: {data.Name}, Score: {data.Score}");
+
+            var items = new List<int>() { 10, 20, 30 };
+            foreach (var item in items)
+            {
+                print(item);
+            }
+
+            var players = game.GetService<Players>();
+            players.PlayerAdded.Connect((Player p) =>
+            {
+                print($"{p.DisplayName} joined!");
+            });
         }
     }
 }
@@ -98,29 +131,53 @@ namespace Game.Server
 ### Generated Luau
 
 ```lua
-local __r = require(script.Parent:FindFirstChild("_LUSharpRuntime"))
+--!strict
+-- Compiled by LUSharp (do not edit)
 
-local Helper = {}
-function Helper.DoStuff()
-    print("static call")
-end
-function Helper.new()
-    local self = setmetatable({}, { __index = Helper })
+local Players = game:GetService("Players")
+
+local State = ({
+    ['Idle'] = "Idle";
+    ['Running'] = "Running";
+    ['Paused'] = "Paused";
+})
+
+export type State = keyof<typeof(State)>
+
+type PlayerData_self = {
+    Name: string?;
+    Score: number?;
+}
+
+local PlayerData = {}
+PlayerData.__index = PlayerData
+
+export type PlayerData = typeof(setmetatable({} :: PlayerData_self, PlayerData))
+
+function PlayerData.new(): PlayerData
+    local self = setmetatable({} :: PlayerData_self, PlayerData)
     return self
 end
-function Helper:DoInstanceStuff()
-    print("instance call")
+
+local GameScript = {}
+GameScript.__index = GameScript
+
+export type GameScript = typeof(setmetatable({}, GameScript))
+
+function GameScript.Main()
+    local data = PlayerData.new()
+    data.Name = "Alice"
+    data.Score = 100
+    print(`Player: {data.Name}, Score: {data.Score}`)
+    local items = { 10, 20, 30 }
+    for _, item in items do
+        print(item)
+    end
+    local players = Players
+    players.PlayerAdded:Connect(function(p) print(`{p.DisplayName} joined!`) end)
 end
 
-local Main = {}
-function Main.Main()
-    Helper.DoStuff()
-    local helper = Helper.new()
-    helper:DoInstanceStuff()
-end
-
-__r.register("Main", Main)
-Main.Main()
+return GameScript
 ```
 
 ## Project Structure
@@ -180,12 +237,17 @@ When scripts reference classes from other scripts, LUSharp generates a shared `_
 
 | C# | Luau |
 |----|------|
-| Class with fields | `local T = {}` table with `.new()` constructor |
+| Class with fields | `local T = {}` table with `.new()` constructor, `type self` block, `export type` |
+| Struct | Same as class — table with `.new()`, typed fields |
+| Enum | `local E = ({ ['A'] = "A"; })` with `export type E = keyof<typeof(E)>` |
 | Static members | Class-level table entries (dot syntax) |
-| Instance members | Colon syntax with implicit `self` |
+| Instance members | Dot syntax with explicit `self: ClassName` parameter |
 | Properties | `get_Prop()` / `set_Prop()` methods |
 | `List<T>` | `{1, 2, 3}` numeric table |
 | `Dictionary<K,V>` | `{key = val}` table |
+| `foreach (var x in list)` | `for _, x in list do` |
+| `game.GetService<T>()` | `game:GetService("T")` |
+| `array[0]` | `array[1]` (automatic 0→1 index conversion) |
 | `Console.WriteLine()` | `print()` |
 | String interpolation `$"..."` | Backtick string `` `...` `` |
 | `string` / `int` / `float` / `bool` | `string` / `number` / `number` / `boolean` |
@@ -206,9 +268,18 @@ When scripts reference classes from other scripts, LUSharp generates a shared `_
 - [x] Real-time IntelliSense and diagnostics
 - [x] Static/instance call validation (CS0176, CS0120)
 - [x] Cross-script dependency resolution
+- [x] Enum support (string-valued, `keyof<typeof()>` export)
+- [x] Struct support (typed fields, constructors, methods)
+- [x] Object initializer syntax (`new() { Field = value }`)
+- [x] `--!strict` Luau output with full type annotations
+- [x] Generic `GetService<T>()` transpilation
+- [x] 0-based to 1-based index conversion
+- [x] `foreach` to `for _, x in` conversion
+- [x] Error List window with severity filtering
+- [x] Warning squiggles in editor
 - [ ] Full method body transpilation
 - [ ] `async`/`await` to coroutine conversion
-- [ ] Enum and interface support
+- [ ] Interface support
 - [ ] Watch mode (`lusharp build --watch`)
 - [ ] Package system for community Roblox API extensions
 
@@ -224,7 +295,7 @@ Contributions are welcome! Feel free to open an issue or pull request.
 ### Building from Source
 
 ```bash
-git clone https://github.com/yourusername/LUSharp.git
+git clone https://github.com/LUSharp/LUSharp.git
 cd LUSharp
 dotnet build
 dotnet test
