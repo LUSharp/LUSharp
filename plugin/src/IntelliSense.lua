@@ -696,6 +696,13 @@ local function resolveInstanceFromExpr(expr)
             if ok and child then
                 return child
             end
+            -- Handle navigation properties (Parent)
+            if expr.name == "Parent" then
+                local ok2, parent = pcall(function() return parentInstance.Parent end)
+                if ok2 and parent then
+                    return parent
+                end
+            end
         end
         return nil
     end
@@ -1335,9 +1342,16 @@ local function resolveScriptInstanceFromPath(path, scriptInstance)
     if parts[1] ~= "script" and parts[1] ~= "this" then return nil end
     local current = scriptInstance
     for i = 2, #parts do
-        local ok, child = pcall(function() return current:FindFirstChild(parts[i]) end)
-        if not ok or not child then return nil end
-        current = child
+        local segment = parts[i]
+        if segment == "Parent" then
+            local ok, parent = pcall(function() return current.Parent end)
+            if not ok or not parent then return nil end
+            current = parent
+        else
+            local ok, child = pcall(function() return current:FindFirstChild(segment) end)
+            if not ok or not child then return nil end
+            current = child
+        end
     end
     return current
 end
@@ -2363,20 +2377,25 @@ local function inferExprTypeFromTokens(tokens, endIndex, symbolTypes)
 
             local member = findMemberInType(objType, expr.name)
             if member then
-                if member.kind == "method" then
-                    return member.returnType
+                local memberType = member.kind == "method" and member.returnType or member.type
+
+                -- If member type is generic Instance, try game hierarchy for specific type
+                local stripped = memberType and memberType:gsub("%?$", "") or nil
+                if stripped == "Instance" and _currentScriptInstance and isInstanceDerived(objType) then
+                    local resolved = resolveInstanceFromExpr(expr)
+                    if resolved then
+                        return resolved.ClassName
+                    end
                 end
-                return member.type
+
+                return memberType
             end
 
             -- Fallback: resolve child instance from game hierarchy
             if _currentScriptInstance and isInstanceDerived(objType) then
-                local parentInstance = resolveInstanceFromExpr(expr.object)
-                if parentInstance then
-                    local ok, child = pcall(function() return parentInstance:FindFirstChild(expr.name) end)
-                    if ok and child then
-                        return child.ClassName
-                    end
+                local resolved = resolveInstanceFromExpr(expr)
+                if resolved then
+                    return resolved.ClassName
                 end
             end
 
@@ -3442,6 +3461,24 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
             if objectType then
                 local member = findMemberInType(objectType, identifier)
                 if member then
+                    -- If member type is generic Instance, try game hierarchy for specific type
+                    if _currentScriptInstance and isInstanceDerived(objectType) then
+                        local memberType = member.kind == "method" and member.returnType or member.type
+                        local stripped = memberType and memberType:gsub("%?$", "") or nil
+                        if stripped == "Instance" then
+                            local pathRoot = objectExprSource:match("([%a_][%w_.]*)%s*$")
+                            if pathRoot then
+                                local fullPath = pathRoot .. "." .. identifier
+                                local resolved = resolveScriptInstanceFromPath(fullPath, _currentScriptInstance)
+                                if resolved then
+                                    local specificMember = {}
+                                    for k, v in pairs(member) do specificMember[k] = v end
+                                    specificMember.type = resolved.ClassName
+                                    return buildHoverInfoFromMember(objectType, identifier, specificMember)
+                                end
+                            end
+                        end
+                    end
                     return buildHoverInfoFromMember(objectType, identifier, member)
                 end
             end
@@ -3626,6 +3663,7 @@ function IntelliSense.getHoverInfo(source, cursorPos, opts)
 
     opts = opts or {}
     local currentScriptInstance = opts.currentScript
+    _currentScriptInstance = currentScriptInstance
     ensureUsingsResolved(source, currentScriptInstance)
 
     local diagnosticAtCursor = getDiagnosticAtCursor(source, cursorPos, opts.diagnostics)

@@ -598,12 +598,23 @@ local function measureLineHeight(textSize, font)
 end
 
 local function caretShouldShow(textBox)
-    if not textBox or not textBox:IsFocused() then
-        return false
+    if not textBox then
+        return false, false
     end
 
+    local focused = textBox:IsFocused()
     local sel = textBox.SelectionStart
-    return sel == -1 or sel == textBox.CursorPosition
+    local noSelection = sel == -1 or sel == textBox.CursorPosition
+
+    if focused and noSelection then
+        return true, true -- visible and should blink
+    end
+
+    if not focused and noSelection then
+        return true, false -- visible but static (unfocused)
+    end
+
+    return false, false
 end
 
 local function computeCaretLocalPosition(text, cursorPos, textSize, lineHeight)
@@ -631,12 +642,50 @@ local function computeCaretLocalPosition(text, cursorPos, textSize, lineHeight)
     return x, y
 end
 
+local function ensureCaretHorizontallyVisible(self, caretX)
+    if not self.scroller then return end
+    local viewWidth = self.codeContainer and self.codeContainer.AbsoluteSize.X or 0
+    if viewWidth <= 0 then return end
+    local canvasX = self.scroller.CanvasPosition.X
+    local margin = 40
+    local newX = canvasX
+    if caretX - canvasX > viewWidth - margin then
+        newX = caretX - viewWidth + margin
+    elseif caretX - canvasX < margin and canvasX > 0 then
+        newX = math.max(0, caretX - margin)
+    end
+    if newX ~= canvasX then
+        self.scroller.CanvasPosition = Vector2.new(newX, self.scroller.CanvasPosition.Y)
+    end
+end
+
+local function ensureCaretVerticallyVisible(self, caretY)
+    if not self.scroller then return end
+    local lineHeight = self.options and self.options.lineHeight or 18
+    local viewHeight = self.scroller.AbsoluteSize.Y
+    if viewHeight <= 0 then return end
+    local canvasY = self.scroller.CanvasPosition.Y
+    local caretBottom = caretY + lineHeight
+    local newY = canvasY
+    if caretBottom > canvasY + viewHeight then
+        newY = caretBottom - viewHeight
+    elseif caretY < canvasY then
+        newY = caretY
+    end
+    if newY ~= canvasY then
+        self.scroller.CanvasPosition = Vector2.new(self.scroller.CanvasPosition.X, math.max(0, newY))
+    end
+end
+
 local function updateCaretPosition(self)
     if not self.caret or not self.textBox then
         return
     end
 
     local x, y = computeCaretLocalPosition(self.textBox.Text, self.textBox.CursorPosition, self.options.textSize, self.options.lineHeight)
+
+    ensureCaretHorizontallyVisible(self, x)
+    ensureCaretVerticallyVisible(self, y)
 
     self.caret.Position = UDim2.new(0, x, 0, y)
     self.caret.Size = UDim2.new(0, 1, 0, self.options.lineHeight)
@@ -661,9 +710,16 @@ local function startCaretBlink(self)
         while self._caretBlinkToken == token and self.caret and self.textBox do
             updateCaretPosition(self)
 
-            if caretShouldShow(self.textBox) then
+            local show, shouldBlink = caretShouldShow(self.textBox)
+            if show and shouldBlink then
                 self.caret.Visible = visible
+                self.caret.BackgroundTransparency = 0
                 visible = not visible
+            elseif show then
+                -- Unfocused: show static, slightly dimmed caret
+                self.caret.Visible = true
+                self.caret.BackgroundTransparency = 0.5
+                visible = true
             else
                 self.caret.Visible = false
                 visible = true
@@ -1033,13 +1089,33 @@ local function refresh(self)
     local lineCount = countLines(source)
     local contentHeight = math.max(self.scroller.AbsoluteSize.Y, (lineCount * self.options.lineHeight) + 8)
 
-    self.textBox.Size = UDim2.new(1, 0, 0, contentHeight)
-    self.overlay.Size = UDim2.new(1, 0, 0, contentHeight)
+    -- Calculate max line width for horizontal scrolling
+    local maxLineWidth = 0
+    for line in source:gmatch("[^\n]+") do
+        local measured = TextService:GetTextSize(line, self.options.textSize, Enum.Font.Code, Vector2.new(100000, 100000))
+        if measured.X > maxLineWidth then
+            maxLineWidth = measured.X
+        end
+    end
+    local scrollerWidth = self.scroller.AbsoluteSize.X
+    local totalContentWidth = math.max(scrollerWidth, gutterWidth + maxLineWidth + 40)
+
+    self.textBox.Size = UDim2.new(0, maxLineWidth + 40, 0, contentHeight)
+    self.overlay.Size = UDim2.new(0, maxLineWidth + 40, 0, contentHeight)
+    if self.selectionLayer then
+        self.selectionLayer.Size = UDim2.new(0, maxLineWidth + 40, 0, contentHeight)
+    end
+    if self.diagnosticLayer then
+        self.diagnosticLayer.Size = UDim2.new(0, maxLineWidth + 40, 0, contentHeight)
+    end
     self.lineNumbers.Size = UDim2.new(0, math.max(0, gutterWidth - 6), 0, contentHeight)
+    if self.gutterBg then
+        self.gutterBg.Size = UDim2.new(0, gutterWidth, 0, contentHeight)
+    end
     self.codeContainer.Position = UDim2.new(0, gutterWidth, 0, 4)
-    self.codeContainer.Size = UDim2.new(1, -gutterWidth, 0, contentHeight)
-    self.content.Size = UDim2.new(1, -4, 0, contentHeight)
-    self.scroller.CanvasSize = UDim2.new(0, 0, 0, contentHeight)
+    self.codeContainer.Size = UDim2.new(0, maxLineWidth + 40, 0, contentHeight)
+    self.content.Size = UDim2.new(0, totalContentWidth, 0, contentHeight)
+    self.scroller.CanvasSize = UDim2.new(0, totalContentWidth, 0, contentHeight)
 
     updateStatus(self)
     if self._updateSelectionHighlight then
@@ -1169,6 +1245,16 @@ function Editor.new(pluginObject, options)
     local lineNumbers = Instance.new("TextLabel")
     lineNumbers.Name = "LineNumbers"
     lineNumbers.Size = UDim2.new(0, self.options.gutterWidth - 6, 1, 0)
+    local gutterBg = Instance.new("Frame")
+    gutterBg.Name = "GutterBg"
+    gutterBg.Size = UDim2.new(0, self.options.gutterWidth, 1, 0)
+    gutterBg.Position = UDim2.new(0, 0, 0, 0)
+    gutterBg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    gutterBg.BorderSizePixel = 0
+    gutterBg.ZIndex = 8
+    gutterBg.Parent = content
+    self.gutterBg = gutterBg
+
     lineNumbers.Position = UDim2.new(0, 4, 0, 4)
     lineNumbers.BackgroundTransparency = 1
     lineNumbers.BorderSizePixel = 0
@@ -1181,6 +1267,7 @@ function Editor.new(pluginObject, options)
     lineNumbers.TextWrapped = false
     lineNumbers.RichText = false
     lineNumbers.Text = "1"
+    lineNumbers.ZIndex = 9
     lineNumbers.Parent = content
     self.lineNumbers = lineNumbers
 
@@ -1192,6 +1279,7 @@ function Editor.new(pluginObject, options)
     codeContainer.BorderSizePixel = 0
     codeContainer.Parent = content
     self.codeContainer = codeContainer
+    self._hScrollOffset = 0
 
     local selectionLayer = Instance.new("Frame")
     selectionLayer.Name = "Selection"
@@ -2000,6 +2088,15 @@ function Editor.new(pluginObject, options)
             self:hideCompletions()
         end
         self:hideHoverInfo()
+
+        -- Keep gutter fixed horizontally while scrolling
+        local canvasX = scroller.CanvasPosition.X
+        if self.lineNumbers then
+            self.lineNumbers.Position = UDim2.new(0, 4 + canvasX, 0, 4)
+        end
+        if self.gutterBg then
+            self.gutterBg.Position = UDim2.new(0, canvasX, 0, 0)
+        end
     end))
 
     self._completionAcceptActionName = COMPLETION_ACCEPT_ACTION_NAME
@@ -2341,12 +2438,21 @@ function Editor.new(pluginObject, options)
         local anchorPos = nil
         local sourceLabel = nil
 
-        if type(latestSample) == "table" and type(latestSample.cursorPos) == "number" and type(latestSample.sampledAt) == "number" and (now - latestSample.sampledAt) <= HOVER_POLL_INTERVAL_SECONDS then
-            local sampleSource = tostring(latestSample.source or "mouse-sample")
-            if EditorTextUtils.shouldUseCachedHoverSample(sampleSource, latestSample.cursorPos, tonumber(self.textBox and self.textBox.SelectionStart)) then
+        if type(latestSample) == "table" and type(latestSample.cursorPos) == "number" and type(latestSample.sampledAt) == "number" then
+            local sampleAge = now - latestSample.sampledAt
+            if sampleAge <= HOVER_POLL_INTERVAL_SECONDS then
+                local sampleSource = tostring(latestSample.source or "mouse-sample")
+                if EditorTextUtils.shouldUseCachedHoverSample(sampleSource, latestSample.cursorPos, tonumber(self.textBox and self.textBox.SelectionStart)) then
+                    cursorPos = latestSample.cursorPos
+                    anchorPos = latestSample.anchorPos
+                    sourceLabel = sampleSource
+                end
+            elseif self.hoverInfoFrame and self.hoverInfoFrame.Visible then
+                -- Tooltip is showing from a previous mouse hover; keep refreshing at
+                -- the same position so the content stays current.
                 cursorPos = latestSample.cursorPos
                 anchorPos = latestSample.anchorPos
-                sourceLabel = sampleSource
+                sourceLabel = "sample-refresh"
             end
         end
 
@@ -3731,6 +3837,9 @@ function Editor:applySettings(settings)
 
         self.overlay.TextColor3 = Color3.fromRGB(20, 20, 20)
         self.lineNumbers.TextColor3 = Color3.fromRGB(110, 110, 110)
+        if self.gutterBg then
+            self.gutterBg.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+        end
 
         if self.completionFrame then
             self.completionFrame.BackgroundColor3 = Color3.fromRGB(240, 240, 240)
@@ -3761,6 +3870,9 @@ function Editor:applySettings(settings)
 
         self.overlay.TextColor3 = Color3.fromRGB(220, 220, 220)
         self.lineNumbers.TextColor3 = Color3.fromRGB(128, 128, 128)
+        if self.gutterBg then
+            self.gutterBg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        end
 
         if self.completionFrame then
             self.completionFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
@@ -3796,6 +3908,9 @@ function Editor:setCursorPosition(line, column)
     local index = lineColumnToIndex(lineStarts, line, column, #source)
     self.textBox.CursorPosition = math.clamp(index, 1, #source + 1)
     self.textBox.SelectionStart = -1
+
+    updateCaretPosition(self)
+    startCaretBlink(self)
 end
 
 function Editor:focus()
