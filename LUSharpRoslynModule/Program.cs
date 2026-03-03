@@ -176,6 +176,11 @@ internal class Program
         }
 
         var transpiler = new RoslynToLuau();
+
+        // Pre-scan all files to build global overload map for cross-type dispatch
+        var sourceFiles = csFiles.Select(f => (File.ReadAllText(f), Path.GetFileName(f)));
+        transpiler.PreScan(sourceFiles);
+
         int succeeded = 0;
         int failed = 0;
 
@@ -232,6 +237,9 @@ internal class Program
                 break;
             case "syntax-facts-gettext":
                 Reference.SyntaxFactsReference.PrintGetText();
+                break;
+            case "tokenizer":
+                Reference.TokenizerReference.PrintAll();
                 break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");

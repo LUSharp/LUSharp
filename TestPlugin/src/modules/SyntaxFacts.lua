@@ -1463,4 +1463,4 @@ function SyntaxFacts.IsDocumentationCommentTrivia(kind: number): boolean
 	return true
 end
 
-return SyntaxFacts
+return { SyntaxFacts = SyntaxFacts }

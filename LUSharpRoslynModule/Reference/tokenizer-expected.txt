@@ -1,0 +1,30 @@
+=== Test 1: int x = 5; ===
+Kind=IntKeyword Text=int
+Kind=WhitespaceTrivia Text= 
+Kind=IdentifierToken Text=x
+Kind=WhitespaceTrivia Text= 
+Kind=EqualsToken Text==
+Kind=WhitespaceTrivia Text= 
+Kind=NumericLiteralToken Text=5
+Kind=SemicolonToken Text=;
+Kind=EndOfFileToken Text=
+=== Test 2: if (x >= 10) { return true; } ===
+Kind=IfKeyword Text=if
+Kind=WhitespaceTrivia Text= 
+Kind=OpenParenToken Text=(
+Kind=IdentifierToken Text=x
+Kind=WhitespaceTrivia Text= 
+Kind=GreaterThanEqualsToken Text=>=
+Kind=WhitespaceTrivia Text= 
+Kind=NumericLiteralToken Text=10
+Kind=CloseParenToken Text=)
+Kind=WhitespaceTrivia Text= 
+Kind=OpenBraceToken Text={
+Kind=WhitespaceTrivia Text= 
+Kind=ReturnKeyword Text=return
+Kind=WhitespaceTrivia Text= 
+Kind=TrueKeyword Text=true
+Kind=SemicolonToken Text=;
+Kind=WhitespaceTrivia Text= 
+Kind=CloseBraceToken Text=}
+Kind=EndOfFileToken Text=

@@ -53,6 +53,12 @@ public class LuauEmitter
     private HashSet<string> _constFields = new();
 
     /// <summary>
+    /// Map of instance field names to their C# type name (simplified, no namespace).
+    /// Used for cross-type method dispatch resolution.
+    /// </summary>
+    private Dictionary<string, string> _instanceFieldTypes = new();
+
+    /// <summary>
     /// Map from original overloaded method name to disambiguated names.
     /// Used so call sites can resolve the correct overloaded variant.
     /// Key: (OriginalName, ParamCount) → DisambiguatedName
@@ -64,6 +70,12 @@ public class LuauEmitter
     /// Populated during emission, consumed by the orchestrator to insert requires.
     /// </summary>
     public HashSet<string> ReferencedModules { get; } = new();
+
+    /// <summary>
+    /// Global overload registry from pre-scan: (TypeName, MethodName, ArgCount) → DisambiguatedName.
+    /// Set by the orchestrator before emission for cross-type overload resolution.
+    /// </summary>
+    public Dictionary<(string TypeName, string MethodName, int ArgCount), string> GlobalOverloadMap { get; set; } = new();
 
     public string GetOutput() => _sb.ToString();
 
@@ -198,7 +210,7 @@ public class LuauEmitter
             }
         }
 
-        AppendLine($"return {className}");
+        AppendLine($"return {{ {className} = {className} }}");
         _currentClassName = null;
     }
 
@@ -254,6 +266,7 @@ public class LuauEmitter
         _instanceFields = new HashSet<string>();
         _instanceMethods = new HashSet<string>();
         _nestedTypeNames = new HashSet<string>();
+        _instanceFieldTypes = new Dictionary<string, string>();
 
         var fieldRawTypes = new List<string>(); // collected for deferred type tracking
 
@@ -284,6 +297,13 @@ public class LuauEmitter
                         if (!isStatic && !isConst)
                         {
                             _instanceFields.Add(name);
+                            // Track the simplified type name for cross-type method dispatch
+                            var simplifiedType = rawType;
+                            if (simplifiedType.Contains('.'))
+                                simplifiedType = simplifiedType.Substring(simplifiedType.LastIndexOf('.') + 1);
+                            if (simplifiedType.Contains('<'))
+                                simplifiedType = simplifiedType.Substring(0, simplifiedType.IndexOf('<'));
+                            _instanceFieldTypes[name] = simplifiedType;
                         }
                     }
                     break;
@@ -335,6 +355,7 @@ public class LuauEmitter
                     var savedNested = _nestedTypeNames;
                     var savedConsts = _constFields;
                     var savedOverloads = _overloadMap;
+                    var savedFieldTypes = _instanceFieldTypes;
 
                     EmitInstanceClass(nestedStruct.Identifier.Text, nestedStruct.Members, isNested: true);
                     AppendLine();
@@ -345,6 +366,7 @@ public class LuauEmitter
                     _nestedTypeNames = savedNested;
                     _constFields = savedConsts;
                     _overloadMap = savedOverloads;
+                    _instanceFieldTypes = savedFieldTypes;
                     break;
                 }
 
@@ -356,6 +378,7 @@ public class LuauEmitter
                     var savedNested = _nestedTypeNames;
                     var savedConsts = _constFields;
                     var savedOverloads = _overloadMap;
+                    var savedFieldTypes = _instanceFieldTypes;
 
                     EmitInstanceClass(nestedClass.Identifier.Text, nestedClass.Members, isNested: true);
                     AppendLine();
@@ -366,6 +389,7 @@ public class LuauEmitter
                     _nestedTypeNames = savedNested;
                     _constFields = savedConsts;
                     _overloadMap = savedOverloads;
+                    _instanceFieldTypes = savedFieldTypes;
                     break;
                 }
             }
@@ -506,13 +530,21 @@ public class LuauEmitter
         // ── Phase 7: return (only for top-level types, not nested) ──
         if (!isNested)
         {
-            AppendLine($"return {className}");
+            // Build return table including the main class and any nested types
+            var returnEntries = new List<string>();
+            returnEntries.Add($"{className} = {className}");
+            foreach (var nested in _nestedTypeNames)
+            {
+                returnEntries.Add($"{nested} = {nested}");
+            }
+            AppendLine($"return {{ {string.Join(", ", returnEntries)} }}");
         }
         _currentClassName = null;
         _instanceFields = new HashSet<string>();
         _instanceMethods = new HashSet<string>();
         _nestedTypeNames = new HashSet<string>();
         _constFields = new HashSet<string>();
+        _instanceFieldTypes = new Dictionary<string, string>();
         _overloadMap = new Dictionary<(string Name, int ParamCount), string>();
     }
 
@@ -1682,16 +1714,25 @@ public class LuauEmitter
                 return $"tostring({luauOwner})";
             }
 
-            // If the owner is an instance field and the method name matches a known
-            // method pattern on a struct/class type → use colon syntax for metatabled dispatch
+            // If the owner is an instance field, dispatch the method call.
+            // Use the global overload map to resolve the correct method name,
+            // and use Type.Method(self.field, args) for proper dispatch.
             if (_isInstanceContext && _instanceFields.Contains(ownerName)
                 && !_currentMethodParams.Contains(ownerName)
                 && !_currentMethodLocals.Contains(ownerName))
             {
-                // For struct/class fields, the methods are on the metatable,
-                // so self.field:Method(args) works via __index
-                // But if it's a simple struct field, we should use StructType.Method(self.field, args)
-                // For now, use the colon syntax which works via __index
+                // Try to resolve overloaded name via the field's type and global overload map
+                if (_instanceFieldTypes.TryGetValue(ownerName, out var fieldType)
+                    && GlobalOverloadMap.TryGetValue((fieldType, memberName, args.Count), out var resolvedName))
+                {
+                    // Use Type.Method(self.field, args) for explicit dispatch with correct overload
+                    var fullArgs = string.IsNullOrEmpty(argStr)
+                        ? luauOwner
+                        : $"{luauOwner}, {argStr}";
+                    return $"{fieldType}.{resolvedName}({fullArgs})";
+                }
+
+                // Fallback: use colon syntax (works via __index for non-overloaded methods)
                 return $"{luauOwner}:{memberName}({argStr})";
             }
 

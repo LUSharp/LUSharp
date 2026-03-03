@@ -6,6 +6,102 @@ namespace LUSharpRoslynModule.Transpiler;
 
 public class RoslynToLuau
 {
+    /// <summary>
+    /// Global overload registry: (TypeName, MethodName, ArgCount) → DisambiguatedName.
+    /// Pre-populated by PreScan() so cross-type calls resolve overloaded names correctly.
+    /// </summary>
+    private Dictionary<(string TypeName, string MethodName, int ArgCount), string> _globalOverloadMap = new();
+
+    /// <summary>
+    /// Pre-scan source files to build a global overload map before emitting any code.
+    /// Call this once with all source files before calling Transpile for each file.
+    /// </summary>
+    public void PreScan(IEnumerable<(string SourceCode, string FileName)> sourceFiles)
+    {
+        foreach (var (sourceCode, fileName) in sourceFiles)
+        {
+            var tree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName);
+            var root = tree.GetCompilationUnitRoot();
+
+            var diagnostics = tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
+            if (diagnostics.Count > 0) continue;
+
+            ScanOverloads(root.Members);
+        }
+    }
+
+    private void ScanOverloads(SyntaxList<MemberDeclarationSyntax> members)
+    {
+        foreach (var member in members)
+        {
+            switch (member)
+            {
+                case NamespaceDeclarationSyntax ns:
+                    ScanOverloads(ns.Members);
+                    break;
+                case FileScopedNamespaceDeclarationSyntax ns:
+                    ScanOverloads(ns.Members);
+                    break;
+                case ClassDeclarationSyntax classDecl:
+                    ScanTypeOverloads(classDecl.Identifier.Text, classDecl.Members);
+                    break;
+                case StructDeclarationSyntax structDecl:
+                    ScanTypeOverloads(structDecl.Identifier.Text, structDecl.Members);
+                    break;
+            }
+        }
+    }
+
+    private void ScanTypeOverloads(string typeName, SyntaxList<MemberDeclarationSyntax> members)
+    {
+        // Count method name occurrences
+        var methodNameCounts = new Dictionary<string, int>();
+        var methodNameSeen = new Dictionary<string, int>();
+
+        foreach (var member in members)
+        {
+            if (member is MethodDeclarationSyntax m)
+            {
+                var name = m.Identifier.Text;
+                methodNameCounts[name] = methodNameCounts.GetValueOrDefault(name) + 1;
+            }
+            // Recurse into nested types
+            else if (member is ClassDeclarationSyntax nested)
+            {
+                ScanTypeOverloads(nested.Identifier.Text, nested.Members);
+            }
+            else if (member is StructDeclarationSyntax nestedStruct)
+            {
+                ScanTypeOverloads(nestedStruct.Identifier.Text, nestedStruct.Members);
+            }
+        }
+
+        foreach (var member in members)
+        {
+            if (member is not MethodDeclarationSyntax method) continue;
+
+            var name = method.Identifier.Text;
+            int paramCount = method.ParameterList.Parameters.Count;
+            string emitName = name;
+
+            if (methodNameCounts.GetValueOrDefault(name) > 1)
+            {
+                var overloadIndex = methodNameSeen.GetValueOrDefault(name);
+                methodNameSeen[name] = overloadIndex + 1;
+
+                if (overloadIndex > 0)
+                {
+                    var firstParam = method.ParameterList.Parameters.FirstOrDefault();
+                    var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
+                    suffix = suffix.Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                    emitName = $"{name}_{suffix}";
+                }
+            }
+
+            _globalOverloadMap[(typeName, name, paramCount)] = emitName;
+        }
+    }
+
     public TranspileResult Transpile(string sourceCode, string fileName)
     {
         var tree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName);
@@ -23,6 +119,7 @@ public class RoslynToLuau
         }
 
         var emitter = new LuauEmitter();
+        emitter.GlobalOverloadMap = _globalOverloadMap;
         emitter.EmitHeader();
 
         foreach (var member in root.Members)

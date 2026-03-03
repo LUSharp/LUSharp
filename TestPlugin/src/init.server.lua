@@ -1,8 +1,8 @@
 --!strict
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
--- Compare output with: dotnet run --project LUSharpRoslynModule -- reference syntax-kind
+-- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.1.0"
+local PLUGIN_VERSION = "0.2.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -94,7 +94,7 @@ local function runSyntaxFactsTest()
 	end
 
 	local SyntaxKind = skResult.SyntaxKind
-	local SyntaxFacts = sfResult
+	local SyntaxFacts = sfResult.SyntaxFacts
 
 	if not SyntaxFacts then
 		warn("[LUSharp-Test] FAIL: SyntaxFacts table not found in module return")
@@ -206,8 +206,62 @@ local function runSyntaxFactsTest()
 	warn("[LUSharp-Test] SyntaxFacts test completed")
 end
 
+local function runTokenizerTest()
+	local slidingWindowModule = modules:FindFirstChild("SlidingTextWindow")
+	local tokenizerModule = modules:FindFirstChild("SimpleTokenizer")
+	local syntaxKindModule = modules:FindFirstChild("SyntaxKind")
+
+	if not slidingWindowModule or not tokenizerModule or not syntaxKindModule then
+		warn("[LUSharp-Test] Tokenizer modules not found, skipping")
+		return
+	end
+
+	local ok1, skResult = pcall(require, syntaxKindModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SyntaxKind failed to load: " .. tostring(skResult))
+		return
+	end
+
+	local ok2, swResult = pcall(require, slidingWindowModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SlidingTextWindow failed to load: " .. tostring(swResult))
+		return
+	end
+
+	local ok3, stResult = pcall(require, tokenizerModule)
+	if not ok3 then
+		warn("[LUSharp-Test] FAIL: SimpleTokenizer failed to load: " .. tostring(stResult))
+		return
+	end
+
+	local SyntaxKind = skResult.SyntaxKind
+	local SyntaxKind_Name = skResult.SyntaxKind_Name
+	local SimpleTokenizer = stResult.SimpleTokenizer
+
+	if not SimpleTokenizer then
+		warn("[LUSharp-Test] FAIL: SimpleTokenizer table not found in module return")
+		return
+	end
+
+	local function printTokens(label: string, input: string)
+		print("=== " .. label .. " ===")
+		local tokenizer = SimpleTokenizer.new(input)
+		local tokens = SimpleTokenizer.Tokenize(tokenizer)
+		for _, token in tokens do
+			local kindName = SyntaxKind_Name[token.Kind] or tostring(token.Kind)
+			print("Kind=" .. kindName .. " Text=" .. token.Text)
+		end
+	end
+
+	printTokens("Test 1: int x = 5;", "int x = 5;")
+	printTokens("Test 2: if (x >= 10) { return true; }", "if (x >= 10) { return true; }")
+
+	warn("[LUSharp-Test] Tokenizer test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
 runSyntaxFactsTest()
+runTokenizerTest()
 warn("[LUSharp-Test] All tests finished")
