@@ -17,6 +17,8 @@ public static class TypeMapper
         ["Double"] = "number", ["Decimal"] = "number",
         ["Boolean"] = "boolean", ["String"] = "string", ["Char"] = "number",
         ["Object"] = "any", ["Void"] = "()",
+        // Roslyn/Roblox types that map to number
+        ["SyntaxKind"] = "number", ["Accessibility"] = "number",
     };
 
     public static string? MapType(string csharpType)

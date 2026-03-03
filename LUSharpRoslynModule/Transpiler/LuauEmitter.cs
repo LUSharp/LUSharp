@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -10,6 +11,17 @@ public class LuauEmitter
     private readonly StringBuilder _sb = new();
     private int _indent = 0;
 
+    /// <summary>
+    /// The class name currently being emitted (used to qualify static method calls).
+    /// </summary>
+    private string? _currentClassName;
+
+    /// <summary>
+    /// Set of type names referenced as member access (e.g., SyntaxKind.X) that need requires.
+    /// Populated during emission, consumed by the orchestrator to insert requires.
+    /// </summary>
+    public HashSet<string> ReferencedModules { get; } = new();
+
     public string GetOutput() => _sb.ToString();
 
     public void EmitHeader()
@@ -19,6 +31,10 @@ public class LuauEmitter
         AppendLine("-- Do not edit manually");
         AppendLine();
     }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Enum emission (unchanged from original)
+    // ────────────────────────────────────────────────────────────────────
 
     public void EmitEnum(EnumDeclarationSyntax enumDecl)
     {
@@ -76,7 +92,883 @@ public class LuauEmitter
             AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name }}");
     }
 
-    private void AppendLine(string line = "")
+    // ────────────────────────────────────────────────────────────────────
+    //  Class emission (static class → module table)
+    // ────────────────────────────────────────────────────────────────────
+
+    public void EmitClass(ClassDeclarationSyntax classDecl)
+    {
+        var className = classDecl.Identifier.Text;
+        _currentClassName = className;
+
+        AppendLine($"local {className} = {{}}");
+        AppendLine();
+
+        // Detect overloaded method names so we can disambiguate them
+        var methodNameCounts = new Dictionary<string, int>();
+        var methodNameSeen = new Dictionary<string, int>();
+        foreach (var member in classDecl.Members)
+        {
+            if (member is MethodDeclarationSyntax m)
+            {
+                var name = m.Identifier.Text;
+                methodNameCounts[name] = methodNameCounts.GetValueOrDefault(name) + 1;
+            }
+        }
+
+        foreach (var member in classDecl.Members)
+        {
+            switch (member)
+            {
+                case MethodDeclarationSyntax method:
+                {
+                    var name = method.Identifier.Text;
+                    string emitName = name;
+
+                    // Disambiguate overloaded methods by appending parameter type info
+                    if (methodNameCounts.GetValueOrDefault(name) > 1)
+                    {
+                        var overloadIndex = methodNameSeen.GetValueOrDefault(name);
+                        methodNameSeen[name] = overloadIndex + 1;
+
+                        if (overloadIndex > 0)
+                        {
+                            // Use first parameter type as suffix
+                            var firstParam = method.ParameterList.Parameters.FirstOrDefault();
+                            var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
+                            // Clean up the suffix for Luau identifier
+                            suffix = suffix.Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                            emitName = $"{name}_{suffix}";
+                        }
+                    }
+
+                    EmitMethod(className, method, emitName);
+                    AppendLine();
+                    break;
+                }
+
+                // Fields, properties, etc. can be added later
+                default:
+                    AppendLine($"-- TODO: unsupported member {member.Kind()}");
+                    break;
+            }
+        }
+
+        AppendLine($"return {className}");
+        _currentClassName = null;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Method emission
+    // ────────────────────────────────────────────────────────────────────
+
+    private void EmitMethod(string className, MethodDeclarationSyntax method, string? emitName = null)
+    {
+        var methodName = emitName ?? method.Identifier.Text;
+        var returnType = MapReturnType(method.ReturnType);
+        var parameters = method.ParameterList.Parameters;
+
+        // Build parameter list with types
+        var paramParts = new List<string>();
+        foreach (var param in parameters)
+        {
+            var paramName = param.Identifier.Text;
+            var paramType = MapTypeNode(param.Type);
+            paramParts.Add($"{paramName}: {paramType}");
+        }
+
+        var paramStr = string.Join(", ", paramParts);
+        AppendLine($"function {className}.{methodName}({paramStr}): {returnType}");
+        _indent++;
+
+        if (method.Body != null)
+        {
+            EmitBlock(method.Body);
+        }
+        else if (method.ExpressionBody != null)
+        {
+            // Expression-bodied method: => expr
+            var expr = EmitExpression(method.ExpressionBody.Expression);
+            AppendLine($"return {expr}");
+        }
+        else
+        {
+            AppendLine("-- empty method body");
+        }
+
+        _indent--;
+        AppendLine("end");
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Statement emission
+    // ────────────────────────────────────────────────────────────────────
+
+    private void EmitBlock(BlockSyntax block)
+    {
+        foreach (var statement in block.Statements)
+        {
+            EmitStatement(statement);
+        }
+    }
+
+    private void EmitStatement(StatementSyntax statement)
+    {
+        switch (statement)
+        {
+            case ReturnStatementSyntax ret:
+                EmitReturn(ret);
+                break;
+            case IfStatementSyntax ifStmt:
+                EmitIf(ifStmt);
+                break;
+            case SwitchStatementSyntax switchStmt:
+                EmitSwitch(switchStmt);
+                break;
+            case BlockSyntax block:
+                EmitBlock(block);
+                break;
+            case ExpressionStatementSyntax exprStmt:
+                EmitExpressionStatement(exprStmt);
+                break;
+            case LocalDeclarationStatementSyntax localDecl:
+                EmitLocalDeclaration(localDecl);
+                break;
+            case ThrowStatementSyntax throwStmt:
+                EmitThrow(throwStmt);
+                break;
+            case BreakStatementSyntax:
+                AppendLine("break");
+                break;
+            default:
+                AppendLine($"-- TODO: {statement.Kind()}");
+                break;
+        }
+    }
+
+    private void EmitReturn(ReturnStatementSyntax ret)
+    {
+        if (ret.Expression == null)
+        {
+            AppendLine("return");
+        }
+        else if (ret.Expression is SwitchExpressionSyntax switchExpr)
+        {
+            // Switch expression used as return: emit as if/elseif chain
+            EmitSwitchExpressionAsReturn(switchExpr);
+        }
+        else
+        {
+            var expr = EmitExpression(ret.Expression);
+            AppendLine($"return {expr}");
+        }
+    }
+
+    private void EmitIf(IfStatementSyntax ifStmt)
+    {
+        var condition = EmitExpression(ifStmt.Condition);
+        AppendLine($"if {condition} then");
+        _indent++;
+        EmitStatementBody(ifStmt.Statement);
+        _indent--;
+
+        if (ifStmt.Else != null)
+        {
+            if (ifStmt.Else.Statement is IfStatementSyntax elseIf)
+            {
+                // elseif chain
+                EmitElseIf(elseIf);
+            }
+            else
+            {
+                AppendLine("else");
+                _indent++;
+                EmitStatementBody(ifStmt.Else.Statement);
+                _indent--;
+                AppendLine("end");
+            }
+        }
+        else
+        {
+            AppendLine("end");
+        }
+    }
+
+    private void EmitElseIf(IfStatementSyntax ifStmt)
+    {
+        var condition = EmitExpression(ifStmt.Condition);
+        AppendLine($"elseif {condition} then");
+        _indent++;
+        EmitStatementBody(ifStmt.Statement);
+        _indent--;
+
+        if (ifStmt.Else != null)
+        {
+            if (ifStmt.Else.Statement is IfStatementSyntax elseIf)
+            {
+                EmitElseIf(elseIf);
+            }
+            else
+            {
+                AppendLine("else");
+                _indent++;
+                EmitStatementBody(ifStmt.Else.Statement);
+                _indent--;
+                AppendLine("end");
+            }
+        }
+        else
+        {
+            AppendLine("end");
+        }
+    }
+
+    /// <summary>
+    /// Emit the body of an if/else/switch — which may be a block or a single statement.
+    /// </summary>
+    private void EmitStatementBody(StatementSyntax statement)
+    {
+        if (statement is BlockSyntax block)
+        {
+            EmitBlock(block);
+        }
+        else
+        {
+            EmitStatement(statement);
+        }
+    }
+
+    private void EmitSwitch(SwitchStatementSyntax switchStmt)
+    {
+        var governing = EmitExpression(switchStmt.Expression);
+
+        // Gather sections. Each section can have multiple labels and multiple statements.
+        // We convert to if/elseif chains.
+        bool isFirst = true;
+        SwitchSectionSyntax? defaultSection = null;
+
+        foreach (var section in switchStmt.Sections)
+        {
+            var caseLabels = section.Labels.OfType<CaseSwitchLabelSyntax>().ToList();
+            var hasDefault = section.Labels.Any(l => l is DefaultSwitchLabelSyntax);
+
+            if (caseLabels.Count == 0 && hasDefault)
+            {
+                defaultSection = section;
+                continue;
+            }
+
+            // Build condition: governing == val1 or governing == val2 ...
+            var conditions = caseLabels.Select(c => $"{governing} == {EmitExpression(c.Value)}");
+            var condStr = string.Join(" or ", conditions);
+
+            if (isFirst)
+            {
+                AppendLine($"if {condStr} then");
+                isFirst = false;
+            }
+            else
+            {
+                AppendLine($"elseif {condStr} then");
+            }
+
+            _indent++;
+            EmitSwitchSectionStatements(section.Statements);
+            _indent--;
+
+            // If this section also has a default label, treat it as having both
+            if (hasDefault)
+                defaultSection = null; // handled inline
+        }
+
+        if (defaultSection != null)
+        {
+            if (!isFirst)
+            {
+                AppendLine("else");
+                _indent++;
+                EmitSwitchSectionStatements(defaultSection.Statements);
+                _indent--;
+                AppendLine("end");
+            }
+            else
+            {
+                // Only default section — just emit the statements
+                EmitSwitchSectionStatements(defaultSection.Statements);
+            }
+        }
+        else if (!isFirst)
+        {
+            AppendLine("end");
+        }
+    }
+
+    private void EmitSwitchSectionStatements(SyntaxList<StatementSyntax> statements)
+    {
+        foreach (var stmt in statements)
+        {
+            // Skip break statements in switch sections (Luau doesn't need them)
+            if (stmt is BreakStatementSyntax)
+                continue;
+            EmitStatement(stmt);
+        }
+    }
+
+    /// <summary>
+    /// Emit a C# switch expression as a return-oriented if/elseif chain.
+    /// Called when we see: return expr switch { ... };
+    /// </summary>
+    private void EmitSwitchExpressionAsReturn(SwitchExpressionSyntax switchExpr)
+    {
+        var governing = EmitExpression(switchExpr.GoverningExpression);
+        bool isFirst = true;
+
+        foreach (var arm in switchExpr.Arms)
+        {
+            if (arm.Pattern is DiscardPatternSyntax)
+            {
+                // Default arm — handle after the chain
+                continue;
+            }
+
+            var pattern = EmitSwitchPattern(governing, arm.Pattern);
+            var value = EmitExpression(arm.Expression);
+
+            if (isFirst)
+            {
+                AppendLine($"if {pattern} then");
+                isFirst = false;
+            }
+            else
+            {
+                AppendLine($"elseif {pattern} then");
+            }
+            _indent++;
+            AppendLine($"return {value}");
+            _indent--;
+        }
+
+        // Handle default arm
+        var defaultArm = switchExpr.Arms.FirstOrDefault(a => a.Pattern is DiscardPatternSyntax);
+        if (defaultArm != null)
+        {
+            var defaultValue = EmitExpression(defaultArm.Expression);
+            if (!isFirst)
+            {
+                AppendLine("end");
+                AppendLine($"return {defaultValue}");
+            }
+            else
+            {
+                AppendLine($"return {defaultValue}");
+            }
+        }
+        else if (!isFirst)
+        {
+            AppendLine("end");
+        }
+    }
+
+    private string EmitSwitchPattern(string governing, PatternSyntax pattern)
+    {
+        return pattern switch
+        {
+            ConstantPatternSyntax constant => $"{governing} == {EmitExpression(constant.Expression)}",
+            _ => $"--[[TODO: pattern {pattern.Kind()}]] true"
+        };
+    }
+
+    private void EmitExpressionStatement(ExpressionStatementSyntax exprStmt)
+    {
+        var expr = EmitExpression(exprStmt.Expression);
+        AppendLine(expr);
+    }
+
+    private void EmitLocalDeclaration(LocalDeclarationStatementSyntax localDecl)
+    {
+        foreach (var declarator in localDecl.Declaration.Variables)
+        {
+            var name = declarator.Identifier.Text;
+            if (declarator.Initializer != null)
+            {
+                var init = EmitExpression(declarator.Initializer.Value);
+                AppendLine($"local {name} = {init}");
+            }
+            else
+            {
+                AppendLine($"local {name}");
+            }
+        }
+    }
+
+    private void EmitThrow(ThrowStatementSyntax throwStmt)
+    {
+        if (throwStmt.Expression is ObjectCreationExpressionSyntax objCreate)
+        {
+            var exType = objCreate.Type.ToString();
+            var args = objCreate.ArgumentList?.Arguments;
+            if (args != null && args.Value.Count > 0)
+            {
+                // Try to get a meaningful error message
+                var firstArg = args.Value[0].Expression;
+                if (firstArg is InvocationExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.Text: "nameof" } } nameofCall)
+                {
+                    var nameofArg = nameofCall.ArgumentList.Arguments[0].Expression.ToString();
+                    AppendLine($"error(\"{exType}: {nameofArg}\")");
+                }
+                else
+                {
+                    var argStr = EmitExpression(firstArg);
+                    AppendLine($"error(\"{exType}: \" .. {argStr})");
+                }
+            }
+            else
+            {
+                AppendLine($"error(\"{exType}\")");
+            }
+        }
+        else if (throwStmt.Expression != null)
+        {
+            var expr = EmitExpression(throwStmt.Expression);
+            AppendLine($"error({expr})");
+        }
+        else
+        {
+            AppendLine("error(\"rethrow\")");
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Expression emission
+    // ────────────────────────────────────────────────────────────────────
+
+    private string EmitExpression(ExpressionSyntax expr)
+    {
+        return expr switch
+        {
+            LiteralExpressionSyntax literal => EmitLiteral(literal),
+            IdentifierNameSyntax ident => EmitIdentifier(ident),
+            MemberAccessExpressionSyntax memberAccess => EmitMemberAccess(memberAccess),
+            InvocationExpressionSyntax invocation => EmitInvocation(invocation),
+            BinaryExpressionSyntax binary => EmitBinary(binary),
+            PrefixUnaryExpressionSyntax prefixUnary => EmitPrefixUnary(prefixUnary),
+            ParenthesizedExpressionSyntax paren => EmitParenthesized(paren),
+            CastExpressionSyntax cast => EmitCast(cast),
+            ConditionalExpressionSyntax conditional => EmitConditional(conditional),
+            SwitchExpressionSyntax switchExpr => EmitSwitchExpression(switchExpr),
+            DefaultExpressionSyntax => "nil",
+            PostfixUnaryExpressionSyntax postfix => EmitPostfixUnary(postfix),
+            ThrowExpressionSyntax throwExpr => EmitThrowExpression(throwExpr),
+            _ => $"--[[TODO: {expr.Kind()}]] nil"
+        };
+    }
+
+    private string EmitLiteral(LiteralExpressionSyntax literal)
+    {
+        return literal.Kind() switch
+        {
+            SyntaxKind.TrueLiteralExpression => "true",
+            SyntaxKind.FalseLiteralExpression => "false",
+            SyntaxKind.NullLiteralExpression => "nil",
+            SyntaxKind.NumericLiteralExpression => EmitNumericLiteral(literal),
+            SyntaxKind.StringLiteralExpression => EmitStringLiteral(literal),
+            SyntaxKind.CharacterLiteralExpression => EmitCharLiteral(literal),
+            SyntaxKind.DefaultLiteralExpression => "nil",
+            _ => literal.Token.Text
+        };
+    }
+
+    private string EmitNumericLiteral(LiteralExpressionSyntax literal)
+    {
+        var text = literal.Token.Text;
+        // Handle hex literals: keep as-is (0xFF → 0xFF, valid in Luau)
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return text;
+        // Handle numeric suffixes (remove them)
+        text = text.TrimEnd('f', 'F', 'd', 'D', 'm', 'M', 'l', 'L', 'u', 'U');
+        return text;
+    }
+
+    private static string EmitStringLiteral(LiteralExpressionSyntax literal)
+    {
+        // Use the C# string value and re-escape for Lua
+        if (literal.Token.Value is string strVal)
+        {
+            // Escape for Lua string
+            var escaped = strVal
+                .Replace("\\", "\\\\")
+                .Replace("\"", "\\\"")
+                .Replace("\n", "\\n")
+                .Replace("\r", "\\r")
+                .Replace("\t", "\\t");
+            return $"\"{escaped}\"";
+        }
+        return literal.Token.Text;
+    }
+
+    private static string EmitCharLiteral(LiteralExpressionSyntax literal)
+    {
+        // Convert char literal to its integer value at transpile time
+        if (literal.Token.Value is char charVal)
+        {
+            return ((int)charVal).ToString();
+        }
+        // Fallback: try to parse from the token text
+        return literal.Token.Text;
+    }
+
+    private string EmitIdentifier(IdentifierNameSyntax ident)
+    {
+        var name = ident.Identifier.Text;
+
+        // Check for well-known replacements
+        return name switch
+        {
+            "string" => "string",
+            _ => name
+        };
+    }
+
+    private string EmitMemberAccess(MemberAccessExpressionSyntax memberAccess)
+    {
+        var memberName = memberAccess.Name.Identifier.Text;
+
+        // Handle PredefinedTypeSyntax: string.Empty, int.MaxValue, etc.
+        if (memberAccess.Expression is PredefinedTypeSyntax predefined)
+        {
+            var typeStr = predefined.Keyword.Text;
+
+            // string.Empty → ""
+            if (typeStr == "string" && memberName == "Empty")
+                return "\"\"";
+
+            // int.MaxValue, int.MinValue, etc.
+            return $"--[[TODO: {typeStr}.{memberName}]] nil";
+        }
+
+        // Handle enum member access: SyntaxKind.TrueKeyword → SyntaxKind.TrueKeyword
+        if (memberAccess.Expression is IdentifierNameSyntax typeName)
+        {
+            var typeStr = typeName.Identifier.Text;
+
+            // Track external module references (not our own class)
+            if (typeStr != _currentClassName && IsLikelyEnumOrExternalType(typeStr))
+            {
+                ReferencedModules.Add(typeStr);
+            }
+
+            // string.Empty → ""
+            if (typeStr == "string" && memberName == "Empty")
+                return "\"\"";
+
+            // SyntaxKind.None etc. → SyntaxKind.None (module.member)
+            return $"{typeStr}.{memberName}";
+        }
+
+        // Nested member access: e.g., CharUnicodeInfo.GetUnicodeCategory
+        var left = EmitExpression(memberAccess.Expression);
+        return $"{left}.{memberName}";
+    }
+
+    private string EmitInvocation(InvocationExpressionSyntax invocation)
+    {
+        var args = invocation.ArgumentList.Arguments.Select(a => EmitExpression(a.Expression));
+        var argStr = string.Join(", ", args);
+
+        // Handle the expression being called
+        if (invocation.Expression is IdentifierNameSyntax methodName)
+        {
+            var name = methodName.Identifier.Text;
+
+            // nameof(x) → "x"
+            if (name == "nameof")
+            {
+                var firstArg = invocation.ArgumentList.Arguments[0].Expression.ToString();
+                return $"\"{firstArg}\"";
+            }
+
+            // Calls to static methods in the same class → ClassName.MethodName(...)
+            if (_currentClassName != null)
+            {
+                return $"{_currentClassName}.{name}({argStr})";
+            }
+
+            return $"{name}({argStr})";
+        }
+
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            var memberName = memberAccess.Name.Identifier.Text;
+
+            // Handle CharUnicodeInfo.GetUnicodeCategory etc. — external calls
+            if (memberAccess.Expression is IdentifierNameSyntax ownerType)
+            {
+                var typeName = ownerType.Identifier.Text;
+
+                // Known external calls that we can't transpile — emit as TODO
+                if (typeName == "CharUnicodeInfo" || typeName == "Char")
+                {
+                    return $"--[[TODO: {typeName}.{memberName}]] nil";
+                }
+
+                // Calls to our own type's static methods stay as ClassName.Method
+                if (typeName == _currentClassName)
+                {
+                    return $"{typeName}.{memberName}({argStr})";
+                }
+
+                // Other type calls
+                return $"{typeName}.{memberName}({argStr})";
+            }
+
+            var left = EmitExpression(memberAccess.Expression);
+            return $"{left}.{memberName}({argStr})";
+        }
+
+        // Fallback
+        var exprStr = EmitExpression(invocation.Expression);
+        return $"{exprStr}({argStr})";
+    }
+
+    private string EmitBinary(BinaryExpressionSyntax binary)
+    {
+        var left = EmitExpression(binary.Left);
+        var right = EmitExpression(binary.Right);
+
+        // Detect string concatenation: + with string literal on either side → ..
+        if (binary.Kind() == SyntaxKind.AddExpression && IsStringConcatenation(binary))
+        {
+            return $"{left} .. {right}";
+        }
+
+        var op = binary.Kind() switch
+        {
+            SyntaxKind.AddExpression => "+",
+            SyntaxKind.SubtractExpression => "-",
+            SyntaxKind.MultiplyExpression => "*",
+            SyntaxKind.DivideExpression => "/",
+            SyntaxKind.ModuloExpression => "%",
+            SyntaxKind.EqualsExpression => "==",
+            SyntaxKind.NotEqualsExpression => "~=",
+            SyntaxKind.LessThanExpression => "<",
+            SyntaxKind.LessThanOrEqualExpression => "<=",
+            SyntaxKind.GreaterThanExpression => ">",
+            SyntaxKind.GreaterThanOrEqualExpression => ">=",
+            SyntaxKind.LogicalAndExpression => "and",
+            SyntaxKind.LogicalOrExpression => "or",
+            SyntaxKind.BitwiseAndExpression => null, // handled below
+            SyntaxKind.BitwiseOrExpression => null,
+            SyntaxKind.ExclusiveOrExpression => null,
+            SyntaxKind.LeftShiftExpression => null,
+            SyntaxKind.RightShiftExpression => null,
+            _ => null
+        };
+
+        if (op != null)
+        {
+            return $"{left} {op} {right}";
+        }
+
+        // Bitwise operations → bit32 functions
+        return binary.Kind() switch
+        {
+            SyntaxKind.BitwiseAndExpression => $"bit32.band({left}, {right})",
+            SyntaxKind.BitwiseOrExpression => $"bit32.bor({left}, {right})",
+            SyntaxKind.ExclusiveOrExpression => $"bit32.bxor({left}, {right})",
+            SyntaxKind.LeftShiftExpression => $"bit32.lshift({left}, {right})",
+            SyntaxKind.RightShiftExpression => $"bit32.rshift({left}, {right})",
+            _ => $"--[[TODO: binary {binary.Kind()}]] ({left} ?? {right})"
+        };
+    }
+
+    private string EmitPrefixUnary(PrefixUnaryExpressionSyntax prefixUnary)
+    {
+        var operand = EmitExpression(prefixUnary.Operand);
+        return prefixUnary.Kind() switch
+        {
+            SyntaxKind.LogicalNotExpression => $"not {operand}",
+            SyntaxKind.UnaryMinusExpression => $"-{operand}",
+            SyntaxKind.UnaryPlusExpression => operand,
+            SyntaxKind.BitwiseNotExpression => $"bit32.bnot({operand})",
+            SyntaxKind.PreIncrementExpression => $"({operand} + 1)", // approximation
+            SyntaxKind.PreDecrementExpression => $"({operand} - 1)", // approximation
+            _ => $"--[[TODO: prefix {prefixUnary.Kind()}]] {operand}"
+        };
+    }
+
+    private string EmitThrowExpression(ThrowExpressionSyntax throwExpr)
+    {
+        // throw expressions used in switch arms etc.
+        // We can't really do error() as an expression in Luau, so emit a TODO comment
+        if (throwExpr.Expression is ObjectCreationExpressionSyntax objCreate)
+        {
+            var exType = objCreate.Type.ToString();
+            return $"--[[TODO: ThrowExpression]] nil";
+        }
+        return "--[[TODO: throw]] nil";
+    }
+
+    private string EmitPostfixUnary(PostfixUnaryExpressionSyntax postfix)
+    {
+        var operand = EmitExpression(postfix.Operand);
+        return postfix.Kind() switch
+        {
+            SyntaxKind.PostIncrementExpression => $"({operand} + 1)", // approximation
+            SyntaxKind.PostDecrementExpression => $"({operand} - 1)", // approximation
+            SyntaxKind.SuppressNullableWarningExpression => operand, // just drop the !
+            _ => $"--[[TODO: postfix {postfix.Kind()}]] {operand}"
+        };
+    }
+
+    private string EmitParenthesized(ParenthesizedExpressionSyntax paren)
+    {
+        var inner = EmitExpression(paren.Expression);
+        return $"({inner})";
+    }
+
+    private string EmitCast(CastExpressionSyntax cast)
+    {
+        var inner = EmitExpression(cast.Expression);
+        var targetType = cast.Type.ToString();
+
+        // Enum casts: (int)kind → kind, (SyntaxKind)7 → 7
+        // Numeric casts: (int)x → x, (char)x → x
+        // These are all no-ops in Luau since everything is number
+        if (targetType is "int" or "uint" or "long" or "ulong"
+            or "short" or "ushort" or "byte" or "sbyte"
+            or "float" or "double" or "char"
+            || IsLikelyEnumOrExternalType(targetType))
+        {
+            return inner;
+        }
+
+        return inner; // Default: drop the cast
+    }
+
+    private string EmitConditional(ConditionalExpressionSyntax conditional)
+    {
+        var condition = EmitExpression(conditional.Condition);
+        var whenTrue = EmitExpression(conditional.WhenTrue);
+        var whenFalse = EmitExpression(conditional.WhenFalse);
+        // Luau ternary: `if condition then trueVal else falseVal`
+        return $"if {condition} then {whenTrue} else {whenFalse}";
+    }
+
+    /// <summary>
+    /// Emit a switch expression as an inline if/elseif expression (Luau's if-then-else expression).
+    /// This handles switch expressions used in non-return contexts.
+    /// For return contexts, EmitSwitchExpressionAsReturn is used instead.
+    /// </summary>
+    private string EmitSwitchExpression(SwitchExpressionSyntax switchExpr)
+    {
+        // For switch expressions used as expressions (not in return position),
+        // we build a nested if-then-else expression.
+        var governing = EmitExpression(switchExpr.GoverningExpression);
+
+        // Find default arm
+        var defaultArm = switchExpr.Arms.FirstOrDefault(a => a.Pattern is DiscardPatternSyntax);
+        var caseArms = switchExpr.Arms.Where(a => a.Pattern is not DiscardPatternSyntax).ToList();
+
+        if (caseArms.Count == 0 && defaultArm != null)
+        {
+            return EmitExpression(defaultArm.Expression);
+        }
+
+        // Build nested: if cond1 then val1 elseif cond2 then val2 ... else default
+        var sb = new StringBuilder();
+        for (int i = 0; i < caseArms.Count; i++)
+        {
+            var arm = caseArms[i];
+            var pattern = EmitSwitchPattern(governing, arm.Pattern);
+            var value = EmitExpression(arm.Expression);
+
+            if (i == 0)
+                sb.Append($"if {pattern} then {value}");
+            else
+                sb.Append($" elseif {pattern} then {value}");
+        }
+
+        if (defaultArm != null)
+        {
+            sb.Append($" else {EmitExpression(defaultArm.Expression)}");
+        }
+        else
+        {
+            sb.Append(" else nil");
+        }
+
+        return sb.ToString();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Type mapping helpers
+    // ────────────────────────────────────────────────────────────────────
+
+    private static string MapReturnType(TypeSyntax type)
+    {
+        var typeStr = type.ToString();
+        return TypeMapper.MapType(typeStr) ?? typeStr;
+    }
+
+    private static string MapTypeNode(TypeSyntax? type)
+    {
+        if (type == null) return "any";
+        var typeStr = type.ToString();
+        return TypeMapper.MapType(typeStr) ?? typeStr;
+    }
+
+    /// <summary>
+    /// Heuristic: detect string concatenation (+ with a string literal on either side).
+    /// Without semantic analysis, we check for string literal operands or method calls
+    /// that are known to return strings (e.g., GetText).
+    /// </summary>
+    private static bool IsStringConcatenation(BinaryExpressionSyntax binary)
+    {
+        return IsStringExpression(binary.Left) || IsStringExpression(binary.Right);
+    }
+
+    private static bool IsStringExpression(ExpressionSyntax expr)
+    {
+        // Direct string literal: "hello"
+        if (expr is LiteralExpressionSyntax literal && literal.Kind() == SyntaxKind.StringLiteralExpression)
+            return true;
+
+        // Method calls named "GetText" — likely returns string
+        if (expr is InvocationExpressionSyntax invocation)
+        {
+            var name = invocation.Expression switch
+            {
+                IdentifierNameSyntax id => id.Identifier.Text,
+                MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
+                _ => null
+            };
+            if (name is "GetText" or "ToString")
+                return true;
+        }
+
+        // Another binary + that contains a string
+        if (expr is BinaryExpressionSyntax innerBinary && innerBinary.Kind() == SyntaxKind.AddExpression)
+            return IsStringConcatenation(innerBinary);
+
+        return false;
+    }
+
+    /// <summary>
+    /// Heuristic: is this identifier likely an enum/external type used in member access?
+    /// Returns true for PascalCase identifiers that aren't our own class.
+    /// </summary>
+    private static bool IsLikelyEnumOrExternalType(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        // PascalCase heuristic: starts with uppercase, has at least 2 chars
+        return char.IsUpper(name[0]) && name.Length >= 2;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Output helpers
+    // ────────────────────────────────────────────────────────────────────
+
+    public void AppendLine(string line = "")
     {
         if (string.IsNullOrEmpty(line))
         {
@@ -85,5 +977,33 @@ public class LuauEmitter
         }
         _sb.Append(new string('\t', _indent));
         _sb.AppendLine(line);
+    }
+
+    /// <summary>
+    /// Insert text at a specific position in the output buffer.
+    /// Used by the orchestrator to insert require() statements after the header.
+    /// </summary>
+    public void InsertAfterHeader(string text)
+    {
+        // Find the end of the header (after the blank line following "-- Do not edit manually")
+        var output = _sb.ToString();
+        var headerEnd = output.IndexOf("-- Do not edit manually", StringComparison.Ordinal);
+        if (headerEnd >= 0)
+        {
+            // Find the end of that line + the blank line
+            var lineEnd = output.IndexOf('\n', headerEnd);
+            if (lineEnd >= 0)
+            {
+                // Skip the blank line after the header comment
+                var nextLineEnd = output.IndexOf('\n', lineEnd + 1);
+                if (nextLineEnd >= 0)
+                {
+                    _sb.Insert(nextLineEnd + 1, text);
+                    return;
+                }
+            }
+        }
+        // Fallback: just prepend after header
+        _sb.Insert(0, text);
     }
 }
