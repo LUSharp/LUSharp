@@ -41,23 +41,31 @@ LUSharp is a C# to Luau transpiler for Roblox, similar to [roblox-ts](https://ro
 === "C#"
 
     ```csharp
-    using LUSharpAPI.Runtime.Internal;
-    using LUSharpAPI.Runtime.STL.Types;
-    using LUSharpAPI.Runtime.STL.Services;
+    using System;
+    using Roblox.Classes;
 
-    namespace MyGame.Server
+    namespace Game.Server
     {
-        internal class ServerMain : RobloxScript
+        public class GameScript
         {
-            public override void GameEntry()
-            {
-                Players.PlayerAdded += (player) =>
-                {
-                    print($"Welcome, {player.Name}!");
-                };
+            public enum State { Idle, Running, Paused }
 
-                var spawn = new Vector3(0, 10, 0);
-                print($"Spawn point: {spawn}");
+            public struct PlayerData
+            {
+                public string Name;
+                public int Score;
+            }
+
+            public static void Main()
+            {
+                PlayerData data = new() { Name = "Alice", Score = 100 };
+                Console.WriteLine($"Player: {data.Name}");
+
+                var players = game.GetService<Players>();
+                players.PlayerAdded.Connect((Player p) =>
+                {
+                    print($"{p.DisplayName} joined!");
+                });
             }
         }
     }
@@ -66,22 +74,49 @@ LUSharp is a C# to Luau transpiler for Roblox, similar to [roblox-ts](https://ro
 === "Generated Luau"
 
     ```lua
+    --!strict
+    -- Compiled by LUSharp (do not edit)
+
     local Players = game:GetService("Players")
 
-    local ServerMain = {}
+    local State = ({
+        ['Idle'] = "Idle";
+        ['Running'] = "Running";
+        ['Paused'] = "Paused";
+    })
 
-    function ServerMain.GameEntry()
-        Players.PlayerAdded:Connect(function(player)
-            print(`Welcome, {player.Name}!`)
-        end)
+    export type State = keyof<typeof(State)>
 
-        local spawn = Vector3.new(0, 10, 0)
-        print(`Spawn point: {spawn}`)
+    type PlayerData_self = {
+        Name: string?;
+        Score: number?;
+    }
+
+    local PlayerData = {}
+    PlayerData.__index = PlayerData
+
+    export type PlayerData = typeof(setmetatable({} :: PlayerData_self, PlayerData))
+
+    function PlayerData.new(): PlayerData
+        local self = setmetatable({} :: PlayerData_self, PlayerData)
+        return self
     end
 
-    ServerMain.GameEntry()
+    local GameScript = {}
+    GameScript.__index = GameScript
 
-    return ServerMain
+    export type GameScript = typeof(setmetatable({}, GameScript))
+
+    function GameScript.Main()
+        local data = PlayerData.new()
+        data.Name = "Alice"
+        data.Score = 100
+        print(`Player: {data.Name}`)
+        local players = Players
+        players.PlayerAdded:Connect(function(p) print(`{p.DisplayName} joined!`) end)
+    end
+
+    return GameScript
     ```
 
 ---
