@@ -1032,6 +1032,15 @@ public class LuauEmitter
             case BreakStatementSyntax:
                 AppendLine("break");
                 break;
+            case ContinueStatementSyntax:
+                AppendLine("continue");
+                break;
+            case DoStatementSyntax doStmt:
+                EmitDoWhile(doStmt);
+                break;
+            case TryStatementSyntax tryStmt:
+                EmitTryCatch(tryStmt);
+                break;
             case WhileStatementSyntax whileStmt:
                 EmitWhile(whileStmt);
                 break;
@@ -1147,6 +1156,72 @@ public class LuauEmitter
         EmitStatementBody(whileStmt.Statement);
         _indent--;
         AppendLine("end");
+    }
+
+    private void EmitDoWhile(DoStatementSyntax doStmt)
+    {
+        var condition = EmitExpression(doStmt.Condition);
+        AppendLine("repeat");
+        _indent++;
+        EmitStatementBody(doStmt.Statement);
+        _indent--;
+        AppendLine($"until not ({condition})");
+    }
+
+    /// <summary>
+    /// Emit a try/catch/finally block using pcall.
+    ///   try { body } catch (Exception e) { handler } finally { cleanup }
+    /// becomes:
+    ///   local __ok, __err = pcall(function() body end)
+    ///   if not __ok then handler end
+    ///   cleanup
+    /// </summary>
+    private void EmitTryCatch(TryStatementSyntax tryStmt)
+    {
+        // Emit pcall wrapper for the try block
+        AppendLine("local __ok, __err = pcall(function()");
+        _indent++;
+        EmitBlock(tryStmt.Block);
+        _indent--;
+        AppendLine("end)");
+
+        // Emit catch clauses
+        if (tryStmt.Catches.Count > 0)
+        {
+            bool isFirst = true;
+            foreach (var catchClause in tryStmt.Catches)
+            {
+                var keyword = isFirst ? "if" : "elseif";
+                isFirst = false;
+
+                AppendLine($"{keyword} not __ok then");
+                _indent++;
+
+                // If the catch has a declaration (e.g., catch (Exception e)),
+                // emit local for the variable's .Message as tostring(__err)
+                if (catchClause.Declaration != null)
+                {
+                    var varName = catchClause.Declaration.Identifier.Text;
+                    if (!string.IsNullOrEmpty(varName))
+                    {
+                        _currentMethodLocals.Add(varName);
+                        // Create a local table with a Message property for compatibility
+                        AppendLine($"local {varName}_Message = tostring(__err)");
+                        _currentMethodLocals.Add($"{varName}_Message");
+                    }
+                }
+
+                EmitBlock(catchClause.Block);
+                _indent--;
+            }
+            AppendLine("end");
+        }
+
+        // Emit finally block (runs unconditionally after pcall + catch)
+        if (tryStmt.Finally != null)
+        {
+            EmitBlock(tryStmt.Finally.Block);
+        }
     }
 
     private void EmitFor(ForStatementSyntax forStmt)
@@ -1528,6 +1603,9 @@ public class LuauEmitter
             BaseExpressionSyntax => _baseClassName ?? "--[[TODO: base without parent]] nil",
             ElementAccessExpressionSyntax elementAccess => EmitElementAccess(elementAccess),
             AssignmentExpressionSyntax assignment => EmitAssignmentExpression(assignment),
+            ParenthesizedLambdaExpressionSyntax parenLambda => EmitParenthesizedLambda(parenLambda),
+            SimpleLambdaExpressionSyntax simpleLambda => EmitSimpleLambda(simpleLambda),
+            ConditionalAccessExpressionSyntax conditionalAccess => EmitConditionalAccess(conditionalAccess),
             _ => $"--[[TODO: {expr.Kind()}]] nil"
         };
     }
@@ -1646,6 +1724,12 @@ public class LuauEmitter
         if (memberAccess.Expression is IdentifierNameSyntax typeName)
         {
             var typeStr = typeName.Identifier.Text;
+
+            // Handle catch variable .Message → varName_Message (created by try/catch emission)
+            if (memberName == "Message" && _currentMethodLocals.Contains($"{typeStr}_Message"))
+            {
+                return $"{typeStr}_Message";
+            }
 
             // Track external module references (not our own class, not a nested type)
             if (typeStr != _currentClassName
@@ -1816,6 +1900,12 @@ public class LuauEmitter
         if (memberAccess.Expression is IdentifierNameSyntax ownerIdent)
         {
             var ownerName = ownerIdent.Identifier.Text;
+
+            // Console.WriteLine(x) → print(x)
+            if (ownerName == "Console" && memberName is "WriteLine" or "Write")
+            {
+                return $"print({argStr})";
+            }
 
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
@@ -2096,6 +2186,12 @@ public class LuauEmitter
         var left = EmitExpression(binary.Left);
         var right = EmitExpression(binary.Right);
 
+        // Handle null-coalescing: x ?? y → if x ~= nil then x else y
+        if (binary.Kind() == SyntaxKind.CoalesceExpression)
+        {
+            return $"if {left} ~= nil then {left} else {right}";
+        }
+
         // Detect string concatenation: + with string literal on either side → ..
         if (binary.Kind() == SyntaxKind.AddExpression && IsStringConcatenation(binary))
         {
@@ -2259,6 +2355,155 @@ public class LuauEmitter
         }
 
         return sb.ToString();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Lambda expression emission
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Emit a parenthesized lambda: (x, y) => expr  →  function(x, y) return expr end
+    /// Or (x, y) => { stmts }  →  function(x, y) stmts end
+    /// </summary>
+    private string EmitParenthesizedLambda(ParenthesizedLambdaExpressionSyntax lambda)
+    {
+        var paramParts = new List<string>();
+        foreach (var param in lambda.ParameterList.Parameters)
+        {
+            var paramName = param.Identifier.Text;
+            if (param.Type != null)
+            {
+                var paramType = MapTypeNode(param.Type);
+                paramParts.Add($"{paramName}: {paramType}");
+            }
+            else
+            {
+                paramParts.Add(paramName);
+            }
+        }
+        var paramStr = string.Join(", ", paramParts);
+
+        if (lambda.ExpressionBody != null)
+        {
+            var body = EmitExpression(lambda.ExpressionBody);
+            return $"function({paramStr}) return {body} end";
+        }
+        else if (lambda.Block != null)
+        {
+            return EmitLambdaBlockBody(paramStr, lambda.Block);
+        }
+
+        return $"function({paramStr}) end";
+    }
+
+    /// <summary>
+    /// Emit a simple lambda: x => expr  →  function(x) return expr end
+    /// Or x => { stmts }  →  function(x) stmts end
+    /// </summary>
+    private string EmitSimpleLambda(SimpleLambdaExpressionSyntax lambda)
+    {
+        var paramName = lambda.Parameter.Identifier.Text;
+        string paramStr;
+        if (lambda.Parameter.Type != null)
+        {
+            var paramType = MapTypeNode(lambda.Parameter.Type);
+            paramStr = $"{paramName}: {paramType}";
+        }
+        else
+        {
+            paramStr = paramName;
+        }
+
+        if (lambda.ExpressionBody != null)
+        {
+            var body = EmitExpression(lambda.ExpressionBody);
+            return $"function({paramStr}) return {body} end";
+        }
+        else if (lambda.Block != null)
+        {
+            return EmitLambdaBlockBody(paramStr, lambda.Block);
+        }
+
+        return $"function({paramStr}) end";
+    }
+
+    /// <summary>
+    /// Emit a lambda block body as an inline function string.
+    /// Captures output by recording the position in the main StringBuilder before and after,
+    /// then extracting the emitted text and removing it from the main output.
+    /// </summary>
+    private string EmitLambdaBlockBody(string paramStr, BlockSyntax block)
+    {
+        // Record position before emitting
+        var startPos = _sb.Length;
+        var savedIndent = _indent;
+        _indent = 0;
+        EmitBlock(block);
+        // Extract the emitted text
+        var bodyStr = _sb.ToString(startPos, _sb.Length - startPos).TrimEnd('\r', '\n');
+        // Remove the emitted text from the main output
+        _sb.Length = startPos;
+        _indent = savedIndent;
+
+        // For single-line blocks, emit inline
+        var lines = bodyStr.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 1)
+        {
+            return $"function({paramStr}) {lines[0].Trim()} end";
+        }
+
+        // Multi-line: emit on separate lines
+        var result = new StringBuilder();
+        result.Append($"function({paramStr})");
+        foreach (var line in lines)
+        {
+            result.Append($"\n{new string('\t', _indent + 1)}{line.Trim()}");
+        }
+        result.Append($"\n{new string('\t', _indent)}end");
+        return result.ToString();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Null-conditional access emission
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Emit a conditional access expression: obj?.Property → if obj ~= nil then obj.Property else nil
+    /// obj?.Method() → if obj ~= nil then obj:Method() else nil
+    /// </summary>
+    private string EmitConditionalAccess(ConditionalAccessExpressionSyntax conditionalAccess)
+    {
+        var target = EmitExpression(conditionalAccess.Expression);
+        var binding = EmitConditionalBinding(target, conditionalAccess.WhenNotNull);
+        return $"if {target} ~= nil then {binding} else nil";
+    }
+
+    /// <summary>
+    /// Emit the WhenNotNull part of a conditional access, resolving MemberBindingExpression
+    /// and ElementBindingExpression relative to the target expression.
+    /// </summary>
+    private string EmitConditionalBinding(string target, ExpressionSyntax whenNotNull)
+    {
+        return whenNotNull switch
+        {
+            MemberBindingExpressionSyntax memberBinding =>
+                $"{target}.{memberBinding.Name.Identifier.Text}",
+            InvocationExpressionSyntax invocation when invocation.Expression is MemberBindingExpressionSyntax methodBinding =>
+                EmitConditionalMethodInvocation(target, methodBinding, invocation.ArgumentList.Arguments),
+            _ => $"{target}.{EmitExpression(whenNotNull)}"
+        };
+    }
+
+    /// <summary>
+    /// Emit a conditional method invocation: obj?.Method(args)
+    /// For instance methods uses colon syntax: obj:Method(args)
+    /// </summary>
+    private string EmitConditionalMethodInvocation(string target, MemberBindingExpressionSyntax methodBinding, SeparatedSyntaxList<ArgumentSyntax> arguments)
+    {
+        var methodName = methodBinding.Name.Identifier.Text;
+        var args = arguments.Select(a => EmitExpression(a.Expression));
+        var argStr = string.Join(", ", args);
+        return $"{target}:{methodName}({argStr})";
     }
 
     // ────────────────────────────────────────────────────────────────────
