@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis.CSharp;
+using LUSharpRoslynModule.Transpiler;
 
 namespace LUSharpRoslynModule;
 
@@ -109,14 +110,103 @@ internal class Program
 
     static int TranspileFile(string filePath)
     {
-        Console.WriteLine($"[TODO] Transpile: {filePath}");
+        if (!File.Exists(filePath))
+        {
+            Console.Error.WriteLine($"Error: file not found: {filePath}");
+            return 1;
+        }
+
+        var projectDir = FindProjectDirectory();
+        if (projectDir == null)
+        {
+            Console.Error.WriteLine("Error: could not find LUSharpRoslynModule project directory");
+            return 1;
+        }
+
+        var outDir = Path.Combine(projectDir, "out");
+        Directory.CreateDirectory(outDir);
+
+        var sourceCode = File.ReadAllText(filePath);
+        var fileName = Path.GetFileName(filePath);
+
+        var transpiler = new RoslynToLuau();
+        var result = transpiler.Transpile(sourceCode, fileName);
+
+        if (!result.Success)
+        {
+            Console.Error.WriteLine($"Failed to transpile {fileName}:");
+            foreach (var error in result.Errors)
+                Console.Error.WriteLine($"  {error}");
+            return 1;
+        }
+
+        var outputName = Path.GetFileNameWithoutExtension(fileName) + ".lua";
+        var outputPath = Path.Combine(outDir, outputName);
+        File.WriteAllText(outputPath, result.LuauSource);
+
+        Console.WriteLine($"Transpiled {fileName} -> {outputPath}");
         return 0;
     }
 
     static int TranspileAll()
     {
-        Console.WriteLine("[TODO] Transpile all RoslynSource/ files");
-        return 0;
+        var projectDir = FindProjectDirectory();
+        if (projectDir == null)
+        {
+            Console.Error.WriteLine("Error: could not find LUSharpRoslynModule project directory");
+            return 1;
+        }
+
+        var roslynSourceDir = Path.Combine(projectDir, "RoslynSource");
+        if (!Directory.Exists(roslynSourceDir))
+        {
+            Console.Error.WriteLine($"Error: RoslynSource/ directory not found at {roslynSourceDir}");
+            Console.Error.WriteLine("Run 'generate' first to create source files.");
+            return 1;
+        }
+
+        var outDir = Path.Combine(projectDir, "out");
+        Directory.CreateDirectory(outDir);
+
+        var csFiles = Directory.GetFiles(roslynSourceDir, "*.cs");
+        if (csFiles.Length == 0)
+        {
+            Console.WriteLine("No .cs files found in RoslynSource/");
+            return 0;
+        }
+
+        var transpiler = new RoslynToLuau();
+        int succeeded = 0;
+        int failed = 0;
+
+        foreach (var csFile in csFiles)
+        {
+            var sourceCode = File.ReadAllText(csFile);
+            var fileName = Path.GetFileName(csFile);
+
+            var result = transpiler.Transpile(sourceCode, fileName);
+
+            if (result.Success)
+            {
+                var outputName = Path.GetFileNameWithoutExtension(fileName) + ".lua";
+                var outputPath = Path.Combine(outDir, outputName);
+                File.WriteAllText(outputPath, result.LuauSource);
+
+                Console.WriteLine($"  OK  {fileName} -> {outputName}");
+                succeeded++;
+            }
+            else
+            {
+                Console.Error.WriteLine($"  FAIL  {fileName}:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"    {error}");
+                failed++;
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Transpile complete: {succeeded} succeeded, {failed} failed ({csFiles.Length} total)");
+        return failed > 0 ? 1 : 0;
     }
 
     static int RunReference(string[] args)
