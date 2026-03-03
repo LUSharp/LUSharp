@@ -224,6 +224,15 @@ internal class Program
             case "syntax-kind-spot":
                 Reference.SyntaxKindReference.PrintSpotCheck();
                 break;
+            case "syntax-facts":
+                Reference.SyntaxFactsReference.PrintAll();
+                break;
+            case "syntax-facts-chars":
+                Reference.SyntaxFactsReference.PrintCharClassification();
+                break;
+            case "syntax-facts-gettext":
+                Reference.SyntaxFactsReference.PrintGetText();
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;

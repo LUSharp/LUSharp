@@ -9,7 +9,7 @@ OUT_DIR="$SCRIPT_DIR/out"
 MODULES_DIR="$REPO_ROOT/TestPlugin/src/modules"
 
 echo "=== Transpiling RoslynSource files ==="
-dotnet run --project "$SCRIPT_DIR" -- transpile-all
+dotnet run --project "$SCRIPT_DIR" -- transpile-all || echo "(some files failed — continuing with successfully transpiled files)"
 
 echo ""
 echo "=== Copying to TestPlugin/src/modules ==="
