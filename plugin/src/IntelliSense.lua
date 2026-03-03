@@ -4151,6 +4151,34 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
         })
     end
 
+    local function reportRedeclarationIssue(name)
+        if type(name) ~= "string" or name == "" then
+            return
+        end
+
+        local key = "redeclaration::" .. name
+        if emitted[key] then
+            return
+        end
+        emitted[key] = true
+
+        local found = findIdentifierPosition(source, lineStarts, name, nextSearchStartByName[name])
+        if found then
+            nextSearchStartByName[name] = found.nextStart
+        end
+
+        table.insert(out, {
+            severity = "error",
+            message = "A local variable or function named '" .. name .. "' is already defined in this scope",
+            line = found and found.line or 1,
+            column = found and found.column or 1,
+            endLine = found and found.endLine or 1,
+            endColumn = found and found.endColumn or 2,
+            length = found and found.length or math.max(1, #name),
+            code = "CS0128",
+        })
+    end
+
     local inferExpressionType
     local walkExpression
     local walkStatements
@@ -4415,6 +4443,18 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             local statementType = statement.type
             if statementType == "local_var" then
                 walkExpression(statement.initializer, scope)
+                if type(statement.name) == "string" and statement.name ~= "" then
+                    if scope.declared[statement.name] then
+                        reportRedeclarationIssue(statement.name)
+                    else
+                        -- Advance search pointer past this declaration so future
+                        -- errors for the same name point to the right occurrence
+                        local found = findIdentifierPosition(source, lineStarts, statement.name, nextSearchStartByName[statement.name])
+                        if found then
+                            nextSearchStartByName[statement.name] = found.nextStart
+                        end
+                    end
+                end
                 declareInScope(scope, allDeclared, statement.name)
 
                 local declaredType = statement.varType
