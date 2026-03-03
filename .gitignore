@@ -379,6 +379,9 @@ luau.exe
 # Rojo plugin build output
 plugin/build/
 
+# TestPlugin build output
+TestPlugin/*.rbxmx
+
 # Git worktrees
 .worktrees/
 worktrees/

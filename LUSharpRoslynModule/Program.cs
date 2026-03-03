@@ -211,7 +211,23 @@ internal class Program
 
     static int RunReference(string[] args)
     {
-        Console.WriteLine("[TODO] Run reference test");
+        var subcommand = args.Length > 0 ? args[0] : "all";
+        switch (subcommand)
+        {
+            case "syntax-kind":
+            case "all":
+                Reference.SyntaxKindReference.PrintAll();
+                break;
+            case "syntax-kind-count":
+                Reference.SyntaxKindReference.PrintCount();
+                break;
+            case "syntax-kind-spot":
+                Reference.SyntaxKindReference.PrintSpotCheck();
+                break;
+            default:
+                Console.Error.WriteLine($"Unknown reference: {subcommand}");
+                return 1;
+        }
         return 0;
     }
 }
