@@ -110,6 +110,94 @@ local function escapeRichText(text)
     return (text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 
+-- Move lines covered by cursor/selection up or down by one line.
+-- direction: -1 = up, 1 = down
+-- Returns newText, newCursor, newSelection (or nil if move not possible)
+local function computeMoveLinesEdit(text, cursorPos, selectionStart, direction)
+    -- Split text into lines (keeping content only, joining with \n)
+    local lines = {}
+    local pos = 1
+    while pos <= #text do
+        local nl = text:find("\n", pos, true)
+        if nl then
+            table.insert(lines, text:sub(pos, nl - 1))
+            pos = nl + 1
+        else
+            table.insert(lines, text:sub(pos))
+            pos = #text + 1
+        end
+    end
+    if #lines == 0 then
+        return nil
+    end
+
+    -- Determine line range covered by cursor and selection
+    local cursorLine = getLineCol(text, cursorPos)
+    local selLine = cursorLine
+    if selectionStart and selectionStart >= 1 and selectionStart ~= cursorPos then
+        selLine = getLineCol(text, selectionStart)
+    end
+
+    local startLine = math.min(cursorLine, selLine)
+    local endLine = math.max(cursorLine, selLine)
+
+    -- Check bounds
+    if direction == -1 and startLine <= 1 then
+        return nil
+    end
+    if direction == 1 and endLine >= #lines then
+        return nil
+    end
+
+    -- Compute character offsets for the affected line range (before swap)
+    local function lineStartOffset(lineNum)
+        local offset = 1
+        for i = 1, lineNum - 1 do
+            offset = offset + #lines[i] + 1 -- +1 for \n
+        end
+        return offset
+    end
+
+    -- Perform the swap
+    if direction == -1 then
+        -- Move block up: swap the line above startLine with the block
+        local swapLine = lines[startLine - 1]
+        table.remove(lines, startLine - 1)
+        table.insert(lines, endLine, swapLine)
+    else
+        -- Move block down: swap the line below endLine with the block
+        local swapLine = lines[endLine + 1]
+        table.remove(lines, endLine + 1)
+        table.insert(lines, startLine, swapLine)
+    end
+
+    local newText = table.concat(lines, "\n")
+
+    -- Adjust cursor and selection to follow their moved lines
+    local newStartLine = startLine + direction
+    local newEndLine = endLine + direction
+
+    local oldCursorLineInBlock = cursorLine - startLine
+    local oldSelLineInBlock = selLine - startLine
+
+    local newCursorLine = newStartLine + oldCursorLineInBlock
+    local newSelLine = newStartLine + oldSelLineInBlock
+
+    -- Compute new cursor position: same column on the new line
+    local _, cursorCol = getLineCol(text, cursorPos)
+    local newCursorOffset = lineStartOffset(newCursorLine) + cursorCol - 1
+    local newCursor = math.min(newCursorOffset, #newText + 1)
+
+    local newSelection = -1
+    if selectionStart and selectionStart >= 1 and selectionStart ~= cursorPos then
+        local _, selCol = getLineCol(text, selectionStart)
+        local newSelOffset = lineStartOffset(newSelLine) + selCol - 1
+        newSelection = math.min(newSelOffset, #newText + 1)
+    end
+
+    return newText, newCursor, newSelection
+end
+
 local function findSingleSplice(oldText, updatedText)
     if oldText == updatedText then
         return nil
@@ -2729,6 +2817,33 @@ function Editor.new(pluginObject, options)
         local altDown = resolveAltModifierDown(self, input)
 
         capturePendingWordDeleteSnapshot(input.KeyCode, ctrlDown, altDown, "uis")
+
+        -- Alt+Up / Alt+Down: move line(s) up or down
+        if altDown and not ctrlDown and (input.KeyCode == Enum.KeyCode.Up or input.KeyCode == Enum.KeyCode.Down) then
+            if self.textBox and self.textBox:IsFocused() then
+                local direction = input.KeyCode == Enum.KeyCode.Up and -1 or 1
+                local newText, newCursor, newSelection = computeMoveLinesEdit(
+                    self.textBox.Text,
+                    self.textBox.CursorPosition,
+                    self.textBox.SelectionStart,
+                    direction
+                )
+                if newText then
+                    self._suppressTextChange = true
+                    self._pendingAutoIndent = nil
+                    self.textBox.Text = newText
+                    self.textBox.CursorPosition = newCursor
+                    self.textBox.SelectionStart = newSelection
+                    self._lastText = newText
+                    self._lastCursorPos = newCursor
+                    self._lastSelectionStart = newSelection
+                    updateStatus(self)
+                    updateCaretPosition(self)
+                    self:requestDiagnostics()
+                end
+            end
+            return
+        end
 
         if EditorTextUtils.isUndoRedoShortcut(input.KeyCode, ctrlDown, altDown) then
             self._skipEditorTransformsOnce = true
