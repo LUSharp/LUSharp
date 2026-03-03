@@ -33,6 +33,12 @@ public class LuauEmitter
     private HashSet<string> _instanceMethods = new();
 
     /// <summary>
+    /// The base class name for the current class (null if no inheritance).
+    /// Used to resolve `base.X` calls to `ParentClass.X(self, ...)`.
+    /// </summary>
+    private string? _baseClassName;
+
+    /// <summary>
     /// Set of nested type names declared inside the current class.
     /// </summary>
     private HashSet<string> _nestedTypeNames = new();
@@ -70,6 +76,13 @@ public class LuauEmitter
     /// Populated during emission, consumed by the orchestrator to insert requires.
     /// </summary>
     public HashSet<string> ReferencedModules { get; } = new();
+
+    /// <summary>
+    /// Registry of instance fields for each emitted type.
+    /// Used to resolve inherited field access in child classes (same-file inheritance).
+    /// Key: type name, Value: set of instance field names.
+    /// </summary>
+    private Dictionary<string, HashSet<string>> _emittedTypeFields = new();
 
     /// <summary>
     /// Global overload registry from pre-scan: (TypeName, MethodName, ArgCount) → DisambiguatedName.
@@ -226,7 +239,26 @@ public class LuauEmitter
         }
         else
         {
-            EmitInstanceClass(classDecl.Identifier.Text, classDecl.Members);
+            // Extract base class name from BaseList (if any)
+            string? baseClassName = null;
+            if (classDecl.BaseList != null)
+            {
+                // Take the first base type (C# single inheritance — interfaces come later)
+                var firstBase = classDecl.BaseList.Types.FirstOrDefault();
+                if (firstBase != null)
+                {
+                    var baseTypeName = firstBase.Type.ToString();
+                    // Strip namespace qualifiers
+                    if (baseTypeName.Contains('.'))
+                        baseTypeName = baseTypeName.Substring(baseTypeName.LastIndexOf('.') + 1);
+                    // Strip generic args
+                    if (baseTypeName.Contains('<'))
+                        baseTypeName = baseTypeName.Substring(0, baseTypeName.IndexOf('<'));
+                    baseClassName = baseTypeName;
+                }
+            }
+
+            EmitInstanceClass(classDecl.Identifier.Text, classDecl.Members, baseClassName: baseClassName);
         }
     }
 
@@ -250,10 +282,21 @@ public class LuauEmitter
     ///   export type ClassName = typeof(setmetatable({} :: ClassName_self, ClassName))
     ///   function ClassName.new(...): ClassName ... end
     ///   function ClassName.method(self: ClassName, ...): ReturnType ... end
+    ///
+    /// When baseClassName is provided (class inheritance), emits:
+    ///   local ClassName = setmetatable({}, {__index = BaseClass})
+    ///   ClassName.__index = ClassName
     /// </summary>
-    private void EmitInstanceClass(string className, SyntaxList<MemberDeclarationSyntax> members, bool isNested = false)
+    private void EmitInstanceClass(string className, SyntaxList<MemberDeclarationSyntax> members, bool isNested = false, string? baseClassName = null)
     {
         _currentClassName = className;
+        _baseClassName = baseClassName;
+
+        // Track the base class as a referenced module (so it gets a require())
+        if (baseClassName != null)
+        {
+            ReferencedModules.Add(baseClassName);
+        }
 
         // ── Phase 1: collect all member info ──
 
@@ -310,6 +353,28 @@ public class LuauEmitter
                 }
                 case PropertyDeclarationSyntax propDecl:
                     properties.Add(propDecl);
+                    // Track auto-properties as instance fields for bare identifier → self.field resolution
+                    if (!propDecl.Modifiers.Any(SyntaxKind.StaticKeyword))
+                    {
+                        bool isAutoProperty = propDecl.AccessorList != null
+                            && propDecl.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null);
+                        if (isAutoProperty)
+                        {
+                            var propName = propDecl.Identifier.Text;
+                            _instanceFields.Add(propName);
+                            // Add to type self fields list for the type annotation
+                            var luauType = MapTypeNode(propDecl.Type);
+                            fields.Add((propName, luauType, null, false, false));
+                            // Track field type for cross-type dispatch
+                            var rawType = propDecl.Type.ToString();
+                            var simplifiedType = rawType;
+                            if (simplifiedType.Contains('.'))
+                                simplifiedType = simplifiedType.Substring(simplifiedType.LastIndexOf('.') + 1);
+                            if (simplifiedType.Contains('<'))
+                                simplifiedType = simplifiedType.Substring(0, simplifiedType.IndexOf('<'));
+                            _instanceFieldTypes[propName] = simplifiedType;
+                        }
+                    }
                     break;
                 case ConstructorDeclarationSyntax ctorDecl:
                     constructors.Add(ctorDecl);
@@ -341,6 +406,15 @@ public class LuauEmitter
             TrackTypeReferences(rawType);
         }
 
+        // ── Phase 1.25: inherit parent class fields (for same-file inheritance) ──
+        if (baseClassName != null && _emittedTypeFields.TryGetValue(baseClassName, out var parentFields))
+        {
+            foreach (var parentField in parentFields)
+            {
+                _instanceFields.Add(parentField);
+            }
+        }
+
         // ── Phase 1.5: emit nested types first (they are independent modules) ──
         foreach (var nested in nestedTypes)
         {
@@ -350,6 +424,7 @@ public class LuauEmitter
                 {
                     // Save/restore parent class context
                     var savedClassName = _currentClassName;
+                    var savedBaseClassName = _baseClassName;
                     var savedFields = _instanceFields;
                     var savedMethods = _instanceMethods;
                     var savedNested = _nestedTypeNames;
@@ -361,6 +436,7 @@ public class LuauEmitter
                     AppendLine();
 
                     _currentClassName = savedClassName;
+                    _baseClassName = savedBaseClassName;
                     _instanceFields = savedFields;
                     _instanceMethods = savedMethods;
                     _nestedTypeNames = savedNested;
@@ -373,6 +449,7 @@ public class LuauEmitter
                 case ClassDeclarationSyntax nestedClass:
                 {
                     var savedClassName = _currentClassName;
+                    var savedBaseClassName = _baseClassName;
                     var savedFields = _instanceFields;
                     var savedMethods = _instanceMethods;
                     var savedNested = _nestedTypeNames;
@@ -384,6 +461,7 @@ public class LuauEmitter
                     AppendLine();
 
                     _currentClassName = savedClassName;
+                    _baseClassName = savedBaseClassName;
                     _instanceFields = savedFields;
                     _instanceMethods = savedMethods;
                     _nestedTypeNames = savedNested;
@@ -455,7 +533,14 @@ public class LuauEmitter
         }
 
         // ── Phase 3: class table + __index + export type ──
-        AppendLine($"local {className} = {{}}");
+        if (baseClassName != null)
+        {
+            AppendLine($"local {className} = setmetatable({{}}, {{__index = {baseClassName}}})");
+        }
+        else
+        {
+            AppendLine($"local {className} = {{}}");
+        }
         AppendLine($"{className}.__index = {className}");
 
         if (instanceFields.Count > 0)
@@ -490,12 +575,12 @@ public class LuauEmitter
         if (constructors.Count > 0)
         {
             var ctor = constructors[0]; // Use first constructor
-            EmitConstructor(className, ctor, instanceFields);
+            EmitConstructor(className, ctor, instanceFields, baseClassName);
         }
-        else if (instanceFields.Count > 0)
+        else if (instanceFields.Count > 0 || baseClassName != null)
         {
             // Auto-generate parameterless constructor
-            EmitAutoConstructor(className, instanceFields);
+            EmitAutoConstructor(className, instanceFields, baseClassName);
         }
 
         // ── Phase 5: properties (expression-bodied → getter function) ──
@@ -510,6 +595,15 @@ public class LuauEmitter
             var name = method.Identifier.Text;
             int paramCount = method.ParameterList.Parameters.Count;
             string emitName = _overloadMap.GetValueOrDefault((name, paramCount), name);
+
+            // Abstract methods have no body — emit as a comment stub only
+            bool isAbstract = method.Modifiers.Any(SyntaxKind.AbstractKeyword);
+            if (isAbstract)
+            {
+                AppendLine($"-- abstract: {className}.{emitName}");
+                AppendLine();
+                continue;
+            }
 
             bool isStatic = method.Modifiers.Any(SyntaxKind.StaticKeyword);
             if (isStatic)
@@ -527,6 +621,9 @@ public class LuauEmitter
 
         _isInstanceContext = false;
 
+        // Register this type's instance fields for child class inheritance resolution
+        _emittedTypeFields[className] = new HashSet<string>(_instanceFields);
+
         // ── Phase 7: return (only for top-level types, not nested) ──
         if (!isNested)
         {
@@ -540,6 +637,7 @@ public class LuauEmitter
             AppendLine($"return {{ {string.Join(", ", returnEntries)} }}");
         }
         _currentClassName = null;
+        _baseClassName = null;
         _instanceFields = new HashSet<string>();
         _instanceMethods = new HashSet<string>();
         _nestedTypeNames = new HashSet<string>();
@@ -550,11 +648,13 @@ public class LuauEmitter
 
     /// <summary>
     /// Emit a constructor as ClassName.new(params): ClassName
+    /// When baseClassName is provided, handles base() constructor initializer.
     /// </summary>
     private void EmitConstructor(
         string className,
         ConstructorDeclarationSyntax ctor,
-        List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)> instanceFields)
+        List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)> instanceFields,
+        string? baseClassName = null)
     {
         var parameters = ctor.ParameterList.Parameters;
         var paramParts = new List<string>();
@@ -573,22 +673,54 @@ public class LuauEmitter
         AppendLine($"function {className}.new({paramStr}): {className}");
         _indent++;
 
-        // setmetatable with field defaults
-        if (instanceFields.Count > 0)
+        // Handle base constructor initializer: `: base(args)`
+        if (baseClassName != null && ctor.Initializer != null
+            && ctor.Initializer.IsKind(SyntaxKind.BaseConstructorInitializer))
         {
-            AppendLine($"local self = setmetatable({{");
-            _indent++;
+            // Call parent constructor to get base fields, then overlay child fields
+            var baseArgs = ctor.Initializer.ArgumentList.Arguments
+                .Select(a => EmitExpression(a.Expression));
+            var baseArgStr = string.Join(", ", baseArgs);
+            AppendLine($"local self = setmetatable({baseClassName}.new({baseArgStr}) :: any, {className})");
+
+            // Set child-specific field defaults
             foreach (var field in instanceFields)
             {
                 var value = field.DefaultValue ?? GetDefaultValueForType(field.LuauType);
-                AppendLine($"{field.Name} = {value},");
+                AppendLine($"self.{field.Name} = {value}");
             }
-            _indent--;
-            AppendLine($"}} :: {className}_self, {className})");
+        }
+        else if (baseClassName != null)
+        {
+            // Inheritance but no explicit base() call — call parameterless parent constructor
+            AppendLine($"local self = setmetatable({baseClassName}.new() :: any, {className})");
+
+            // Set child-specific field defaults
+            foreach (var field in instanceFields)
+            {
+                var value = field.DefaultValue ?? GetDefaultValueForType(field.LuauType);
+                AppendLine($"self.{field.Name} = {value}");
+            }
         }
         else
         {
-            AppendLine($"local self = setmetatable({{}}, {className})");
+            // No inheritance: setmetatable with field defaults
+            if (instanceFields.Count > 0)
+            {
+                AppendLine($"local self = setmetatable({{");
+                _indent++;
+                foreach (var field in instanceFields)
+                {
+                    var value = field.DefaultValue ?? GetDefaultValueForType(field.LuauType);
+                    AppendLine($"{field.Name} = {value},");
+                }
+                _indent--;
+                AppendLine($"}} :: {className}_self, {className})");
+            }
+            else
+            {
+                AppendLine($"local self = setmetatable({{}}, {className})");
+            }
         }
 
         // Emit constructor body (assignments, etc.)
@@ -608,23 +740,45 @@ public class LuauEmitter
 
     /// <summary>
     /// Emit an auto-generated parameterless constructor for types with instance fields but no explicit constructor.
+    /// When baseClassName is provided, chains to parent constructor.
     /// </summary>
     private void EmitAutoConstructor(
         string className,
-        List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)> instanceFields)
+        List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)> instanceFields,
+        string? baseClassName = null)
     {
         AppendLine($"function {className}.new(): {className}");
         _indent++;
 
-        AppendLine($"local self = setmetatable({{");
-        _indent++;
-        foreach (var field in instanceFields)
+        if (baseClassName != null)
         {
-            var value = field.DefaultValue ?? GetDefaultValueForType(field.LuauType);
-            AppendLine($"{field.Name} = {value},");
+            // Inheritance: call parent constructor and re-set metatable to child
+            AppendLine($"local self = setmetatable({baseClassName}.new() :: any, {className})");
+
+            // Set child-specific field defaults
+            foreach (var field in instanceFields)
+            {
+                var value = field.DefaultValue ?? GetDefaultValueForType(field.LuauType);
+                AppendLine($"self.{field.Name} = {value}");
+            }
         }
-        _indent--;
-        AppendLine($"}} :: {className}_self, {className})");
+        else if (instanceFields.Count > 0)
+        {
+            AppendLine($"local self = setmetatable({{");
+            _indent++;
+            foreach (var field in instanceFields)
+            {
+                var value = field.DefaultValue ?? GetDefaultValueForType(field.LuauType);
+                AppendLine($"{field.Name} = {value},");
+            }
+            _indent--;
+            AppendLine($"}} :: {className}_self, {className})");
+        }
+        else
+        {
+            AppendLine($"local self = setmetatable({{}}, {className})");
+        }
+
         AppendLine("return self");
 
         _indent--;
@@ -650,11 +804,20 @@ public class LuauEmitter
     /// <summary>
     /// Emit a property as a getter function (and optionally a setter).
     /// Expression-bodied properties become simple getters.
+    /// Pure auto-properties ({ get; set; }) are treated as fields and skipped here.
     /// </summary>
     private void EmitProperty(string className, PropertyDeclarationSyntax prop)
     {
         var propName = prop.Identifier.Text;
         var propType = MapTypeNode(prop.Type);
+
+        // Skip pure auto-properties — they are emitted as fields in the type self block
+        if (prop.AccessorList != null
+            && prop.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null)
+            && prop.ExpressionBody == null)
+        {
+            return;
+        }
 
         // Expression-bodied property: public int Position => _position;
         if (prop.ExpressionBody != null)
@@ -1362,6 +1525,7 @@ public class LuauEmitter
             ObjectCreationExpressionSyntax objCreate => EmitObjectCreation(objCreate),
             ImplicitObjectCreationExpressionSyntax implicitCreate => EmitImplicitObjectCreation(implicitCreate),
             ThisExpressionSyntax => "self",
+            BaseExpressionSyntax => _baseClassName ?? "--[[TODO: base without parent]] nil",
             ElementAccessExpressionSyntax elementAccess => EmitElementAccess(elementAccess),
             AssignmentExpressionSyntax assignment => EmitAssignmentExpression(assignment),
             _ => $"--[[TODO: {expr.Kind()}]] nil"
@@ -1452,6 +1616,12 @@ public class LuauEmitter
     private string EmitMemberAccess(MemberAccessExpressionSyntax memberAccess)
     {
         var memberName = memberAccess.Name.Identifier.Text;
+
+        // Handle `base.field` → `self.field` (metatable chain handles lookup)
+        if (memberAccess.Expression is BaseExpressionSyntax)
+        {
+            return $"self.{memberName}";
+        }
 
         // Handle `this.field` → `self.field`
         if (memberAccess.Expression is ThisExpressionSyntax)
@@ -1621,6 +1791,14 @@ public class LuauEmitter
         var memberName = memberAccess.Name.Identifier.Text;
         var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
         var argStr = string.Join(", ", args);
+
+        // ── Handle base.Method(args) → ParentClass.Method(self, args) ──
+        if (memberAccess.Expression is BaseExpressionSyntax && _baseClassName != null)
+        {
+            if (string.IsNullOrEmpty(argStr))
+                return $"{_baseClassName}.{memberName}(self)";
+            return $"{_baseClassName}.{memberName}(self, {argStr})";
+        }
 
         // ── Handle this.Method(args) → ClassName.Method(self, args) ──
         if (memberAccess.Expression is ThisExpressionSyntax)

@@ -147,8 +147,11 @@ public class RoslynToLuau
             }
         }
 
+        // Collect type names defined in this file to exclude from requires
+        var localTypeNames = CollectTypeNames(root.Members);
+
         // Post-process: insert require() statements for referenced modules
-        InsertRequires(emitter);
+        InsertRequires(emitter, localTypeNames);
 
         return new TranspileResult
         {
@@ -181,18 +184,51 @@ public class RoslynToLuau
     }
 
     /// <summary>
+    /// Collect all type names defined in a set of members (classes, structs, enums).
+    /// Used to exclude same-file types from require() statements.
+    /// </summary>
+    private HashSet<string> CollectTypeNames(SyntaxList<MemberDeclarationSyntax> members)
+    {
+        var names = new HashSet<string>();
+        foreach (var member in members)
+        {
+            switch (member)
+            {
+                case NamespaceDeclarationSyntax ns:
+                    names.UnionWith(CollectTypeNames(ns.Members));
+                    break;
+                case FileScopedNamespaceDeclarationSyntax ns:
+                    names.UnionWith(CollectTypeNames(ns.Members));
+                    break;
+                case ClassDeclarationSyntax classDecl:
+                    names.Add(classDecl.Identifier.Text);
+                    break;
+                case StructDeclarationSyntax structDecl:
+                    names.Add(structDecl.Identifier.Text);
+                    break;
+                case EnumDeclarationSyntax enumDecl:
+                    names.Add(enumDecl.Identifier.Text);
+                    break;
+            }
+        }
+        return names;
+    }
+
+    /// <summary>
     /// After emission, insert require() statements for any external modules referenced.
     /// Uses the pattern:
     ///   local _ModuleName = require(script.Parent.ModuleName)
     ///   local ModuleName = _ModuleName.ModuleName
+    /// Excludes types defined in the same file (localTypeNames).
     /// </summary>
-    private void InsertRequires(LuauEmitter emitter)
+    private void InsertRequires(LuauEmitter emitter, HashSet<string>? localTypeNames = null)
     {
         if (emitter.ReferencedModules.Count == 0) return;
 
-        // Filter out modules that are known not to need requires
+        // Filter out modules that are known not to need requires or are defined in the same file
         var modulesToRequire = emitter.ReferencedModules
             .Where(m => !IsIgnoredModule(m))
+            .Where(m => localTypeNames == null || !localTypeNames.Contains(m))
             .OrderBy(m => m)
             .ToList();
 
