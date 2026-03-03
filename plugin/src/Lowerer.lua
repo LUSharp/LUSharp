@@ -455,6 +455,19 @@ lowerExpression = function(expr)
             return { type = "call", callee = { type = "identifier", name = "print" }, args = args }
         end
 
+        -- Generic GetService<T>() → game:GetService("T")
+        if expr.target and expr.target.type == "identifier" and expr.target.name == "game"
+            and expr.name == "GetService" and expr.typeArguments and #expr.typeArguments > 0
+            and (#expr.arguments == 0) then
+            local serviceName = expr.typeArguments[1]
+            return {
+                type = "method_call",
+                object = { type = "identifier", name = "game" },
+                method = "GetService",
+                args = { { type = "literal", value = '"' .. serviceName .. '"', literalType = "string" } },
+            }
+        end
+
         -- Collection method rewrites (before generic method_call)
         if expr.target and expr.name then
             local objectExpr = lowerExpression(expr.target)
@@ -636,6 +649,37 @@ lowerExpression = function(expr)
         for _, arg in expr.arguments or {} do
             table.insert(args, lowerExpression(arg))
         end
+
+        -- Check if initializer contains property assignments (object initializer)
+        -- vs plain values (collection initializer)
+        local hasPropertyInits = false
+        if expr.initializer and #expr.initializer > 0 then
+            local first = expr.initializer[1]
+            if first.type == "assignment" and first.operator == "=" then
+                hasPropertyInits = true
+            end
+        end
+
+        if hasPropertyInits then
+            local initializers = {}
+            for _, item in expr.initializer do
+                if item.type == "assignment" and item.target then
+                    local fieldName = item.target.name or item.target.value or "unknown"
+                    table.insert(initializers, {
+                        field = fieldName,
+                        value = lowerExpression(item.value),
+                    })
+                end
+            end
+            return {
+                type = "new_object_init",
+                class = expr.className,
+                args = args,
+                initializers = initializers,
+            }
+        end
+
+        -- Plain collection-style initializer: pass items as args
         for _, item in expr.initializer or {} do
             table.insert(args, lowerExpression(item))
         end
@@ -753,12 +797,30 @@ lowerExpression = function(expr)
         }
     end
 
-    -- Index access: obj[key]
+    -- Index access: obj[key] — C# is 0-based, Luau is 1-based, offset by +1
     if t == "index" then
+        local loweredKey = lowerExpression(expr.index)
+
+        -- Optimize: literal number → just add 1 at compile time
+        if loweredKey.type == "literal" and loweredKey.literalType == "number" then
+            local num = tonumber(loweredKey.value)
+            if num then
+                loweredKey = { type = "literal", value = tostring(num + 1), literalType = "number" }
+            end
+        else
+            -- Runtime offset: key + 1
+            loweredKey = {
+                type = "binary_op",
+                left = loweredKey,
+                op = "+",
+                right = { type = "literal", value = "1", literalType = "number" },
+            }
+        end
+
         return {
             type = "index_access",
             object = lowerExpression(expr.object),
-            key = lowerExpression(expr.index),
+            key = loweredKey,
         }
     end
 
@@ -875,10 +937,44 @@ lowerStatement = function(stmt)
             end
         end
 
+        local loweredInit = init and lowerExpression(init) or nil
+
+        -- Expand object initializers: var x = new Foo() { X = 1 }
+        -- → local x = Foo.new(); x.X = 1
+        if loweredInit and loweredInit.type == "new_object_init" then
+            local stmts = {}
+            -- Emit the constructor call as the local declaration
+            table.insert(stmts, {
+                type = "local_decl",
+                name = stmt.name,
+                value = {
+                    type = "new_object",
+                    class = loweredInit.class,
+                    args = loweredInit.args,
+                },
+            })
+            -- Emit each property assignment
+            for _, init in loweredInit.initializers or {} do
+                table.insert(stmts, {
+                    type = "assignment",
+                    target = {
+                        type = "dot_access",
+                        object = { type = "identifier", name = stmt.name },
+                        field = init.field,
+                    },
+                    value = init.value,
+                })
+            end
+            return {
+                type = "compound",
+                statements = stmts,
+            }
+        end
+
         return {
             type = "local_decl",
             name = stmt.name,
-            value = init and lowerExpression(init) or nil,
+            value = loweredInit,
         }
     end
 
@@ -1448,6 +1544,16 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
         return expr
     end
 
+    if t == "new_object_init" then
+        for i, arg in expr.args or {} do
+            expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
+        end
+        for _, init in expr.initializers or {} do
+            init.value = rewriteSelfCallsInExpression(init.value, ctx, locals)
+        end
+        return expr
+    end
+
     if t == "function_expr" then
         local innerLocals = cloneSet(locals)
         addListToSet(innerLocals, expr.params)
@@ -1532,9 +1638,28 @@ local function lowerClass(classNode)
 
     -- Lower fields
     for _, field in classNode.fields or {} do
+        local fieldInit = field.initializer
+
+        -- Resolve target-typed new() in field initializers:
+        -- e.g. "NewScript2 newScript = new();" → tokens [new, (, )]
+        -- Convert to a proper new_object IR node using the field's declared type
+        if fieldInit and #fieldInit > 0 and fieldInit[1].line ~= nil then
+            local first = fieldInit[1]
+            if first.type == "keyword" and first.value == "new" and field.fieldType then
+                local typeName = normalizeTypeName(field.fieldType)
+                fieldInit = {
+                    type = "new",
+                    className = typeName,
+                    arguments = {},
+                    initializer = nil,
+                }
+            end
+        end
+
         local irField = {
             name = field.name,
-            value = lowerFieldInitializer(field.initializer),
+            value = lowerFieldInitializer(fieldInit),
+            fieldType = field.fieldType,
         }
         if field.isStatic then
             table.insert(cls.staticFields, irField)
@@ -1602,13 +1727,25 @@ local function lowerClass(classNode)
         end
 
         local params = {}
+        local paramTypes = {}
         for _, p in method.parameters or {} do
             table.insert(params, p.name)
+            table.insert(paramTypes, p.type or nil)
         end
+        local isExplicitCall = false
+        for _, attr in method.attributes or {} do
+            if attr == "ExplicitCall" then
+                isExplicitCall = true
+            end
+        end
+
         local irMethod = {
             name = method.name,
             isStatic = method.isStatic or false,
+            isExplicitCall = isExplicitCall,
             params = params,
+            paramTypes = paramTypes,
+            returnType = method.returnType,
             body = lowerBlock(method.body),
         }
 
@@ -1777,7 +1914,7 @@ local function collectReferencedIdentifiers(node, found)
     if node.type == "identifier" and node.name then
         found[node.name] = true
     end
-    if node.type == "new_object" and node.class then
+    if (node.type == "new_object" or node.type == "new_object_init") and node.class then
         local className = tostring(node.class):gsub("<.*>", ""):match("([%w_]+)$") or ""
         if className ~= "" then
             found[className] = true
@@ -1819,7 +1956,16 @@ end
 
 -- Main lowering function: AST → IR
 function Lowerer.lower(ast)
-    local moduleSymbols = buildModuleSymbols(ast.classes)
+    -- Combine classes and structs for symbol resolution (structs behave like classes in Lua)
+    local allClassNodes = {}
+    for _, cls in ast.classes or {} do
+        table.insert(allClassNodes, cls)
+    end
+    for _, struct in ast.structs or {} do
+        table.insert(allClassNodes, struct)
+    end
+
+    local moduleSymbols = buildModuleSymbols(allClassNodes)
     loweringContext = {
         moduleSymbols = moduleSymbols,
         localTypes = {},
@@ -1844,13 +1990,18 @@ function Lowerer.lower(ast)
         table.insert(module.classes, lowerClass(classNode))
     end
 
+    -- Lower structs (same as classes in Lua — both become tables)
+    for _, structNode in ast.structs or {} do
+        table.insert(module.classes, lowerClass(structNode))
+    end
+
     -- Lower enums
     for _, enumNode in ast.enums or {} do
         table.insert(module.enums, lowerEnum(enumNode))
     end
 
     -- Find entry class
-    module.entryClass = findEntryClass(ast.classes or {})
+    module.entryClass = findEntryClass(allClassNodes)
 
     -- Service hoisting pass
     local serviceSet = {}

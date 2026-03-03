@@ -6,6 +6,78 @@ local Emitter = {}
 
 local INDENT = "    "
 
+-- Map C# type names to Luau type annotations
+local CS_TO_LUAU_TYPE = {
+    ["string"] = "string",
+    ["String"] = "string",
+    ["int"] = "number",
+    ["Int32"] = "number",
+    ["float"] = "number",
+    ["Single"] = "number",
+    ["double"] = "number",
+    ["Double"] = "number",
+    ["long"] = "number",
+    ["Int64"] = "number",
+    ["short"] = "number",
+    ["Int16"] = "number",
+    ["byte"] = "number",
+    ["Byte"] = "number",
+    ["decimal"] = "number",
+    ["Decimal"] = "number",
+    ["bool"] = "boolean",
+    ["Boolean"] = "boolean",
+    ["void"] = "()",
+    ["object"] = "any",
+    ["Object"] = "any",
+    ["dynamic"] = "any",
+    ["Action"] = "() -> ()",
+}
+
+local function csTypeToLuau(csType)
+    if not csType or csType == "" then
+        return "any"
+    end
+    csType = tostring(csType)
+
+    -- Nullable T? → T?
+    local nullable = false
+    if csType:sub(-1) == "?" then
+        nullable = true
+        csType = csType:sub(1, -2)
+    end
+
+    -- Array T[] → { T }
+    if csType:sub(-2) == "[]" then
+        local inner = csType:sub(1, -3)
+        local luauInner = csTypeToLuau(inner)
+        return "{ " .. luauInner .. " }"
+    end
+
+    -- Generic collections
+    local genericBase, genericArgs = csType:match("^([%w_]+)<(.+)>$")
+    if genericBase then
+        if genericBase == "List" or genericBase == "IList" or genericBase == "IEnumerable"
+            or genericBase == "Queue" or genericBase == "Stack" or genericBase == "HashSet" then
+            return "{ " .. csTypeToLuau(genericArgs) .. " }"
+        end
+        if genericBase == "Dictionary" or genericBase == "IDictionary" then
+            local keyType, valType = genericArgs:match("^([^,]+),%s*(.+)$")
+            if keyType and valType then
+                return "{ [" .. csTypeToLuau(keyType) .. "]: " .. csTypeToLuau(valType) .. " }"
+            end
+        end
+    end
+
+    local mapped = CS_TO_LUAU_TYPE[csType]
+    if mapped then
+        return nullable and (mapped .. "?") or mapped
+    end
+
+    -- Class/struct/enum names stay as-is
+    local baseName = csType:gsub("<.*>", ""):match("([%w_]+)$") or csType
+    return nullable and (baseName .. "?") or baseName
+end
+
 local function join(list, sep)
     return table.concat(list, sep or ", ")
 end
@@ -105,6 +177,15 @@ emitExpression = function(expr)
         className = className:match("([%w_]+)$") or className
 
         return className .. ".new(" .. join(args) .. ")"
+    end
+
+    if t == "new_object_init" then
+        -- Fallback for expression context: emit as table constructor
+        local fields = {}
+        for _, init in expr.initializers or {} do
+            table.insert(fields, init.field .. " = " .. emitExpression(init.value))
+        end
+        return "{ " .. join(fields) .. " }"
     end
 
     if t == "template_string" then
@@ -314,36 +395,163 @@ emitStatement = function(stmt, lines, level)
     appendLine(lines, level, "--[[ unsupported statement: " .. tostring(t) .. " ]]")
 end
 
-local function emitClass(cls, lines)
-    appendLine(lines, 0, "local " .. cls.name .. " = {}")
+local function emitClass(cls, lines, crossScriptDeps, enumNames)
+    local baseName = cls.baseClass
+    crossScriptDeps = crossScriptDeps or {}
+    enumNames = enumNames or {}
+
+    -- Collect auto-property backing fields
+    local propBackingFields = {}
+    for _, prop in cls.properties or {} do
+        if prop.initializer then
+            table.insert(propBackingFields, { name = "_" .. prop.name, value = prop.initializer })
+        end
+    end
+
+    -- Collect all instance-level fields (fields + property backing fields)
+    local allInstanceFields = {}
+    for _, field in cls.instanceFields or {} do
+        table.insert(allInstanceFields, field)
+    end
+    for _, bf in propBackingFields do
+        table.insert(allInstanceFields, bf)
+    end
+
+    -- Emit type self = { field: Type; ... }
+    if #allInstanceFields > 0 then
+        appendLine(lines, 0, "type " .. cls.name .. "_self = {")
+        for _, field in allInstanceFields do
+            local luauType = csTypeToLuau(field.fieldType)
+            -- Cross-script dep types aren't available in this module
+            if crossScriptDeps[luauType] then
+                luauType = "any"
+            end
+            -- Fields initialized to nil need nullable types
+            local valueStr = field.value and emitExpression(field.value) or "nil"
+            if valueStr == "nil" and luauType ~= "any" and not luauType:match("%?$") then
+                luauType = luauType .. "?"
+            end
+            appendLine(lines, 1, field.name .. ": " .. luauType .. ";")
+        end
+        appendLine(lines, 0, "}")
+        appendLine(lines, 0, "")
+    end
+
+    if baseName then
+        appendLine(lines, 0, "local " .. cls.name .. " = setmetatable({}, { __index = " .. baseName .. " })")
+    else
+        appendLine(lines, 0, "local " .. cls.name .. " = {}")
+    end
+    appendLine(lines, 0, cls.name .. ".__index = " .. cls.name)
+
+    -- Export type with metatable pattern
+    if #allInstanceFields > 0 then
+        if baseName then
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({} :: " .. cls.name .. "_self, " .. cls.name .. ")) & " .. baseName)
+        else
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({} :: " .. cls.name .. "_self, " .. cls.name .. "))")
+        end
+    else
+        if baseName then
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({}, " .. cls.name .. ")) & " .. baseName)
+        else
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({}, " .. cls.name .. "))")
+        end
+    end
 
     for _, field in cls.staticFields or {} do
         appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
     end
 
+    local hasInstanceState = #allInstanceFields > 0
+
+    -- Emit constructor (explicit or auto-generated for instance fields)
     if cls.constructor then
         local params = join(cls.constructor.params or {})
         appendLine(lines, 0, "")
-        appendLine(lines, 0, "function " .. cls.name .. ".new(" .. params .. ")")
-        appendLine(lines, 1, "local self = {}")
+        appendLine(lines, 0, "function " .. cls.name .. ".new(" .. params .. "): " .. cls.name)
 
-        for _, field in cls.instanceFields or {} do
-            appendLine(lines, 1, "self." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
+        if hasInstanceState then
+            appendLine(lines, 1, "local self = setmetatable({")
+            for _, field in allInstanceFields do
+                appendLine(lines, 2, field.name .. " = " .. stripOuterParens(emitExpression(field.value)) .. ";")
+            end
+            appendLine(lines, 1, "} :: " .. cls.name .. "_self, " .. cls.name .. ")")
+        else
+            appendLine(lines, 1, "local self = setmetatable({}, " .. cls.name .. ")")
         end
 
         emitBlock(cls.constructor.body or {}, lines, 1)
         appendLine(lines, 1, "return self")
         appendLine(lines, 0, "end")
+    elseif hasInstanceState then
+        -- Auto-generate constructor for types with instance fields but no explicit constructor
+        appendLine(lines, 0, "")
+        appendLine(lines, 0, "function " .. cls.name .. ".new(): " .. cls.name)
+        appendLine(lines, 1, "local self = setmetatable({")
+        for _, field in allInstanceFields do
+            appendLine(lines, 2, field.name .. " = " .. stripOuterParens(emitExpression(field.value)) .. ";")
+        end
+        appendLine(lines, 1, "} :: " .. cls.name .. "_self, " .. cls.name .. ")")
+        appendLine(lines, 1, "return self")
+        appendLine(lines, 0, "end")
     end
 
+    -- Emit property getters/setters (dot + explicit self for type checking)
+    for _, prop in cls.properties or {} do
+        if prop.hasGet then
+            appendLine(lines, 0, "")
+            appendLine(lines, 0, "function " .. cls.name .. ".get_" .. prop.name .. "(self: " .. cls.name .. ")")
+            appendLine(lines, 1, "return self._" .. prop.name)
+            appendLine(lines, 0, "end")
+        end
+        if prop.hasSet then
+            appendLine(lines, 0, "")
+            appendLine(lines, 0, "function " .. cls.name .. ".set_" .. prop.name .. "(self: " .. cls.name .. ", value)")
+            appendLine(lines, 1, "self._" .. prop.name .. " = value")
+            appendLine(lines, 0, "end")
+        end
+    end
+
+    -- Emit methods (dot + explicit typed self for type checking; ExplicitCall has no self)
     for _, method in cls.methods or {} do
         appendLine(lines, 0, "")
-        local params = join(method.params or {})
-        appendLine(lines, 0, "function " .. cls.name .. ":" .. method.name .. "(" .. params .. ")")
+
+        -- Build typed parameter list
+        local typedParams = {}
+        if not method.isExplicitCall then
+            table.insert(typedParams, "self: " .. cls.name)
+        end
+        for i, paramName in method.params or {} do
+            local paramType = method.paramTypes and method.paramTypes[i]
+            if paramType then
+                table.insert(typedParams, paramName .. ": " .. csTypeToLuau(paramType))
+            else
+                table.insert(typedParams, paramName)
+            end
+        end
+
+        local returnAnnotation = ""
+        if method.returnType then
+            returnAnnotation = ": " .. csTypeToLuau(method.returnType)
+        end
+
+        appendLine(lines, 0, "function " .. cls.name .. "." .. method.name .. "(" .. join(typedParams) .. ")" .. returnAnnotation)
         emitBlock(method.body or {}, lines, 1)
         appendLine(lines, 0, "end")
     end
 
+    appendLine(lines, 0, "")
+end
+
+local function emitEnum(enum, lines)
+    appendLine(lines, 0, "local " .. enum.name .. " = table.freeze({")
+    for _, v in enum.values or {} do
+        appendLine(lines, 1, v.name .. " = \"" .. v.name .. "\";")
+    end
+    appendLine(lines, 0, "})")
+    appendLine(lines, 0, "")
+    appendLine(lines, 0, "export type " .. enum.name .. " = keyof<typeof(" .. enum.name .. ")>")
     appendLine(lines, 0, "")
 end
 
@@ -368,6 +576,9 @@ end
 function Emitter.emit(moduleIR)
     local lines = {}
 
+    appendLine(lines, 0, "--!strict")
+    appendLine(lines, 0, "-- Compiled by LUSharp (do not edit)")
+
     local hasRequires = moduleIR.requires and #moduleIR.requires > 0
 
     -- Determine class name to return
@@ -379,7 +590,7 @@ function Emitter.emit(moduleIR)
     -- Forward-declare cross-script deps (resolved via __init by runtime)
     if hasRequires then
         for _, req in moduleIR.requires do
-            appendLine(lines, 0, "local " .. req.name)
+            appendLine(lines, 0, "local " .. req.name .. ": any")
         end
         appendLine(lines, 0, "")
     end
@@ -397,14 +608,39 @@ function Emitter.emit(moduleIR)
         appendLine(lines, 0, "")
     end
 
-    -- Emit classes
+    -- Build cross-script dep name set for type resolution
+    local crossScriptDeps = {}
+    for _, req in moduleIR.requires or {} do
+        crossScriptDeps[req.name] = true
+    end
+
+    -- Build enum name set for type resolution
+    local enumNames = {}
+    for _, enum in moduleIR.enums or {} do
+        enumNames[enum.name] = true
+    end
+
+    -- Emit enums
+    for _, enum in moduleIR.enums or {} do
+        emitEnum(enum, lines)
+    end
+
+    -- Emit classes (entry class last so all dependencies are defined first)
+    local entryClassIR = nil
     for _, cls in moduleIR.classes or {} do
-        emitClass(cls, lines)
+        if cls.name == returnClass then
+            entryClassIR = cls
+        else
+            emitClass(cls, lines, crossScriptDeps, enumNames)
+        end
+    end
+    if entryClassIR then
+        emitClass(entryClassIR, lines, crossScriptDeps, enumNames)
     end
 
     -- Emit __init for cross-script dep resolution (called by runtime)
     if hasRequires and returnClass then
-        appendLine(lines, 0, "function " .. returnClass .. ".__init(__shared)")
+        appendLine(lines, 0, "function " .. returnClass .. ".__init(__shared: { [string]: any })")
         for _, req in moduleIR.requires do
             appendLine(lines, 1, req.name .. " = __shared." .. req.name)
         end

@@ -55,6 +55,7 @@ local function requireModule(name)
 end
 
 local Editor = requireModule("Editor")
+local ErrorList = requireModule("ErrorList")
 local ProjectView = requireModule("ProjectView")
 local ScriptManager = requireModule("ScriptManager")
 local Settings = requireModule("Settings")
@@ -110,7 +111,14 @@ local settingsButton = toolbar:CreateButton(
     "Settings"
 )
 
-for _, btn in { buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton } do
+local errorListButton = toolbar:CreateButton(
+    "ErrorList",
+    "Toggle Error List",
+    "rbxassetid://101453582644426",
+    "Error List"
+)
+
+for _, btn in { buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton, errorListButton } do
     btn.ClickableWhenViewportHidden = true
 end
 
@@ -220,6 +228,7 @@ local editor = Editor.new(plugin, {
 warn("[LUSharp SelDbg] editor-created")
 local openEditors = {} -- { [scriptInstance] = { editor = Editor, script = scriptInstance } }
 local projectView = ProjectView.new(plugin)
+local errorList = ErrorList.new(plugin)
 
 editor:applySettings(settingsValues)
 settings:setOnChanged(function(values)
@@ -346,6 +355,7 @@ local function runDiagnosticsRequest(request)
             and currentScript == request.script
             and ScriptManager.getSource(request.script) == request.source then
             editor:setDiagnostics(diagnostics)
+            errorList:setDiagnostics(request.script, diagnostics)
         end
 
         diagnosticsWorkerRunning = false
@@ -779,7 +789,7 @@ local function compileOne(scriptInstance)
         return false, "stale_source"
     end
 
-    scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n" .. out
+    scriptInstance.Source = out
     projectView:setScriptBuildStatus(scriptInstance, {
         ok = errorCount == 0,
         errors = errorCount,
@@ -1050,6 +1060,7 @@ projectView:setOnRequestDelete(function(scriptInstance)
         editor:setFilename("<untitled.cs>")
         editor:setSource("")
         editor:setDiagnostics({})
+        errorList:clear()
     end
 
     if ScriptManager.deleteScript(scriptInstance) then
@@ -1107,6 +1118,17 @@ end)
 
 settingsButton.Click:Connect(function()
     settings:toggle()
+end)
+
+errorListButton.Click:Connect(function()
+    errorList:toggle()
+end)
+
+errorList:setOnDiagnosticSelected(function(scriptInstance, line, column)
+    if scriptInstance and scriptInstance == currentScript then
+        editor:setCursorPosition(line, column)
+        editor:focus()
+    end
 end)
 
 Selection.SelectionChanged:Connect(function()
@@ -2056,7 +2078,7 @@ local function renderDiagnostics(self)
         end
 
         local severity = string.lower(tostring(diagnostic.severity or ""))
-        if severity == "error" then
+        if severity == "error" or severity == "warning" then
             local startLine = math.max(1, math.floor(tonumber(diagnostic.line) or 1))
             local startColumn = math.max(1, math.floor(tonumber(diagnostic.column) or 1))
             local endLine = math.max(startLine, math.floor(tonumber(diagnostic.endLine) or startLine))
@@ -2099,9 +2121,16 @@ local function renderDiagnostics(self)
                     local x2 = TextService:GetTextSize(uptoText, self.options.textSize, Enum.Font.Code, Vector2.new(100000, 100000)).X
                     local y = ((line - 1) * self.options.lineHeight) + self.options.lineHeight - 2
 
-                    local color = self.options.theme == "Light"
-                        and Color3.fromRGB(215, 58, 73)
-                        or Color3.fromRGB(244, 71, 71)
+                    local color
+                    if severity == "warning" then
+                        color = self.options.theme == "Light"
+                            and Color3.fromRGB(180, 140, 20)
+                            or Color3.fromRGB(255, 199, 54)
+                    else
+                        color = self.options.theme == "Light"
+                            and Color3.fromRGB(215, 58, 73)
+                            or Color3.fromRGB(244, 71, 71)
+                    end
 
                     renderDiagnosticSquiggle(layer, x1, x2, y, color, layer.ZIndex)
                     rendered += 1
@@ -4443,12 +4472,17 @@ function Editor:setDiagnostics(diagnostics)
     end
 
     local errorCount = 0
+    local warningCount = 0
     for _, diagnostic in self.diagnostics do
-        if string.lower(tostring(diagnostic.severity or "")) == "error" then
+        local sev = string.lower(tostring(diagnostic.severity or ""))
+        if sev == "error" then
             errorCount += 1
+        elseif sev == "warning" then
+            warningCount += 1
         end
     end
     self.errorCount = errorCount
+    self.warningCount = warningCount
 
     refresh(self)
 end
@@ -4860,6 +4894,18 @@ function Editor:applySettings(settings)
     end
 
     refresh(self)
+end
+
+function Editor:setCursorPosition(line, column)
+    if not self.textBox then
+        return
+    end
+
+    local source = self.textBox.Text or ""
+    local lineStarts = buildLineStarts(source)
+    local index = lineColumnToIndex(lineStarts, line, column, #source)
+    self.textBox.CursorPosition = math.clamp(index, 1, #source + 1)
+    self.textBox.SelectionStart = -1
 end
 
 function Editor:focus()
@@ -7006,6 +7052,78 @@ local Emitter = {}
 
 local INDENT = "    "
 
+-- Map C# type names to Luau type annotations
+local CS_TO_LUAU_TYPE = {
+    ["string"] = "string",
+    ["String"] = "string",
+    ["int"] = "number",
+    ["Int32"] = "number",
+    ["float"] = "number",
+    ["Single"] = "number",
+    ["double"] = "number",
+    ["Double"] = "number",
+    ["long"] = "number",
+    ["Int64"] = "number",
+    ["short"] = "number",
+    ["Int16"] = "number",
+    ["byte"] = "number",
+    ["Byte"] = "number",
+    ["decimal"] = "number",
+    ["Decimal"] = "number",
+    ["bool"] = "boolean",
+    ["Boolean"] = "boolean",
+    ["void"] = "()",
+    ["object"] = "any",
+    ["Object"] = "any",
+    ["dynamic"] = "any",
+    ["Action"] = "() -> ()",
+}
+
+local function csTypeToLuau(csType)
+    if not csType or csType == "" then
+        return "any"
+    end
+    csType = tostring(csType)
+
+    -- Nullable T? → T?
+    local nullable = false
+    if csType:sub(-1) == "?" then
+        nullable = true
+        csType = csType:sub(1, -2)
+    end
+
+    -- Array T[] → { T }
+    if csType:sub(-2) == "[]" then
+        local inner = csType:sub(1, -3)
+        local luauInner = csTypeToLuau(inner)
+        return "{ " .. luauInner .. " }"
+    end
+
+    -- Generic collections
+    local genericBase, genericArgs = csType:match("^([%w_]+)<(.+)>$")
+    if genericBase then
+        if genericBase == "List" or genericBase == "IList" or genericBase == "IEnumerable"
+            or genericBase == "Queue" or genericBase == "Stack" or genericBase == "HashSet" then
+            return "{ " .. csTypeToLuau(genericArgs) .. " }"
+        end
+        if genericBase == "Dictionary" or genericBase == "IDictionary" then
+            local keyType, valType = genericArgs:match("^([^,]+),%s*(.+)$")
+            if keyType and valType then
+                return "{ [" .. csTypeToLuau(keyType) .. "]: " .. csTypeToLuau(valType) .. " }"
+            end
+        end
+    end
+
+    local mapped = CS_TO_LUAU_TYPE[csType]
+    if mapped then
+        return nullable and (mapped .. "?") or mapped
+    end
+
+    -- Class/struct/enum names stay as-is
+    local baseName = csType:gsub("<.*>", ""):match("([%w_]+)$") or csType
+    return nullable and (baseName .. "?") or baseName
+end
+
 local function join(list, sep)
     return table.concat(list, sep or ", ")
 end
@@ -7105,6 +7223,15 @@ emitExpression = function(expr)
         className = className:match("([%w_]+)$") or className
 
         return className .. ".new(" .. join(args) .. ")"
+    end
+
+    if t == "new_object_init" then
+        -- Fallback for expression context: emit as table constructor
+        local fields = {}
+        for _, init in expr.initializers or {} do
+            table.insert(fields, init.field .. " = " .. emitExpression(init.value))
+        end
+        return "{ " .. join(fields) .. " }"
     end
 
     if t == "template_string" then
@@ -7314,36 +7441,163 @@ emitStatement = function(stmt, lines, level)
     appendLine(lines, level, "--[[ unsupported statement: " .. tostring(t) .. " ]]")
 end
 
-local function emitClass(cls, lines)
-    appendLine(lines, 0, "local " .. cls.name .. " = {}")
+local function emitClass(cls, lines, crossScriptDeps, enumNames)
+    local baseName = cls.baseClass
+    crossScriptDeps = crossScriptDeps or {}
+    enumNames = enumNames or {}
+
+    -- Collect auto-property backing fields
+    local propBackingFields = {}
+    for _, prop in cls.properties or {} do
+        if prop.initializer then
+            table.insert(propBackingFields, { name = "_" .. prop.name, value = prop.initializer })
+        end
+    end
+
+    -- Collect all instance-level fields (fields + property backing fields)
+    local allInstanceFields = {}
+    for _, field in cls.instanceFields or {} do
+        table.insert(allInstanceFields, field)
+    end
+    for _, bf in propBackingFields do
+        table.insert(allInstanceFields, bf)
+    end
+
+    -- Emit type self = { field: Type; ... }
+    if #allInstanceFields > 0 then
+        appendLine(lines, 0, "type " .. cls.name .. "_self = {")
+        for _, field in allInstanceFields do
+            local luauType = csTypeToLuau(field.fieldType)
+            -- Cross-script dep types aren't available in this module
+            if crossScriptDeps[luauType] then
+                luauType = "any"
+            end
+            -- Fields initialized to nil need nullable types
+            local valueStr = field.value and emitExpression(field.value) or "nil"
+            if valueStr == "nil" and luauType ~= "any" and not luauType:match("%?$") then
+                luauType = luauType .. "?"
+            end
+            appendLine(lines, 1, field.name .. ": " .. luauType .. ";")
+        end
+        appendLine(lines, 0, "}")
+        appendLine(lines, 0, "")
+    end
+
+    if baseName then
+        appendLine(lines, 0, "local " .. cls.name .. " = setmetatable({}, { __index = " .. baseName .. " })")
+    else
+        appendLine(lines, 0, "local " .. cls.name .. " = {}")
+    end
+    appendLine(lines, 0, cls.name .. ".__index = " .. cls.name)
+
+    -- Export type with metatable pattern
+    if #allInstanceFields > 0 then
+        if baseName then
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({} :: " .. cls.name .. "_self, " .. cls.name .. ")) & " .. baseName)
+        else
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({} :: " .. cls.name .. "_self, " .. cls.name .. "))")
+        end
+    else
+        if baseName then
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({}, " .. cls.name .. ")) & " .. baseName)
+        else
+            appendLine(lines, 0, "export type " .. cls.name .. " = typeof(setmetatable({}, " .. cls.name .. "))")
+        end
+    end
 
     for _, field in cls.staticFields or {} do
         appendLine(lines, 0, cls.name .. "." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
     end
 
+    local hasInstanceState = #allInstanceFields > 0
+
+    -- Emit constructor (explicit or auto-generated for instance fields)
     if cls.constructor then
         local params = join(cls.constructor.params or {})
         appendLine(lines, 0, "")
-        appendLine(lines, 0, "function " .. cls.name .. ".new(" .. params .. ")")
-        appendLine(lines, 1, "local self = {}")
+        appendLine(lines, 0, "function " .. cls.name .. ".new(" .. params .. "): " .. cls.name)
 
-        for _, field in cls.instanceFields or {} do
-            appendLine(lines, 1, "self." .. field.name .. " = " .. stripOuterParens(emitExpression(field.value)))
+        if hasInstanceState then
+            appendLine(lines, 1, "local self = setmetatable({")
+            for _, field in allInstanceFields do
+                appendLine(lines, 2, field.name .. " = " .. stripOuterParens(emitExpression(field.value)) .. ";")
+            end
+            appendLine(lines, 1, "} :: " .. cls.name .. "_self, " .. cls.name .. ")")
+        else
+            appendLine(lines, 1, "local self = setmetatable({}, " .. cls.name .. ")")
         end
 
         emitBlock(cls.constructor.body or {}, lines, 1)
         appendLine(lines, 1, "return self")
         appendLine(lines, 0, "end")
+    elseif hasInstanceState then
+        -- Auto-generate constructor for types with instance fields but no explicit constructor
+        appendLine(lines, 0, "")
+        appendLine(lines, 0, "function " .. cls.name .. ".new(): " .. cls.name)
+        appendLine(lines, 1, "local self = setmetatable({")
+        for _, field in allInstanceFields do
+            appendLine(lines, 2, field.name .. " = " .. stripOuterParens(emitExpression(field.value)) .. ";")
+        end
+        appendLine(lines, 1, "} :: " .. cls.name .. "_self, " .. cls.name .. ")")
+        appendLine(lines, 1, "return self")
+        appendLine(lines, 0, "end")
     end
 
+    -- Emit property getters/setters (dot + explicit self for type checking)
+    for _, prop in cls.properties or {} do
+        if prop.hasGet then
+            appendLine(lines, 0, "")
+            appendLine(lines, 0, "function " .. cls.name .. ".get_" .. prop.name .. "(self: " .. cls.name .. ")")
+            appendLine(lines, 1, "return self._" .. prop.name)
+            appendLine(lines, 0, "end")
+        end
+        if prop.hasSet then
+            appendLine(lines, 0, "")
+            appendLine(lines, 0, "function " .. cls.name .. ".set_" .. prop.name .. "(self: " .. cls.name .. ", value)")
+            appendLine(lines, 1, "self._" .. prop.name .. " = value")
+            appendLine(lines, 0, "end")
+        end
+    end
+
+    -- Emit methods (dot + explicit typed self for type checking; ExplicitCall has no self)
     for _, method in cls.methods or {} do
         appendLine(lines, 0, "")
-        local params = join(method.params or {})
-        appendLine(lines, 0, "function " .. cls.name .. ":" .. method.name .. "(" .. params .. ")")
+
+        -- Build typed parameter list
+        local typedParams = {}
+        if not method.isExplicitCall then
+            table.insert(typedParams, "self: " .. cls.name)
+        end
+        for i, paramName in method.params or {} do
+            local paramType = method.paramTypes and method.paramTypes[i]
+            if paramType then
+                table.insert(typedParams, paramName .. ": " .. csTypeToLuau(paramType))
+            else
+                table.insert(typedParams, paramName)
+            end
+        end
+
+        local returnAnnotation = ""
+        if method.returnType then
+            returnAnnotation = ": " .. csTypeToLuau(method.returnType)
+        end
+
+        appendLine(lines, 0, "function " .. cls.name .. "." .. method.name .. "(" .. join(typedParams) .. ")" .. returnAnnotation)
         emitBlock(method.body or {}, lines, 1)
         appendLine(lines, 0, "end")
     end
 
+    appendLine(lines, 0, "")
+end
+
+local function emitEnum(enum, lines)
+    appendLine(lines, 0, "local " .. enum.name .. " = table.freeze({")
+    for _, v in enum.values or {} do
+        appendLine(lines, 1, v.name .. " = \"" .. v.name .. "\";")
+    end
+    appendLine(lines, 0, "})")
+    appendLine(lines, 0, "")
+    appendLine(lines, 0, "export type " .. enum.name .. " = keyof<typeof(" .. enum.name .. ")>")
     appendLine(lines, 0, "")
 end
 
@@ -7368,6 +7622,9 @@ end
 function Emitter.emit(moduleIR)
     local lines = {}
 
+    appendLine(lines, 0, "--!strict")
+    appendLine(lines, 0, "-- Compiled by LUSharp (do not edit)")
+
     local hasRequires = moduleIR.requires and #moduleIR.requires > 0
 
     -- Determine class name to return
@@ -7379,7 +7636,7 @@ function Emitter.emit(moduleIR)
     -- Forward-declare cross-script deps (resolved via __init by runtime)
     if hasRequires then
         for _, req in moduleIR.requires do
-            appendLine(lines, 0, "local " .. req.name)
+            appendLine(lines, 0, "local " .. req.name .. ": any")
         end
         appendLine(lines, 0, "")
     end
@@ -7397,14 +7654,39 @@ function Emitter.emit(moduleIR)
         appendLine(lines, 0, "")
     end
 
-    -- Emit classes
+    -- Build cross-script dep name set for type resolution
+    local crossScriptDeps = {}
+    for _, req in moduleIR.requires or {} do
+        crossScriptDeps[req.name] = true
+    end
+
+    -- Build enum name set for type resolution
+    local enumNames = {}
+    for _, enum in moduleIR.enums or {} do
+        enumNames[enum.name] = true
+    end
+
+    -- Emit enums
+    for _, enum in moduleIR.enums or {} do
+        emitEnum(enum, lines)
+    end
+
+    -- Emit classes (entry class last so all dependencies are defined first)
+    local entryClassIR = nil
     for _, cls in moduleIR.classes or {} do
-        emitClass(cls, lines)
+        if cls.name == returnClass then
+            entryClassIR = cls
+        else
+            emitClass(cls, lines, crossScriptDeps, enumNames)
+        end
+    end
+    if entryClassIR then
+        emitClass(entryClassIR, lines, crossScriptDeps, enumNames)
     end
 
     -- Emit __init for cross-script dep resolution (called by runtime)
     if hasRequires and returnClass then
-        appendLine(lines, 0, "function " .. returnClass .. ".__init(__shared)")
+        appendLine(lines, 0, "function " .. returnClass .. ".__init(__shared: { [string]: any })")
         for _, req in moduleIR.requires do
             appendLine(lines, 1, req.name .. " = __shared." .. req.name)
         end
@@ -7429,6 +7711,425 @@ return Emitter
       </Properties>
     </Item>
     <Item class="ModuleScript" referent="5">
+      <Properties>
+        <string name="Name">ErrorList</string>
+        <string name="Source"><![CDATA[-- LUSharp Error List: VS-style diagnostic panel
+-- Displays errors, warnings, and messages from the editor
+
+local ErrorList = {}
+ErrorList.__index = ErrorList
+
+local ROW_HEIGHT = 22
+local FILTER_BAR_HEIGHT = 28
+local ICON_SIZE = 14
+
+local SEVERITY_COLORS = {
+    error = Color3.fromRGB(244, 71, 71),
+    warning = Color3.fromRGB(255, 199, 54),
+    info = Color3.fromRGB(100, 180, 255),
+}
+
+local SEVERITY_LETTERS = {
+    error = "X",
+    warning = "!",
+    info = "i",
+}
+
+local SEVERITY_ORDER = {
+    error = 1,
+    warning = 2,
+    info = 3,
+}
+
+function ErrorList.new(pluginObject, options)
+    options = options or {}
+
+    local self = setmetatable({}, ErrorList)
+    self.plugin = pluginObject
+    self._connections = {}
+    self._rowConnections = {}
+
+    self._onDiagnosticSelected = nil
+    self._diagnosticsByScript = {}
+    self._currentScript = nil
+
+    self._showErrors = true
+    self._showWarnings = true
+    self._showInfo = true
+
+    local widgetInfo = DockWidgetPluginGuiInfo.new(
+        Enum.InitialDockState.Bottom,
+        false,
+        false,
+        options.width or 600,
+        options.height or 180,
+        300,
+        120
+    )
+
+    local widget = pluginObject:CreateDockWidgetPluginGui("LUSharpErrorList", widgetInfo)
+    widget.Title = "Error List"
+    self.widget = widget
+
+    local root = Instance.new("Frame")
+    root.Name = "Root"
+    root.Size = UDim2.fromScale(1, 1)
+    root.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    root.BorderSizePixel = 0
+    root.Parent = widget
+    self.root = root
+
+    -- Filter bar
+    local filterBar = Instance.new("Frame")
+    filterBar.Name = "FilterBar"
+    filterBar.Size = UDim2.new(1, 0, 0, FILTER_BAR_HEIGHT)
+    filterBar.Position = UDim2.new(0, 0, 0, 0)
+    filterBar.BackgroundColor3 = Color3.fromRGB(37, 37, 37)
+    filterBar.BorderSizePixel = 0
+    filterBar.Parent = root
+
+    local filterBorder = Instance.new("Frame")
+    filterBorder.Name = "Border"
+    filterBorder.Size = UDim2.new(1, 0, 0, 1)
+    filterBorder.Position = UDim2.new(0, 0, 1, -1)
+    filterBorder.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+    filterBorder.BorderSizePixel = 0
+    filterBorder.Parent = filterBar
+
+    local function makeFilterButton(parent, text, xOffset, color, defaultOn)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 120, 0, 22)
+        btn.Position = UDim2.new(0, xOffset, 0, 3)
+        btn.BackgroundColor3 = defaultOn and Color3.fromRGB(50, 50, 50) or Color3.fromRGB(37, 37, 37)
+        btn.BorderSizePixel = 1
+        btn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+        btn.Font = Enum.Font.SourceSans
+        btn.TextSize = 13
+        btn.TextColor3 = color
+        btn.Text = text
+        btn.Parent = parent
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 3)
+        corner.Parent = btn
+
+        return btn
+    end
+
+    self._errorFilterBtn = makeFilterButton(filterBar, "Errors (0)", 4, SEVERITY_COLORS.error, true)
+    self._warningFilterBtn = makeFilterButton(filterBar, "Warnings (0)", 128, SEVERITY_COLORS.warning, true)
+    self._infoFilterBtn = makeFilterButton(filterBar, "Messages (0)", 252, SEVERITY_COLORS.info, true)
+
+    local function updateFilterButtonStyle(btn, active)
+        btn.BackgroundColor3 = active and Color3.fromRGB(50, 50, 50) or Color3.fromRGB(37, 37, 37)
+    end
+
+    table.insert(self._connections, self._errorFilterBtn.Activated:Connect(function()
+        self._showErrors = not self._showErrors
+        updateFilterButtonStyle(self._errorFilterBtn, self._showErrors)
+        self:refresh()
+    end))
+
+    table.insert(self._connections, self._warningFilterBtn.Activated:Connect(function()
+        self._showWarnings = not self._showWarnings
+        updateFilterButtonStyle(self._warningFilterBtn, self._showWarnings)
+        self:refresh()
+    end))
+
+    table.insert(self._connections, self._infoFilterBtn.Activated:Connect(function()
+        self._showInfo = not self._showInfo
+        updateFilterButtonStyle(self._infoFilterBtn, self._showInfo)
+        self:refresh()
+    end))
+
+    -- Scrolling list
+    local scroller = Instance.new("ScrollingFrame")
+    scroller.Name = "Scroller"
+    scroller.Size = UDim2.new(1, 0, 1, -FILTER_BAR_HEIGHT)
+    scroller.Position = UDim2.new(0, 0, 0, FILTER_BAR_HEIGHT)
+    scroller.BackgroundTransparency = 1
+    scroller.BorderSizePixel = 0
+    scroller.ScrollBarThickness = 6
+    scroller.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroller.AutomaticCanvasSize = Enum.AutomaticSize.None
+    scroller.Parent = root
+    self.scroller = scroller
+
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.Size = UDim2.new(1, 0, 0, 0)
+    content.BackgroundTransparency = 1
+    content.BorderSizePixel = 0
+    content.Parent = scroller
+    self.content = content
+
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 0)
+    listLayout.FillDirection = Enum.FillDirection.Vertical
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = content
+    self.listLayout = listLayout
+
+    table.insert(self._connections, listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        content.Size = UDim2.new(1, 0, 0, listLayout.AbsoluteContentSize.Y)
+        scroller.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 4)
+    end))
+
+    return self
+end
+
+function ErrorList:setOnDiagnosticSelected(callback)
+    self._onDiagnosticSelected = callback
+end
+
+function ErrorList:setDiagnostics(scriptInstance, diagnostics)
+    if not scriptInstance then
+        return
+    end
+
+    self._diagnosticsByScript[scriptInstance] = diagnostics
+    self._currentScript = scriptInstance
+    self:refresh()
+end
+
+function ErrorList:clear()
+    self._diagnosticsByScript = {}
+    self._currentScript = nil
+    self:refresh()
+end
+
+function ErrorList:_clearRows()
+    for _, conn in self._rowConnections do
+        conn:Disconnect()
+    end
+    self._rowConnections = {}
+
+    for _, child in self.content:GetChildren() do
+        if not child:IsA("UIListLayout") then
+            child:Destroy()
+        end
+    end
+end
+
+function ErrorList:refresh()
+    self:_clearRows()
+
+    -- Collect all diagnostics with script info
+    local allDiagnostics = {}
+    local errorCount = 0
+    local warningCount = 0
+    local infoCount = 0
+
+    for scriptInstance, diagnostics in self._diagnosticsByScript do
+        if type(diagnostics) ~= "table" then
+            continue
+        end
+
+        local scriptName = "unknown"
+        local ok, name = pcall(function() return scriptInstance.Name end)
+        if ok and type(name) == "string" then
+            scriptName = name
+        end
+
+        for _, diagnostic in diagnostics do
+            local severity = string.lower(tostring(diagnostic.severity or ""))
+            if severity == "error" then
+                errorCount += 1
+            elseif severity == "warning" then
+                warningCount += 1
+            else
+                severity = "info"
+                infoCount += 1
+            end
+
+            table.insert(allDiagnostics, {
+                severity = severity,
+                message = diagnostic.message or "",
+                code = diagnostic.code or "",
+                line = diagnostic.line or 1,
+                column = diagnostic.column or 1,
+                scriptInstance = scriptInstance,
+                scriptName = scriptName,
+            })
+        end
+    end
+
+    -- Update filter button text
+    self._errorFilterBtn.Text = "Errors (" .. tostring(errorCount) .. ")"
+    self._warningFilterBtn.Text = "Warnings (" .. tostring(warningCount) .. ")"
+    self._infoFilterBtn.Text = "Messages (" .. tostring(infoCount) .. ")"
+
+    -- Sort: errors first, then warnings, then info; within each group sort by file then line
+    table.sort(allDiagnostics, function(a, b)
+        local oa = SEVERITY_ORDER[a.severity] or 99
+        local ob = SEVERITY_ORDER[b.severity] or 99
+        if oa ~= ob then
+            return oa < ob
+        end
+        if a.scriptName ~= b.scriptName then
+            return a.scriptName < b.scriptName
+        end
+        return a.line < b.line
+    end)
+
+    -- Render rows
+    local layoutOrder = 0
+    for _, entry in allDiagnostics do
+        local show = false
+        if entry.severity == "error" and self._showErrors then show = true end
+        if entry.severity == "warning" and self._showWarnings then show = true end
+        if entry.severity == "info" and self._showInfo then show = true end
+
+        if not show then
+            continue
+        end
+
+        layoutOrder += 1
+
+        local row = Instance.new("TextButton")
+        row.Name = "DiagRow"
+        row.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
+        row.BackgroundColor3 = (layoutOrder % 2 == 0) and Color3.fromRGB(35, 35, 35) or Color3.fromRGB(30, 30, 30)
+        row.BorderSizePixel = 0
+        row.Text = ""
+        row.AutoButtonColor = false
+        row.LayoutOrder = layoutOrder
+        row.Parent = self.content
+
+        -- Severity icon (colored circle with letter)
+        local iconBg = Instance.new("Frame")
+        iconBg.Size = UDim2.new(0, ICON_SIZE, 0, ICON_SIZE)
+        iconBg.Position = UDim2.new(0, 6, 0.5, -math.floor(ICON_SIZE / 2))
+        iconBg.BackgroundColor3 = SEVERITY_COLORS[entry.severity] or Color3.fromRGB(100, 100, 100)
+        iconBg.BorderSizePixel = 0
+        iconBg.Parent = row
+
+        local iconCorner = Instance.new("UICorner")
+        iconCorner.CornerRadius = UDim.new(1, 0)
+        iconCorner.Parent = iconBg
+
+        local iconLabel = Instance.new("TextLabel")
+        iconLabel.Size = UDim2.fromScale(1, 1)
+        iconLabel.BackgroundTransparency = 1
+        iconLabel.Font = Enum.Font.SourceSansBold
+        iconLabel.TextSize = 10
+        iconLabel.TextColor3 = Color3.fromRGB(20, 20, 20)
+        iconLabel.Text = SEVERITY_LETTERS[entry.severity] or "?"
+        iconLabel.Parent = iconBg
+
+        -- Code label
+        local codeText = tostring(entry.code or "")
+        local codeWidth = 0
+        if codeText ~= "" then
+            codeWidth = 80
+            local codeLabel = Instance.new("TextLabel")
+            codeLabel.Size = UDim2.new(0, codeWidth, 1, 0)
+            codeLabel.Position = UDim2.new(0, 24, 0, 0)
+            codeLabel.BackgroundTransparency = 1
+            codeLabel.Font = Enum.Font.Code
+            codeLabel.TextSize = 12
+            codeLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
+            codeLabel.TextXAlignment = Enum.TextXAlignment.Left
+            codeLabel.Text = codeText
+            codeLabel.TextTruncate = Enum.TextTruncate.AtEnd
+            codeLabel.Parent = row
+        end
+
+        -- Message label
+        local msgLeft = 24 + codeWidth
+        local msgLabel = Instance.new("TextLabel")
+        msgLabel.Size = UDim2.new(1, -(msgLeft + 160), 1, 0)
+        msgLabel.Position = UDim2.new(0, msgLeft, 0, 0)
+        msgLabel.BackgroundTransparency = 1
+        msgLabel.Font = Enum.Font.SourceSans
+        msgLabel.TextSize = 13
+        msgLabel.TextColor3 = Color3.fromRGB(210, 210, 210)
+        msgLabel.TextXAlignment = Enum.TextXAlignment.Left
+        msgLabel.Text = entry.message
+        msgLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        msgLabel.Parent = row
+
+        -- Script name + line info (right side)
+        local locationLabel = Instance.new("TextLabel")
+        locationLabel.Size = UDim2.new(0, 152, 1, 0)
+        locationLabel.Position = UDim2.new(1, -156, 0, 0)
+        locationLabel.BackgroundTransparency = 1
+        locationLabel.Font = Enum.Font.SourceSans
+        locationLabel.TextSize = 12
+        locationLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
+        locationLabel.TextXAlignment = Enum.TextXAlignment.Right
+        locationLabel.Text = entry.scriptName .. "  Ln " .. tostring(entry.line) .. ", Col " .. tostring(entry.column)
+        locationLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        locationLabel.Parent = row
+
+        -- Click handler
+        local capturedScript = entry.scriptInstance
+        local capturedLine = entry.line
+        local capturedColumn = entry.column
+
+        table.insert(self._rowConnections, row.Activated:Connect(function()
+            if self._onDiagnosticSelected then
+                self._onDiagnosticSelected(capturedScript, capturedLine, capturedColumn)
+            end
+        end))
+
+        -- Hover highlight
+        table.insert(self._rowConnections, row.MouseEnter:Connect(function()
+            row.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        end))
+
+        local originalColor = row.BackgroundColor3
+        table.insert(self._rowConnections, row.MouseLeave:Connect(function()
+            row.BackgroundColor3 = originalColor
+        end))
+    end
+
+    -- Update widget title with counts
+    local parts = {}
+    if errorCount > 0 then
+        table.insert(parts, tostring(errorCount) .. " Error" .. (errorCount ~= 1 and "s" or ""))
+    end
+    if warningCount > 0 then
+        table.insert(parts, tostring(warningCount) .. " Warning" .. (warningCount ~= 1 and "s" or ""))
+    end
+    if #parts > 0 then
+        self.widget.Title = "Error List — " .. table.concat(parts, ", ")
+    else
+        self.widget.Title = "Error List"
+    end
+end
+
+function ErrorList:show()
+    self.widget.Enabled = true
+end
+
+function ErrorList:hide()
+    self.widget.Enabled = false
+end
+
+function ErrorList:toggle()
+    self.widget.Enabled = not self.widget.Enabled
+end
+
+function ErrorList:destroy()
+    self:_clearRows()
+
+    for _, conn in self._connections do
+        conn:Disconnect()
+    end
+    self._connections = {}
+
+    if self.widget then
+        self.widget:Destroy()
+        self.widget = nil
+    end
+end
+
+return ErrorList
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="6">
       <Properties>
         <string name="Name">IntelliSense</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -7757,6 +8458,73 @@ local function extractTypeStubs(parseResult, namespace)
             kind = "enum",
             baseType = "",
             accessModifier = enum.accessModifier or "public",
+            members = members,
+        })
+    end
+
+    for _, st in parseResult.structs or {} do
+        local members = {}
+
+        if st.constructor then
+            local params = {}
+            for _, param in st.constructor.parameters or {} do
+                table.insert(params, { name = param.name, type = param.type or "Object" })
+            end
+            table.insert(members, {
+                name = "new",
+                kind = "constructor",
+                type = nil,
+                access = st.constructor.accessModifier or "public",
+                isStatic = true,
+                parameters = params,
+            })
+        end
+
+        for _, method in st.methods or {} do
+            local params = {}
+            for _, param in method.parameters or {} do
+                table.insert(params, { name = param.name, type = param.type or "Object" })
+            end
+            table.insert(members, {
+                name = method.name,
+                kind = "method",
+                type = method.returnType or "void",
+                access = method.accessModifier or "private",
+                isStatic = method.isStatic or false,
+                parameters = params,
+            })
+        end
+
+        for _, prop in st.properties or {} do
+            table.insert(members, {
+                name = prop.name,
+                kind = "property",
+                type = prop.propType or "Object",
+                access = prop.accessModifier or "public",
+                isStatic = false,
+                canRead = prop.hasGet or false,
+                canWrite = prop.hasSet or false,
+            })
+        end
+
+        for _, field in st.fields or {} do
+            table.insert(members, {
+                name = field.name,
+                kind = "field",
+                type = field.fieldType or "Object",
+                access = field.accessModifier or "public",
+                isStatic = field.isStatic or false,
+                isReadonly = field.isReadonly or false,
+            })
+        end
+
+        table.insert(stubs, {
+            name = st.name,
+            fullName = (namespace and namespace ~= "") and (namespace .. "." .. st.name) or st.name,
+            namespace = namespace or "",
+            kind = "struct",
+            baseType = st.baseType or "",
+            accessModifier = st.accessModifier or "public",
             members = members,
         })
     end
@@ -9771,7 +10539,7 @@ local function getStaticTypeMemberCompletions(left)
         return nil
     end
 
-    return getMemberCompletions(typeName, memberPrefix)
+    return getMemberCompletions(typeName, memberPrefix, nil, true)
 end
 
 local function isClassDeclarationNameContext(left)
@@ -10075,7 +10843,13 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
             local interpolationTokens = Lexer.tokenize(interpolationPrefix)
             local interpolationType, interpolationMemberPrefix = inferMemberAccessType(interpolationTokens, symbolTypes)
             if interpolationType then
-                return getMemberCompletions(interpolationType, interpolationMemberPrefix)
+                local isStaticAccess = nil
+                local exprBeforeDot = interpolationPrefix:match("^([%a_][%w_]*)%.$")
+                    or interpolationPrefix:match("^([%a_][%w_]*)%.[%a_][%w_]*$")
+                if exprBeforeDot and not symbolTypes[exprBeforeDot] and resolveType(exprBeforeDot) then
+                    isStaticAccess = true
+                end
+                return getMemberCompletions(interpolationType, interpolationMemberPrefix, nil, isStaticAccess)
             end
 
             local interpolationWordPrefix = interpolationPrefix:match("([%a_][%w_]*)$") or ""
@@ -10120,7 +10894,12 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     do
         local objType, memberPrefix = inferMemberAccessType(tokens, symbolTypes)
         if objType then
-            return getMemberCompletions(objType, memberPrefix)
+            local isStaticAccess = nil
+            local exprBeforeDot = left:match("([%a_][%w_]*)%.[%a_]*$")
+            if exprBeforeDot and not symbolTypes[exprBeforeDot] and resolveType(exprBeforeDot) then
+                isStaticAccess = true
+            end
+            return getMemberCompletions(objType, memberPrefix, nil, isStaticAccess)
         end
     end
 
@@ -11641,8 +12420,16 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             for _, arg in expr.arguments or {} do
                 walkExpression(arg, scope)
             end
+            -- Object initializer: { Field1 = val, Field2 = val }
+            -- The assignment targets are field names, not scope identifiers
             for _, initializerExpr in expr.initializer or {} do
-                walkExpression(initializerExpr, scope)
+                if initializerExpr.type == "assignment" and initializerExpr.target
+                    and initializerExpr.target.type == "identifier" then
+                    -- Only walk the value side; the target is a field name, not a variable
+                    walkExpression(initializerExpr.value, scope)
+                else
+                    walkExpression(initializerExpr, scope)
+                end
             end
             return
         end
@@ -12447,7 +13234,7 @@ return IntelliSense
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="6">
+    <Item class="ModuleScript" referent="7">
       <Properties>
         <string name="Name">LUSharpLoader</string>
         <string name="Source"><![CDATA[-- LUSharp Lazy Loader
@@ -12501,7 +13288,7 @@ end
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="7">
+    <Item class="ModuleScript" referent="8">
       <Properties>
         <string name="Name">Lexer</string>
         <string name="Source"><![CDATA[-- LUSharp Lexer: Tokenizes C# source into a stream of typed tokens
@@ -12798,7 +13585,7 @@ return Lexer
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="8">
+    <Item class="ModuleScript" referent="9">
       <Properties>
         <string name="Name">Lowerer</string>
         <string name="Source"><![CDATA[-- LUSharp Lowerer: Transforms C# AST into Lua IR
@@ -13258,6 +14045,19 @@ lowerExpression = function(expr)
             return { type = "call", callee = { type = "identifier", name = "print" }, args = args }
         end
 
+        -- Generic GetService<T>() → game:GetService("T")
+        if expr.target and expr.target.type == "identifier" and expr.target.name == "game"
+            and expr.name == "GetService" and expr.typeArguments and #expr.typeArguments > 0
+            and (#expr.arguments == 0) then
+            local serviceName = expr.typeArguments[1]
+            return {
+                type = "method_call",
+                object = { type = "identifier", name = "game" },
+                method = "GetService",
+                args = { { type = "literal", value = '"' .. serviceName .. '"', literalType = "string" } },
+            }
+        end
+
         -- Collection method rewrites (before generic method_call)
         if expr.target and expr.name then
             local objectExpr = lowerExpression(expr.target)
@@ -13439,6 +14239,37 @@ lowerExpression = function(expr)
         for _, arg in expr.arguments or {} do
             table.insert(args, lowerExpression(arg))
         end
+
+        -- Check if initializer contains property assignments (object initializer)
+        -- vs plain values (collection initializer)
+        local hasPropertyInits = false
+        if expr.initializer and #expr.initializer > 0 then
+            local first = expr.initializer[1]
+            if first.type == "assignment" and first.operator == "=" then
+                hasPropertyInits = true
+            end
+        end
+
+        if hasPropertyInits then
+            local initializers = {}
+            for _, item in expr.initializer do
+                if item.type == "assignment" and item.target then
+                    local fieldName = item.target.name or item.target.value or "unknown"
+                    table.insert(initializers, {
+                        field = fieldName,
+                        value = lowerExpression(item.value),
+                    })
+                end
+            end
+            return {
+                type = "new_object_init",
+                class = expr.className,
+                args = args,
+                initializers = initializers,
+            }
+        end
+
+        -- Plain collection-style initializer: pass items as args
         for _, item in expr.initializer or {} do
             table.insert(args, lowerExpression(item))
         end
@@ -13556,12 +14387,30 @@ lowerExpression = function(expr)
         }
     end
 
-    -- Index access: obj[key]
+    -- Index access: obj[key] — C# is 0-based, Luau is 1-based, offset by +1
     if t == "index" then
+        local loweredKey = lowerExpression(expr.index)
+
+        -- Optimize: literal number → just add 1 at compile time
+        if loweredKey.type == "literal" and loweredKey.literalType == "number" then
+            local num = tonumber(loweredKey.value)
+            if num then
+                loweredKey = { type = "literal", value = tostring(num + 1), literalType = "number" }
+            end
+        else
+            -- Runtime offset: key + 1
+            loweredKey = {
+                type = "binary_op",
+                left = loweredKey,
+                op = "+",
+                right = { type = "literal", value = "1", literalType = "number" },
+            }
+        end
+
         return {
             type = "index_access",
             object = lowerExpression(expr.object),
-            key = lowerExpression(expr.index),
+            key = loweredKey,
         }
     end
 
@@ -13678,10 +14527,44 @@ lowerStatement = function(stmt)
             end
         end
 
+        local loweredInit = init and lowerExpression(init) or nil
+
+        -- Expand object initializers: var x = new Foo() { X = 1 }
+        -- → local x = Foo.new(); x.X = 1
+        if loweredInit and loweredInit.type == "new_object_init" then
+            local stmts = {}
+            -- Emit the constructor call as the local declaration
+            table.insert(stmts, {
+                type = "local_decl",
+                name = stmt.name,
+                value = {
+                    type = "new_object",
+                    class = loweredInit.class,
+                    args = loweredInit.args,
+                },
+            })
+            -- Emit each property assignment
+            for _, init in loweredInit.initializers or {} do
+                table.insert(stmts, {
+                    type = "assignment",
+                    target = {
+                        type = "dot_access",
+                        object = { type = "identifier", name = stmt.name },
+                        field = init.field,
+                    },
+                    value = init.value,
+                })
+            end
+            return {
+                type = "compound",
+                statements = stmts,
+            }
+        end
+
         return {
             type = "local_decl",
             name = stmt.name,
-            value = init and lowerExpression(init) or nil,
+            value = loweredInit,
         }
     end
 
@@ -14251,6 +15134,16 @@ local function rewriteSelfCallsInExpression(expr, ctx, locals)
         return expr
     end
 
+    if t == "new_object_init" then
+        for i, arg in expr.args or {} do
+            expr.args[i] = rewriteSelfCallsInExpression(arg, ctx, locals)
+        end
+        for _, init in expr.initializers or {} do
+            init.value = rewriteSelfCallsInExpression(init.value, ctx, locals)
+        end
+        return expr
+    end
+
     if t == "function_expr" then
         local innerLocals = cloneSet(locals)
         addListToSet(innerLocals, expr.params)
@@ -14335,9 +15228,28 @@ local function lowerClass(classNode)
 
     -- Lower fields
     for _, field in classNode.fields or {} do
+        local fieldInit = field.initializer
+
+        -- Resolve target-typed new() in field initializers:
+        -- e.g. "NewScript2 newScript = new();" → tokens [new, (, )]
+        -- Convert to a proper new_object IR node using the field's declared type
+        if fieldInit and #fieldInit > 0 and fieldInit[1].line ~= nil then
+            local first = fieldInit[1]
+            if first.type == "keyword" and first.value == "new" and field.fieldType then
+                local typeName = normalizeTypeName(field.fieldType)
+                fieldInit = {
+                    type = "new",
+                    className = typeName,
+                    arguments = {},
+                    initializer = nil,
+                }
+            end
+        end
+
         local irField = {
             name = field.name,
-            value = lowerFieldInitializer(field.initializer),
+            value = lowerFieldInitializer(fieldInit),
+            fieldType = field.fieldType,
         }
         if field.isStatic then
             table.insert(cls.staticFields, irField)
@@ -14405,13 +15317,25 @@ local function lowerClass(classNode)
         end
 
         local params = {}
+        local paramTypes = {}
         for _, p in method.parameters or {} do
             table.insert(params, p.name)
+            table.insert(paramTypes, p.type or nil)
         end
+        local isExplicitCall = false
+        for _, attr in method.attributes or {} do
+            if attr == "ExplicitCall" then
+                isExplicitCall = true
+            end
+        end
+
         local irMethod = {
             name = method.name,
             isStatic = method.isStatic or false,
+            isExplicitCall = isExplicitCall,
             params = params,
+            paramTypes = paramTypes,
+            returnType = method.returnType,
             body = lowerBlock(method.body),
         }
 
@@ -14580,7 +15504,7 @@ local function collectReferencedIdentifiers(node, found)
     if node.type == "identifier" and node.name then
         found[node.name] = true
     end
-    if node.type == "new_object" and node.class then
+    if (node.type == "new_object" or node.type == "new_object_init") and node.class then
         local className = tostring(node.class):gsub("<.*>", ""):match("([%w_]+)$") or ""
         if className ~= "" then
             found[className] = true
@@ -14622,7 +15546,16 @@ end
 
 -- Main lowering function: AST → IR
 function Lowerer.lower(ast)
-    local moduleSymbols = buildModuleSymbols(ast.classes)
+    -- Combine classes and structs for symbol resolution (structs behave like classes in Lua)
+    local allClassNodes = {}
+    for _, cls in ast.classes or {} do
+        table.insert(allClassNodes, cls)
+    end
+    for _, struct in ast.structs or {} do
+        table.insert(allClassNodes, struct)
+    end
+
+    local moduleSymbols = buildModuleSymbols(allClassNodes)
     loweringContext = {
         moduleSymbols = moduleSymbols,
         localTypes = {},
@@ -14647,13 +15580,18 @@ function Lowerer.lower(ast)
         table.insert(module.classes, lowerClass(classNode))
     end
 
+    -- Lower structs (same as classes in Lua — both become tables)
+    for _, structNode in ast.structs or {} do
+        table.insert(module.classes, lowerClass(structNode))
+    end
+
     -- Lower enums
     for _, enumNode in ast.enums or {} do
         table.insert(module.enums, lowerEnum(enumNode))
     end
 
     -- Find entry class
-    module.entryClass = findEntryClass(ast.classes or {})
+    module.entryClass = findEntryClass(allClassNodes)
 
     -- Service hoisting pass
     local serviceSet = {}
@@ -14732,7 +15670,7 @@ return Lowerer
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="9">
+    <Item class="ModuleScript" referent="10">
       <Properties>
         <string name="Name">Parser</string>
         <string name="Source"><![CDATA[-- LUSharp Parser: Recursive descent C# parser
@@ -14749,6 +15687,20 @@ local function ClassNode(name, baseClass, accessModifier, isStatic, isAbstract)
         accessModifier = accessModifier or "internal",
         isStatic = isStatic or false,
         isAbstract = isAbstract or false,
+        fields = {},
+        properties = {},
+        methods = {},
+        constructor = nil,
+        events = {},
+    }
+end
+
+local function StructNode(name, baseType, accessModifier)
+    return {
+        type = "struct",
+        name = name,
+        baseType = baseType,
+        accessModifier = accessModifier or "public",
         fields = {},
         properties = {},
         methods = {},
@@ -15369,13 +16321,16 @@ function Parser.parse(tokens, options)
         return { type = "unknown", value = tok.value }
     end
 
-    local function buildCallNode(expr, args)
+    local function buildCallNode(expr, args, typeArgs)
         local callNode = { type = "call", callee = expr, arguments = args }
         if expr.type == "identifier" then
             callNode.name = expr.name
         elseif expr.type == "member_access" then
             callNode.name = expr.member
             callNode.target = expr.object
+        end
+        if typeArgs then
+            callNode.typeArguments = typeArgs
         end
         return callNode
     end
@@ -15442,9 +16397,20 @@ function Parser.parse(tokens, options)
                     break
                 end
 
+                -- Extract type arguments between < and >
+                local typeArgs = {}
+                local cursor = pos + 1 -- skip <
+                while cursor < genericCloseIndex do
+                    local tok = tokens[cursor]
+                    if tok.type == "identifier" or (tok.type == "keyword" and TYPE_KEYWORDS[tok.value]) then
+                        table.insert(typeArgs, tok.value)
+                    end
+                    cursor += 1
+                end
+
                 pos = genericCloseIndex + 1
                 local args = parseArguments()
-                expr = buildCallNode(expr, args)
+                expr = buildCallNode(expr, args, typeArgs)
             -- Method call: expr(args)
             elseif check("punctuation", "(") then
                 local args = parseArguments()
@@ -15902,6 +16868,11 @@ function Parser.parse(tokens, options)
         return attrs
     end
 
+    -- Forward declarations for mutual recursion (nested types)
+    local parseClass
+    local parseStruct
+    local parseEnum
+
     -- Parse a class member (method, field, property, constructor, event)
     local function parseClassMember(className)
         local attrs = parseAttributes()
@@ -15989,7 +16960,7 @@ function Parser.parse(tokens, options)
     end
 
     -- Parse a class declaration
-    local function parseClass(mods)
+    parseClass = function(mods)
         expect("keyword", "class")
         local name = expect("identifier").value
         local primaryConstructorParameters = nil
@@ -16003,23 +16974,44 @@ function Parser.parse(tokens, options)
         end
         local cls = ClassNode(name, baseClass, mods.access, mods.isStatic, mods.isAbstract)
         cls.primaryConstructorParameters = primaryConstructorParameters
+        cls.nestedEnums = {}
+        cls.nestedStructs = {}
+        cls.nestedClasses = {}
 
         expect("punctuation", "{")
         while not check("punctuation", "}") and not check("eof") do
-            local memberStartPos = pos
-            local kind, node = parseClassMember(name)
-
-            -- Safety guard: ensure class-body parsing always makes progress.
-            -- Unsupported tokens can cause parseClassMember to return without consuming input.
-            if pos == memberStartPos then
-                addDiagnostic("warning", "Unexpected token in class body: " .. tostring(current().value), current())
-                advance()
+            -- Handle nested types (enum, struct, class) — collected on class node, hoisted later
+            local nestedMods = nil
+            local savedPos = pos
+            if check("keyword", "public") or check("keyword", "private") or check("keyword", "protected")
+                or check("keyword", "internal") or check("keyword", "static") or check("keyword", "abstract")
+                or check("keyword", "sealed") or check("keyword", "readonly") then
+                nestedMods = parseModifiers()
+            end
+            if check("keyword", "enum") then
+                table.insert(cls.nestedEnums, parseEnum(nestedMods or {}))
+            elseif check("keyword", "struct") then
+                table.insert(cls.nestedStructs, parseStruct(nestedMods or {}))
+            elseif check("keyword", "class") then
+                table.insert(cls.nestedClasses, parseClass(nestedMods or {}))
             else
-                if kind == "method" then table.insert(cls.methods, node)
-                elseif kind == "field" then table.insert(cls.fields, node)
-                elseif kind == "property" then table.insert(cls.properties, node)
-                elseif kind == "constructor" then cls.constructor = node
-                elseif kind == "event" then table.insert(cls.events, node)
+                -- Not a nested type — restore position and parse as member
+                pos = savedPos
+                local memberStartPos = pos
+                local kind, node = parseClassMember(name)
+
+                -- Safety guard: ensure class-body parsing always makes progress.
+                -- Unsupported tokens can cause parseClassMember to return without consuming input.
+                if pos == memberStartPos then
+                    addDiagnostic("warning", "Unexpected token in class body: " .. tostring(current().value), current())
+                    advance()
+                else
+                    if kind == "method" then table.insert(cls.methods, node)
+                    elseif kind == "field" then table.insert(cls.fields, node)
+                    elseif kind == "property" then table.insert(cls.properties, node)
+                    elseif kind == "constructor" then cls.constructor = node
+                    elseif kind == "event" then table.insert(cls.events, node)
+                    end
                 end
             end
         end
@@ -16034,8 +17026,72 @@ function Parser.parse(tokens, options)
         return cls
     end
 
+    -- Parse a struct declaration
+    parseStruct = function(mods)
+        expect("keyword", "struct")
+        local name = expect("identifier").value
+        local primaryConstructorParameters = nil
+        if check("punctuation", "(") then
+            primaryConstructorParameters = parseParameterList()
+        end
+
+        local baseType = nil
+        if match("punctuation", ":") then
+            baseType = parseTypeName()
+        end
+        local st = StructNode(name, baseType, mods.access)
+        st.primaryConstructorParameters = primaryConstructorParameters
+        st.nestedEnums = {}
+        st.nestedStructs = {}
+        st.nestedClasses = {}
+
+        expect("punctuation", "{")
+        while not check("punctuation", "}") and not check("eof") do
+            -- Handle nested types — collected on struct node, hoisted later
+            local nestedMods = nil
+            local savedPos = pos
+            if check("keyword", "public") or check("keyword", "private") or check("keyword", "protected")
+                or check("keyword", "internal") or check("keyword", "static") or check("keyword", "abstract")
+                or check("keyword", "sealed") or check("keyword", "readonly") then
+                nestedMods = parseModifiers()
+            end
+            if check("keyword", "enum") then
+                table.insert(st.nestedEnums, parseEnum(nestedMods or {}))
+            elseif check("keyword", "struct") then
+                table.insert(st.nestedStructs, parseStruct(nestedMods or {}))
+            elseif check("keyword", "class") then
+                table.insert(st.nestedClasses, parseClass(nestedMods or {}))
+            else
+                pos = savedPos
+                local memberStartPos = pos
+                local kind, node = parseClassMember(name)
+
+                if pos == memberStartPos then
+                    addDiagnostic("warning", "Unexpected token in struct body: " .. tostring(current().value), current())
+                    advance()
+                else
+                    if kind == "method" then table.insert(st.methods, node)
+                    elseif kind == "field" then table.insert(st.fields, node)
+                    elseif kind == "property" then table.insert(st.properties, node)
+                    elseif kind == "constructor" then st.constructor = node
+                    elseif kind == "event" then table.insert(st.events, node)
+                    end
+                end
+            end
+        end
+        expect("punctuation", "}")
+
+        if st.constructor == nil and type(primaryConstructorParameters) == "table" and #primaryConstructorParameters > 0 then
+            st.constructor = MethodNode(name, nil, primaryConstructorParameters, {}, {
+                access = "public",
+            })
+        end
+
+        return st
+    end
+
     -- Parse an enum declaration
-    local function parseEnum(mods)
+    parseEnum = function(mods)
         expect("keyword", "enum")
         local name = expect("identifier").value
         local values = {}
@@ -16082,6 +17138,7 @@ function Parser.parse(tokens, options)
         typeAliases = typeAliases,
         namespace = nil,
         classes = {},
+        structs = {},
         enums = {},
         interfaces = {},
         diagnostics = diagnostics,
@@ -16147,7 +17204,18 @@ function Parser.parse(tokens, options)
         else
             local mods = parseModifiers()
             if check("keyword", "class") then
-                table.insert(ast.classes, parseClass(mods))
+                local cls = parseClass(mods)
+                table.insert(ast.classes, cls)
+                -- Hoist nested types to top level
+                for _, e in cls.nestedEnums or {} do table.insert(ast.enums, e) end
+                for _, s in cls.nestedStructs or {} do table.insert(ast.structs, s) end
+                for _, c in cls.nestedClasses or {} do table.insert(ast.classes, c) end
+            elseif check("keyword", "struct") then
+                local st = parseStruct(mods)
+                table.insert(ast.structs, st)
+                for _, e in st.nestedEnums or {} do table.insert(ast.enums, e) end
+                for _, s in st.nestedStructs or {} do table.insert(ast.structs, s) end
+                for _, c in st.nestedClasses or {} do table.insert(ast.classes, c) end
             elseif check("keyword", "enum") then
                 table.insert(ast.enums, parseEnum(mods))
             elseif check("keyword", "interface") then
@@ -16169,7 +17237,7 @@ return Parser
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="10">
+    <Item class="ModuleScript" referent="11">
       <Properties>
         <string name="Name">ProjectView</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -16202,6 +17270,49 @@ local MARKER_SIZE = 12
 local STATUS_LABEL_WIDTH = 140
 local STATUS_ICON_SIZE = 14
 local STATUS_ICON_PADDING = 6
+local SETTINGS_KEY_EXTRA_SERVICES = "LUSharp_ExtraVisibleServices"
+
+local DEFAULT_SERVICES = {
+    "Workspace",
+    "Players",
+    "Lighting",
+    "MaterialService",
+    "NetworkClient",
+    "ReplicatedFirst",
+    "ReplicatedStorage",
+    "ServerScriptService",
+    "ServerStorage",
+    "SoundService",
+    "StarterGui",
+    "StarterPack",
+    "StarterPlayer",
+    "Teams",
+    "TextChatService",
+}
+
+local DEFAULT_SERVICES_SET = {}
+for _, name in DEFAULT_SERVICES do
+    DEFAULT_SERVICES_SET[name] = true
+end
+
+local function tryGetService(name)
+    local ok, svc = pcall(function()
+        return game:GetService(name)
+    end)
+    return ok and svc or nil
+end
+
+local function getAllGameServices()
+    local services = {}
+    for _, child in game:GetChildren() do
+        local className = child.ClassName
+        if not DEFAULT_SERVICES_SET[className] then
+            table.insert(services, className)
+        end
+    end
+    table.sort(services)
+    return services
+end
 
 local function isLuSharpScript(instance)
     return instance
@@ -16325,8 +17436,19 @@ function ProjectView.new(pluginObject, options)
 
     self.selectedInstance = nil
     self.searchText = ""
+    self.serviceFilterText = ""
     self.expanded = setmetatable({}, { __mode = "k" })
-    self.expanded[game] = true
+
+    -- Load persisted extra services
+    self._extraServices = {}
+    local saved = pluginObject:GetSetting(SETTINGS_KEY_EXTRA_SERVICES)
+    if type(saved) == "table" then
+        for _, name in saved do
+            if type(name) == "string" and not DEFAULT_SERVICES_SET[name] then
+                table.insert(self._extraServices, name)
+            end
+        end
+    end
 
     self.statusByScript = setmetatable({}, { __mode = "k" })
     self._searchMatchCache = setmetatable({}, { __mode = "k" })
@@ -16389,10 +17511,59 @@ function ProjectView.new(pluginObject, options)
     refreshButton.Size = UDim2.new(0, 92, 1, 0)
     refreshButton.Position = UDim2.new(1, -92, 0, 0)
 
+    -- Service filter bar
+    local serviceFilterBar = Instance.new("Frame")
+    serviceFilterBar.Name = "ServiceFilterBar"
+    serviceFilterBar.Size = UDim2.new(1, -8, 0, 28)
+    serviceFilterBar.Position = UDim2.new(0, 4, 0, 36)
+    serviceFilterBar.BackgroundTransparency = 1
+    serviceFilterBar.BorderSizePixel = 0
+    serviceFilterBar.Parent = root
+
+    local serviceFilter = Instance.new("TextBox")
+    serviceFilter.Name = "ServiceFilter"
+    serviceFilter.Size = UDim2.new(1, 0, 1, 0)
+    serviceFilter.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    serviceFilter.BorderSizePixel = 0
+    serviceFilter.ClearTextOnFocus = false
+    serviceFilter.Font = Enum.Font.Code
+    serviceFilter.TextSize = 14
+    serviceFilter.TextColor3 = Color3.fromRGB(235, 235, 235)
+    serviceFilter.TextXAlignment = Enum.TextXAlignment.Left
+    serviceFilter.PlaceholderText = "+ Add service..."
+    serviceFilter.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
+    serviceFilter.Text = ""
+    serviceFilter.Parent = serviceFilterBar
+    self.serviceFilterBox = serviceFilter
+
+    -- Service filter dropdown (hidden by default)
+    local serviceDropdown = Instance.new("ScrollingFrame")
+    serviceDropdown.Name = "ServiceDropdown"
+    serviceDropdown.Size = UDim2.new(1, -8, 0, 0)
+    serviceDropdown.Position = UDim2.new(0, 4, 0, 68)
+    serviceDropdown.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    serviceDropdown.BorderSizePixel = 1
+    serviceDropdown.BorderColor3 = Color3.fromRGB(60, 60, 60)
+    serviceDropdown.ScrollBarThickness = 6
+    serviceDropdown.CanvasSize = UDim2.new(0, 0, 0, 0)
+    serviceDropdown.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    serviceDropdown.Visible = false
+    serviceDropdown.ZIndex = 10
+    serviceDropdown.Parent = root
+    self.serviceDropdown = serviceDropdown
+
+    local dropdownLayout = Instance.new("UIListLayout")
+    dropdownLayout.Padding = UDim.new(0, 1)
+    dropdownLayout.FillDirection = Enum.FillDirection.Vertical
+    dropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    dropdownLayout.Parent = serviceDropdown
+
+    self._serviceDropdownConnections = {}
+
     local scroller = Instance.new("ScrollingFrame")
     scroller.Name = "Scroller"
-    scroller.Size = UDim2.new(1, -8, 1, -40)
-    scroller.Position = UDim2.new(0, 4, 0, 36)
+    scroller.Size = UDim2.new(1, -8, 1, -72)
+    scroller.Position = UDim2.new(0, 4, 0, 68)
     scroller.BackgroundTransparency = 1
     scroller.BorderSizePixel = 0
     scroller.ScrollBarThickness = 8
@@ -16433,6 +17604,18 @@ function ProjectView.new(pluginObject, options)
 
     table.insert(self._connections, newScriptButton.Activated:Connect(function()
         self:_requestNewScript(self.selectedInstance)
+    end))
+
+    -- Service filter: show dropdown with matching non-visible services
+    table.insert(self._connections, serviceFilter:GetPropertyChangedSignal("Text"):Connect(function()
+        self:_updateServiceDropdown(serviceFilter.Text or "")
+    end))
+
+    table.insert(self._connections, serviceFilter.FocusLost:Connect(function()
+        -- Delay hide so click on dropdown item can fire first
+        task.delay(0.15, function()
+            self.serviceDropdown.Visible = false
+        end)
     end))
 
     self._contextActionIds = {
@@ -17072,11 +18255,133 @@ function ProjectView:_appendNode(instance, depth)
     end
 end
 
+function ProjectView:_getVisibleServiceNames()
+    local names = {}
+    for _, name in DEFAULT_SERVICES do
+        table.insert(names, name)
+    end
+    for _, name in self._extraServices do
+        table.insert(names, name)
+    end
+    return names
+end
+
+function ProjectView:_isServiceVisible(name)
+    if DEFAULT_SERVICES_SET[name] then
+        return true
+    end
+    for _, extra in self._extraServices do
+        if extra == name then
+            return true
+        end
+    end
+    return false
+end
+
+function ProjectView:_addService(name)
+    if self:_isServiceVisible(name) then
+        return
+    end
+    table.insert(self._extraServices, name)
+    self.plugin:SetSetting(SETTINGS_KEY_EXTRA_SERVICES, self._extraServices)
+    self.serviceFilterBox.Text = ""
+    self.serviceDropdown.Visible = false
+    self:refresh()
+end
+
+function ProjectView:_removeService(name)
+    -- Only allow removing extra services, not defaults
+    if DEFAULT_SERVICES_SET[name] then
+        return
+    end
+    for i, extra in self._extraServices do
+        if extra == name then
+            table.remove(self._extraServices, i)
+            break
+        end
+    end
+    self.plugin:SetSetting(SETTINGS_KEY_EXTRA_SERVICES, self._extraServices)
+    self:refresh()
+end
+
+function ProjectView:_updateServiceDropdown(filterText)
+    -- Clear old dropdown items
+    for _, conn in self._serviceDropdownConnections do
+        conn:Disconnect()
+    end
+    self._serviceDropdownConnections = {}
+
+    for _, child in self.serviceDropdown:GetChildren() do
+        if not child:IsA("UIListLayout") then
+            child:Destroy()
+        end
+    end
+
+    if filterText == "" then
+        self.serviceDropdown.Visible = false
+        return
+    end
+
+    local lowerFilter = string.lower(filterText)
+    local allServices = getAllGameServices()
+    local matches = {}
+
+    for _, name in allServices do
+        if not self:_isServiceVisible(name) and string.find(string.lower(name), lowerFilter, 1, true) then
+            table.insert(matches, name)
+        end
+    end
+
+    if #matches == 0 then
+        self.serviceDropdown.Visible = false
+        return
+    end
+
+    local maxVisible = math.min(#matches, 8)
+    self.serviceDropdown.Size = UDim2.new(1, -8, 0, maxVisible * 24)
+    self.serviceDropdown.Visible = true
+
+    for i, name in matches do
+        local item = Instance.new("TextButton")
+        item.Name = name
+        item.Size = UDim2.new(1, 0, 0, 24)
+        item.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        item.BorderSizePixel = 0
+        item.Font = Enum.Font.SourceSans
+        item.TextSize = 14
+        item.TextColor3 = Color3.fromRGB(220, 220, 220)
+        item.TextXAlignment = Enum.TextXAlignment.Left
+        item.Text = "  + " .. name
+        item.LayoutOrder = i
+        item.ZIndex = 10
+        item.Parent = self.serviceDropdown
+
+        table.insert(self._serviceDropdownConnections, item.Activated:Connect(function()
+            self:_addService(name)
+        end))
+
+        table.insert(self._serviceDropdownConnections, item.MouseEnter:Connect(function()
+            item.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
+        end))
+
+        table.insert(self._serviceDropdownConnections, item.MouseLeave:Connect(function()
+            item.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        end))
+    end
+end
+
 function ProjectView:refresh(_scripts)
     self._searchMatchCache = setmetatable({}, { __mode = "k" })
 
     self:_clearEntries()
-    self:_appendNode(game, 0)
+
+    local serviceNames = self:_getVisibleServiceNames()
+    for _, name in serviceNames do
+        local svc = tryGetService(name)
+        if svc then
+            self:_appendNode(svc, 0)
+        end
+    end
 end
 
 function ProjectView:show()
@@ -17109,7 +18414,7 @@ return ProjectView
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="11">
+    <Item class="ModuleScript" referent="12">
       <Properties>
         <string name="Name">ProjectViewStatus</string>
         <string name="Source"><![CDATA[local ProjectViewStatus = {}
@@ -17142,7 +18447,7 @@ return ProjectViewStatus
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="12">
+    <Item class="ModuleScript" referent="13">
       <Properties>
         <string name="Name">RobloxValidityLiveUpdater</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -17263,7 +18568,7 @@ return RobloxValidityLiveUpdater
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="13">
+    <Item class="ModuleScript" referent="14">
       <Properties>
         <string name="Name">RobloxValidityProvider</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -17345,7 +18650,7 @@ return RobloxValidityProvider
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="14">
+    <Item class="ModuleScript" referent="15">
       <Properties>
         <string name="Name">RobloxValiditySnapshot</string>
         <string name="Source"><![CDATA[local RobloxValiditySnapshot = {
@@ -17371,7 +18676,7 @@ return RobloxValiditySnapshot
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="15">
+    <Item class="ModuleScript" referent="16">
       <Properties>
         <string name="Name">ScriptManager</string>
         <string name="Source"><![CDATA[local ScriptManager = {}
@@ -17594,7 +18899,7 @@ function ScriptManager.createScript(name, parent, context, namespace)
 
     local scriptInstance = Instance.new(className)
     scriptInstance.Name = name
-    scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n"
+    scriptInstance.Source = "--!strict\n-- Compiled by LUSharp (do not edit)\n"
     scriptInstance.Parent = parent
 
     getCollectionService():AddTag(scriptInstance, TAG)
@@ -17647,7 +18952,7 @@ return ScriptManager
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="16">
+    <Item class="ModuleScript" referent="17">
       <Properties>
         <string name="Name">Settings</string>
         <string name="Source"><![CDATA[local Settings = {}
@@ -18299,7 +19604,7 @@ return Settings
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="17">
+    <Item class="ModuleScript" referent="18">
       <Properties>
         <string name="Name">SyntaxHighlighter</string>
         <string name="Source"><![CDATA[local function requireModule(name)
@@ -19032,7 +20337,7 @@ return SyntaxHighlighter
 ]]></string>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="18">
+    <Item class="ModuleScript" referent="19">
       <Properties>
         <string name="Name">TypeDatabase</string>
         <string name="Source"><![CDATA[-- Auto-generated by `lusharp generate-types`
@@ -92981,7 +94286,7 @@ return TypeDatabase
 ]]></string>
       </Properties>
     </Item>
-    <Item class="Folder" referent="19">
+    <Item class="Folder" referent="20">
       <Properties>
         <string name="Name">images</string>
       </Properties>

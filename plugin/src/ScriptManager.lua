@@ -218,7 +218,7 @@ function ScriptManager.createScript(name, parent, context, namespace)
 
     local scriptInstance = Instance.new(className)
     scriptInstance.Name = name
-    scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n"
+    scriptInstance.Source = "--!strict\n-- Compiled by LUSharp (do not edit)\n"
     scriptInstance.Parent = parent
 
     getCollectionService():AddTag(scriptInstance, TAG)

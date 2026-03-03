@@ -50,6 +50,7 @@ local function requireModule(name)
 end
 
 local Editor = requireModule("Editor")
+local ErrorList = requireModule("ErrorList")
 local ProjectView = requireModule("ProjectView")
 local ScriptManager = requireModule("ScriptManager")
 local Settings = requireModule("Settings")
@@ -105,7 +106,14 @@ local settingsButton = toolbar:CreateButton(
     "Settings"
 )
 
-for _, btn in { buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton } do
+local errorListButton = toolbar:CreateButton(
+    "ErrorList",
+    "Toggle Error List",
+    "rbxassetid://101453582644426",
+    "Error List"
+)
+
+for _, btn in { buildButton, buildAllButton, newScriptButton, editorButton, projectButton, settingsButton, errorListButton } do
     btn.ClickableWhenViewportHidden = true
 end
 
@@ -215,6 +223,7 @@ local editor = Editor.new(plugin, {
 warn("[LUSharp SelDbg] editor-created")
 local openEditors = {} -- { [scriptInstance] = { editor = Editor, script = scriptInstance } }
 local projectView = ProjectView.new(plugin)
+local errorList = ErrorList.new(plugin)
 
 editor:applySettings(settingsValues)
 settings:setOnChanged(function(values)
@@ -341,6 +350,7 @@ local function runDiagnosticsRequest(request)
             and currentScript == request.script
             and ScriptManager.getSource(request.script) == request.source then
             editor:setDiagnostics(diagnostics)
+            errorList:setDiagnostics(request.script, diagnostics)
         end
 
         diagnosticsWorkerRunning = false
@@ -774,7 +784,7 @@ local function compileOne(scriptInstance)
         return false, "stale_source"
     end
 
-    scriptInstance.Source = "-- Compiled by LUSharp (do not edit)\n" .. out
+    scriptInstance.Source = out
     projectView:setScriptBuildStatus(scriptInstance, {
         ok = errorCount == 0,
         errors = errorCount,
@@ -1045,6 +1055,7 @@ projectView:setOnRequestDelete(function(scriptInstance)
         editor:setFilename("<untitled.cs>")
         editor:setSource("")
         editor:setDiagnostics({})
+        errorList:clear()
     end
 
     if ScriptManager.deleteScript(scriptInstance) then
@@ -1102,6 +1113,17 @@ end)
 
 settingsButton.Click:Connect(function()
     settings:toggle()
+end)
+
+errorListButton.Click:Connect(function()
+    errorList:toggle()
+end)
+
+errorList:setOnDiagnosticSelected(function(scriptInstance, line, column)
+    if scriptInstance and scriptInstance == currentScript then
+        editor:setCursorPosition(line, column)
+        editor:focus()
+    end
 end)
 
 Selection.SelectionChanged:Connect(function()
