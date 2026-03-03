@@ -328,6 +328,73 @@ local function extractTypeStubs(parseResult, namespace)
         })
     end
 
+    for _, st in parseResult.structs or {} do
+        local members = {}
+
+        if st.constructor then
+            local params = {}
+            for _, param in st.constructor.parameters or {} do
+                table.insert(params, { name = param.name, type = param.type or "Object" })
+            end
+            table.insert(members, {
+                name = "new",
+                kind = "constructor",
+                type = nil,
+                access = st.constructor.accessModifier or "public",
+                isStatic = true,
+                parameters = params,
+            })
+        end
+
+        for _, method in st.methods or {} do
+            local params = {}
+            for _, param in method.parameters or {} do
+                table.insert(params, { name = param.name, type = param.type or "Object" })
+            end
+            table.insert(members, {
+                name = method.name,
+                kind = "method",
+                type = method.returnType or "void",
+                access = method.accessModifier or "private",
+                isStatic = method.isStatic or false,
+                parameters = params,
+            })
+        end
+
+        for _, prop in st.properties or {} do
+            table.insert(members, {
+                name = prop.name,
+                kind = "property",
+                type = prop.propType or "Object",
+                access = prop.accessModifier or "public",
+                isStatic = false,
+                canRead = prop.hasGet or false,
+                canWrite = prop.hasSet or false,
+            })
+        end
+
+        for _, field in st.fields or {} do
+            table.insert(members, {
+                name = field.name,
+                kind = "field",
+                type = field.fieldType or "Object",
+                access = field.accessModifier or "public",
+                isStatic = field.isStatic or false,
+                isReadonly = field.isReadonly or false,
+            })
+        end
+
+        table.insert(stubs, {
+            name = st.name,
+            fullName = (namespace and namespace ~= "") and (namespace .. "." .. st.name) or st.name,
+            namespace = namespace or "",
+            kind = "struct",
+            baseType = st.baseType or "",
+            accessModifier = st.accessModifier or "public",
+            members = members,
+        })
+    end
+
     return stubs
 end
 
@@ -2338,7 +2405,7 @@ local function getStaticTypeMemberCompletions(left)
         return nil
     end
 
-    return getMemberCompletions(typeName, memberPrefix)
+    return getMemberCompletions(typeName, memberPrefix, nil, true)
 end
 
 local function isClassDeclarationNameContext(left)
@@ -2642,7 +2709,13 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
             local interpolationTokens = Lexer.tokenize(interpolationPrefix)
             local interpolationType, interpolationMemberPrefix = inferMemberAccessType(interpolationTokens, symbolTypes)
             if interpolationType then
-                return getMemberCompletions(interpolationType, interpolationMemberPrefix)
+                local isStaticAccess = nil
+                local exprBeforeDot = interpolationPrefix:match("^([%a_][%w_]*)%.$")
+                    or interpolationPrefix:match("^([%a_][%w_]*)%.[%a_][%w_]*$")
+                if exprBeforeDot and not symbolTypes[exprBeforeDot] and resolveType(exprBeforeDot) then
+                    isStaticAccess = true
+                end
+                return getMemberCompletions(interpolationType, interpolationMemberPrefix, nil, isStaticAccess)
             end
 
             local interpolationWordPrefix = interpolationPrefix:match("([%a_][%w_]*)$") or ""
@@ -2687,7 +2760,12 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     do
         local objType, memberPrefix = inferMemberAccessType(tokens, symbolTypes)
         if objType then
-            return getMemberCompletions(objType, memberPrefix)
+            local isStaticAccess = nil
+            local exprBeforeDot = left:match("([%a_][%w_]*)%.[%a_]*$")
+            if exprBeforeDot and not symbolTypes[exprBeforeDot] and resolveType(exprBeforeDot) then
+                isStaticAccess = true
+            end
+            return getMemberCompletions(objType, memberPrefix, nil, isStaticAccess)
         end
     end
 
@@ -4208,8 +4286,16 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
             for _, arg in expr.arguments or {} do
                 walkExpression(arg, scope)
             end
+            -- Object initializer: { Field1 = val, Field2 = val }
+            -- The assignment targets are field names, not scope identifiers
             for _, initializerExpr in expr.initializer or {} do
-                walkExpression(initializerExpr, scope)
+                if initializerExpr.type == "assignment" and initializerExpr.target
+                    and initializerExpr.target.type == "identifier" then
+                    -- Only walk the value side; the target is a field name, not a variable
+                    walkExpression(initializerExpr.value, scope)
+                else
+                    walkExpression(initializerExpr, scope)
+                end
             end
             return
         end

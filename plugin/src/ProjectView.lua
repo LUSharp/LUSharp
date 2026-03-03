@@ -28,6 +28,49 @@ local MARKER_SIZE = 12
 local STATUS_LABEL_WIDTH = 140
 local STATUS_ICON_SIZE = 14
 local STATUS_ICON_PADDING = 6
+local SETTINGS_KEY_EXTRA_SERVICES = "LUSharp_ExtraVisibleServices"
+
+local DEFAULT_SERVICES = {
+    "Workspace",
+    "Players",
+    "Lighting",
+    "MaterialService",
+    "NetworkClient",
+    "ReplicatedFirst",
+    "ReplicatedStorage",
+    "ServerScriptService",
+    "ServerStorage",
+    "SoundService",
+    "StarterGui",
+    "StarterPack",
+    "StarterPlayer",
+    "Teams",
+    "TextChatService",
+}
+
+local DEFAULT_SERVICES_SET = {}
+for _, name in DEFAULT_SERVICES do
+    DEFAULT_SERVICES_SET[name] = true
+end
+
+local function tryGetService(name)
+    local ok, svc = pcall(function()
+        return game:GetService(name)
+    end)
+    return ok and svc or nil
+end
+
+local function getAllGameServices()
+    local services = {}
+    for _, child in game:GetChildren() do
+        local className = child.ClassName
+        if not DEFAULT_SERVICES_SET[className] then
+            table.insert(services, className)
+        end
+    end
+    table.sort(services)
+    return services
+end
 
 local function isLuSharpScript(instance)
     return instance
@@ -151,8 +194,19 @@ function ProjectView.new(pluginObject, options)
 
     self.selectedInstance = nil
     self.searchText = ""
+    self.serviceFilterText = ""
     self.expanded = setmetatable({}, { __mode = "k" })
-    self.expanded[game] = true
+
+    -- Load persisted extra services
+    self._extraServices = {}
+    local saved = pluginObject:GetSetting(SETTINGS_KEY_EXTRA_SERVICES)
+    if type(saved) == "table" then
+        for _, name in saved do
+            if type(name) == "string" and not DEFAULT_SERVICES_SET[name] then
+                table.insert(self._extraServices, name)
+            end
+        end
+    end
 
     self.statusByScript = setmetatable({}, { __mode = "k" })
     self._searchMatchCache = setmetatable({}, { __mode = "k" })
@@ -215,10 +269,59 @@ function ProjectView.new(pluginObject, options)
     refreshButton.Size = UDim2.new(0, 92, 1, 0)
     refreshButton.Position = UDim2.new(1, -92, 0, 0)
 
+    -- Service filter bar
+    local serviceFilterBar = Instance.new("Frame")
+    serviceFilterBar.Name = "ServiceFilterBar"
+    serviceFilterBar.Size = UDim2.new(1, -8, 0, 28)
+    serviceFilterBar.Position = UDim2.new(0, 4, 0, 36)
+    serviceFilterBar.BackgroundTransparency = 1
+    serviceFilterBar.BorderSizePixel = 0
+    serviceFilterBar.Parent = root
+
+    local serviceFilter = Instance.new("TextBox")
+    serviceFilter.Name = "ServiceFilter"
+    serviceFilter.Size = UDim2.new(1, 0, 1, 0)
+    serviceFilter.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    serviceFilter.BorderSizePixel = 0
+    serviceFilter.ClearTextOnFocus = false
+    serviceFilter.Font = Enum.Font.Code
+    serviceFilter.TextSize = 14
+    serviceFilter.TextColor3 = Color3.fromRGB(235, 235, 235)
+    serviceFilter.TextXAlignment = Enum.TextXAlignment.Left
+    serviceFilter.PlaceholderText = "+ Add service..."
+    serviceFilter.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
+    serviceFilter.Text = ""
+    serviceFilter.Parent = serviceFilterBar
+    self.serviceFilterBox = serviceFilter
+
+    -- Service filter dropdown (hidden by default)
+    local serviceDropdown = Instance.new("ScrollingFrame")
+    serviceDropdown.Name = "ServiceDropdown"
+    serviceDropdown.Size = UDim2.new(1, -8, 0, 0)
+    serviceDropdown.Position = UDim2.new(0, 4, 0, 68)
+    serviceDropdown.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    serviceDropdown.BorderSizePixel = 1
+    serviceDropdown.BorderColor3 = Color3.fromRGB(60, 60, 60)
+    serviceDropdown.ScrollBarThickness = 6
+    serviceDropdown.CanvasSize = UDim2.new(0, 0, 0, 0)
+    serviceDropdown.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    serviceDropdown.Visible = false
+    serviceDropdown.ZIndex = 10
+    serviceDropdown.Parent = root
+    self.serviceDropdown = serviceDropdown
+
+    local dropdownLayout = Instance.new("UIListLayout")
+    dropdownLayout.Padding = UDim.new(0, 1)
+    dropdownLayout.FillDirection = Enum.FillDirection.Vertical
+    dropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    dropdownLayout.Parent = serviceDropdown
+
+    self._serviceDropdownConnections = {}
+
     local scroller = Instance.new("ScrollingFrame")
     scroller.Name = "Scroller"
-    scroller.Size = UDim2.new(1, -8, 1, -40)
-    scroller.Position = UDim2.new(0, 4, 0, 36)
+    scroller.Size = UDim2.new(1, -8, 1, -72)
+    scroller.Position = UDim2.new(0, 4, 0, 68)
     scroller.BackgroundTransparency = 1
     scroller.BorderSizePixel = 0
     scroller.ScrollBarThickness = 8
@@ -259,6 +362,18 @@ function ProjectView.new(pluginObject, options)
 
     table.insert(self._connections, newScriptButton.Activated:Connect(function()
         self:_requestNewScript(self.selectedInstance)
+    end))
+
+    -- Service filter: show dropdown with matching non-visible services
+    table.insert(self._connections, serviceFilter:GetPropertyChangedSignal("Text"):Connect(function()
+        self:_updateServiceDropdown(serviceFilter.Text or "")
+    end))
+
+    table.insert(self._connections, serviceFilter.FocusLost:Connect(function()
+        -- Delay hide so click on dropdown item can fire first
+        task.delay(0.15, function()
+            self.serviceDropdown.Visible = false
+        end)
     end))
 
     self._contextActionIds = {
@@ -898,11 +1013,133 @@ function ProjectView:_appendNode(instance, depth)
     end
 end
 
+function ProjectView:_getVisibleServiceNames()
+    local names = {}
+    for _, name in DEFAULT_SERVICES do
+        table.insert(names, name)
+    end
+    for _, name in self._extraServices do
+        table.insert(names, name)
+    end
+    return names
+end
+
+function ProjectView:_isServiceVisible(name)
+    if DEFAULT_SERVICES_SET[name] then
+        return true
+    end
+    for _, extra in self._extraServices do
+        if extra == name then
+            return true
+        end
+    end
+    return false
+end
+
+function ProjectView:_addService(name)
+    if self:_isServiceVisible(name) then
+        return
+    end
+    table.insert(self._extraServices, name)
+    self.plugin:SetSetting(SETTINGS_KEY_EXTRA_SERVICES, self._extraServices)
+    self.serviceFilterBox.Text = ""
+    self.serviceDropdown.Visible = false
+    self:refresh()
+end
+
+function ProjectView:_removeService(name)
+    -- Only allow removing extra services, not defaults
+    if DEFAULT_SERVICES_SET[name] then
+        return
+    end
+    for i, extra in self._extraServices do
+        if extra == name then
+            table.remove(self._extraServices, i)
+            break
+        end
+    end
+    self.plugin:SetSetting(SETTINGS_KEY_EXTRA_SERVICES, self._extraServices)
+    self:refresh()
+end
+
+function ProjectView:_updateServiceDropdown(filterText)
+    -- Clear old dropdown items
+    for _, conn in self._serviceDropdownConnections do
+        conn:Disconnect()
+    end
+    self._serviceDropdownConnections = {}
+
+    for _, child in self.serviceDropdown:GetChildren() do
+        if not child:IsA("UIListLayout") then
+            child:Destroy()
+        end
+    end
+
+    if filterText == "" then
+        self.serviceDropdown.Visible = false
+        return
+    end
+
+    local lowerFilter = string.lower(filterText)
+    local allServices = getAllGameServices()
+    local matches = {}
+
+    for _, name in allServices do
+        if not self:_isServiceVisible(name) and string.find(string.lower(name), lowerFilter, 1, true) then
+            table.insert(matches, name)
+        end
+    end
+
+    if #matches == 0 then
+        self.serviceDropdown.Visible = false
+        return
+    end
+
+    local maxVisible = math.min(#matches, 8)
+    self.serviceDropdown.Size = UDim2.new(1, -8, 0, maxVisible * 24)
+    self.serviceDropdown.Visible = true
+
+    for i, name in matches do
+        local item = Instance.new("TextButton")
+        item.Name = name
+        item.Size = UDim2.new(1, 0, 0, 24)
+        item.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        item.BorderSizePixel = 0
+        item.Font = Enum.Font.SourceSans
+        item.TextSize = 14
+        item.TextColor3 = Color3.fromRGB(220, 220, 220)
+        item.TextXAlignment = Enum.TextXAlignment.Left
+        item.Text = "  + " .. name
+        item.LayoutOrder = i
+        item.ZIndex = 10
+        item.Parent = self.serviceDropdown
+
+        table.insert(self._serviceDropdownConnections, item.Activated:Connect(function()
+            self:_addService(name)
+        end))
+
+        table.insert(self._serviceDropdownConnections, item.MouseEnter:Connect(function()
+            item.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
+        end))
+
+        table.insert(self._serviceDropdownConnections, item.MouseLeave:Connect(function()
+            item.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        end))
+    end
+end
+
 function ProjectView:refresh(_scripts)
     self._searchMatchCache = setmetatable({}, { __mode = "k" })
 
     self:_clearEntries()
-    self:_appendNode(game, 0)
+
+    local serviceNames = self:_getVisibleServiceNames()
+    for _, name in serviceNames do
+        local svc = tryGetService(name)
+        if svc then
+            self:_appendNode(svc, 0)
+        end
+    end
 end
 
 function ProjectView:show()

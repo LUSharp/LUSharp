@@ -20,6 +20,20 @@ local function ClassNode(name, baseClass, accessModifier, isStatic, isAbstract)
     }
 end
 
+local function StructNode(name, baseType, accessModifier)
+    return {
+        type = "struct",
+        name = name,
+        baseType = baseType,
+        accessModifier = accessModifier or "public",
+        fields = {},
+        properties = {},
+        methods = {},
+        constructor = nil,
+        events = {},
+    }
+end
+
 local function MethodNode(name, returnType, parameters, body, modifiers)
     modifiers = modifiers or {}
     return {
@@ -632,13 +646,16 @@ function Parser.parse(tokens, options)
         return { type = "unknown", value = tok.value }
     end
 
-    local function buildCallNode(expr, args)
+    local function buildCallNode(expr, args, typeArgs)
         local callNode = { type = "call", callee = expr, arguments = args }
         if expr.type == "identifier" then
             callNode.name = expr.name
         elseif expr.type == "member_access" then
             callNode.name = expr.member
             callNode.target = expr.object
+        end
+        if typeArgs then
+            callNode.typeArguments = typeArgs
         end
         return callNode
     end
@@ -705,9 +722,20 @@ function Parser.parse(tokens, options)
                     break
                 end
 
+                -- Extract type arguments between < and >
+                local typeArgs = {}
+                local cursor = pos + 1 -- skip <
+                while cursor < genericCloseIndex do
+                    local tok = tokens[cursor]
+                    if tok.type == "identifier" or (tok.type == "keyword" and TYPE_KEYWORDS[tok.value]) then
+                        table.insert(typeArgs, tok.value)
+                    end
+                    cursor += 1
+                end
+
                 pos = genericCloseIndex + 1
                 local args = parseArguments()
-                expr = buildCallNode(expr, args)
+                expr = buildCallNode(expr, args, typeArgs)
             -- Method call: expr(args)
             elseif check("punctuation", "(") then
                 local args = parseArguments()
@@ -1165,6 +1193,11 @@ function Parser.parse(tokens, options)
         return attrs
     end
 
+    -- Forward declarations for mutual recursion (nested types)
+    local parseClass
+    local parseStruct
+    local parseEnum
+
     -- Parse a class member (method, field, property, constructor, event)
     local function parseClassMember(className)
         local attrs = parseAttributes()
@@ -1252,7 +1285,7 @@ function Parser.parse(tokens, options)
     end
 
     -- Parse a class declaration
-    local function parseClass(mods)
+    parseClass = function(mods)
         expect("keyword", "class")
         local name = expect("identifier").value
         local primaryConstructorParameters = nil
@@ -1266,23 +1299,44 @@ function Parser.parse(tokens, options)
         end
         local cls = ClassNode(name, baseClass, mods.access, mods.isStatic, mods.isAbstract)
         cls.primaryConstructorParameters = primaryConstructorParameters
+        cls.nestedEnums = {}
+        cls.nestedStructs = {}
+        cls.nestedClasses = {}
 
         expect("punctuation", "{")
         while not check("punctuation", "}") and not check("eof") do
-            local memberStartPos = pos
-            local kind, node = parseClassMember(name)
-
-            -- Safety guard: ensure class-body parsing always makes progress.
-            -- Unsupported tokens can cause parseClassMember to return without consuming input.
-            if pos == memberStartPos then
-                addDiagnostic("warning", "Unexpected token in class body: " .. tostring(current().value), current())
-                advance()
+            -- Handle nested types (enum, struct, class) — collected on class node, hoisted later
+            local nestedMods = nil
+            local savedPos = pos
+            if check("keyword", "public") or check("keyword", "private") or check("keyword", "protected")
+                or check("keyword", "internal") or check("keyword", "static") or check("keyword", "abstract")
+                or check("keyword", "sealed") or check("keyword", "readonly") then
+                nestedMods = parseModifiers()
+            end
+            if check("keyword", "enum") then
+                table.insert(cls.nestedEnums, parseEnum(nestedMods or {}))
+            elseif check("keyword", "struct") then
+                table.insert(cls.nestedStructs, parseStruct(nestedMods or {}))
+            elseif check("keyword", "class") then
+                table.insert(cls.nestedClasses, parseClass(nestedMods or {}))
             else
-                if kind == "method" then table.insert(cls.methods, node)
-                elseif kind == "field" then table.insert(cls.fields, node)
-                elseif kind == "property" then table.insert(cls.properties, node)
-                elseif kind == "constructor" then cls.constructor = node
-                elseif kind == "event" then table.insert(cls.events, node)
+                -- Not a nested type — restore position and parse as member
+                pos = savedPos
+                local memberStartPos = pos
+                local kind, node = parseClassMember(name)
+
+                -- Safety guard: ensure class-body parsing always makes progress.
+                -- Unsupported tokens can cause parseClassMember to return without consuming input.
+                if pos == memberStartPos then
+                    addDiagnostic("warning", "Unexpected token in class body: " .. tostring(current().value), current())
+                    advance()
+                else
+                    if kind == "method" then table.insert(cls.methods, node)
+                    elseif kind == "field" then table.insert(cls.fields, node)
+                    elseif kind == "property" then table.insert(cls.properties, node)
+                    elseif kind == "constructor" then cls.constructor = node
+                    elseif kind == "event" then table.insert(cls.events, node)
+                    end
                 end
             end
         end
@@ -1297,8 +1351,72 @@ function Parser.parse(tokens, options)
         return cls
     end
 
+    -- Parse a struct declaration
+    parseStruct = function(mods)
+        expect("keyword", "struct")
+        local name = expect("identifier").value
+        local primaryConstructorParameters = nil
+        if check("punctuation", "(") then
+            primaryConstructorParameters = parseParameterList()
+        end
+
+        local baseType = nil
+        if match("punctuation", ":") then
+            baseType = parseTypeName()
+        end
+        local st = StructNode(name, baseType, mods.access)
+        st.primaryConstructorParameters = primaryConstructorParameters
+        st.nestedEnums = {}
+        st.nestedStructs = {}
+        st.nestedClasses = {}
+
+        expect("punctuation", "{")
+        while not check("punctuation", "}") and not check("eof") do
+            -- Handle nested types — collected on struct node, hoisted later
+            local nestedMods = nil
+            local savedPos = pos
+            if check("keyword", "public") or check("keyword", "private") or check("keyword", "protected")
+                or check("keyword", "internal") or check("keyword", "static") or check("keyword", "abstract")
+                or check("keyword", "sealed") or check("keyword", "readonly") then
+                nestedMods = parseModifiers()
+            end
+            if check("keyword", "enum") then
+                table.insert(st.nestedEnums, parseEnum(nestedMods or {}))
+            elseif check("keyword", "struct") then
+                table.insert(st.nestedStructs, parseStruct(nestedMods or {}))
+            elseif check("keyword", "class") then
+                table.insert(st.nestedClasses, parseClass(nestedMods or {}))
+            else
+                pos = savedPos
+                local memberStartPos = pos
+                local kind, node = parseClassMember(name)
+
+                if pos == memberStartPos then
+                    addDiagnostic("warning", "Unexpected token in struct body: " .. tostring(current().value), current())
+                    advance()
+                else
+                    if kind == "method" then table.insert(st.methods, node)
+                    elseif kind == "field" then table.insert(st.fields, node)
+                    elseif kind == "property" then table.insert(st.properties, node)
+                    elseif kind == "constructor" then st.constructor = node
+                    elseif kind == "event" then table.insert(st.events, node)
+                    end
+                end
+            end
+        end
+        expect("punctuation", "}")
+
+        if st.constructor == nil and type(primaryConstructorParameters) == "table" and #primaryConstructorParameters > 0 then
+            st.constructor = MethodNode(name, nil, primaryConstructorParameters, {}, {
+                access = "public",
+            })
+        end
+
+        return st
+    end
+
     -- Parse an enum declaration
-    local function parseEnum(mods)
+    parseEnum = function(mods)
         expect("keyword", "enum")
         local name = expect("identifier").value
         local values = {}
@@ -1345,6 +1463,7 @@ function Parser.parse(tokens, options)
         typeAliases = typeAliases,
         namespace = nil,
         classes = {},
+        structs = {},
         enums = {},
         interfaces = {},
         diagnostics = diagnostics,
@@ -1410,7 +1529,18 @@ function Parser.parse(tokens, options)
         else
             local mods = parseModifiers()
             if check("keyword", "class") then
-                table.insert(ast.classes, parseClass(mods))
+                local cls = parseClass(mods)
+                table.insert(ast.classes, cls)
+                -- Hoist nested types to top level
+                for _, e in cls.nestedEnums or {} do table.insert(ast.enums, e) end
+                for _, s in cls.nestedStructs or {} do table.insert(ast.structs, s) end
+                for _, c in cls.nestedClasses or {} do table.insert(ast.classes, c) end
+            elseif check("keyword", "struct") then
+                local st = parseStruct(mods)
+                table.insert(ast.structs, st)
+                for _, e in st.nestedEnums or {} do table.insert(ast.enums, e) end
+                for _, s in st.nestedStructs or {} do table.insert(ast.structs, s) end
+                for _, c in st.nestedClasses or {} do table.insert(ast.classes, c) end
             elseif check("keyword", "enum") then
                 table.insert(ast.enums, parseEnum(mods))
             elseif check("keyword", "interface") then

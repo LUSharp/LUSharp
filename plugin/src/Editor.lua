@@ -853,7 +853,7 @@ local function renderDiagnostics(self)
         end
 
         local severity = string.lower(tostring(diagnostic.severity or ""))
-        if severity == "error" then
+        if severity == "error" or severity == "warning" then
             local startLine = math.max(1, math.floor(tonumber(diagnostic.line) or 1))
             local startColumn = math.max(1, math.floor(tonumber(diagnostic.column) or 1))
             local endLine = math.max(startLine, math.floor(tonumber(diagnostic.endLine) or startLine))
@@ -896,9 +896,16 @@ local function renderDiagnostics(self)
                     local x2 = TextService:GetTextSize(uptoText, self.options.textSize, Enum.Font.Code, Vector2.new(100000, 100000)).X
                     local y = ((line - 1) * self.options.lineHeight) + self.options.lineHeight - 2
 
-                    local color = self.options.theme == "Light"
-                        and Color3.fromRGB(215, 58, 73)
-                        or Color3.fromRGB(244, 71, 71)
+                    local color
+                    if severity == "warning" then
+                        color = self.options.theme == "Light"
+                            and Color3.fromRGB(180, 140, 20)
+                            or Color3.fromRGB(255, 199, 54)
+                    else
+                        color = self.options.theme == "Light"
+                            and Color3.fromRGB(215, 58, 73)
+                            or Color3.fromRGB(244, 71, 71)
+                    end
 
                     renderDiagnosticSquiggle(layer, x1, x2, y, color, layer.ZIndex)
                     rendered += 1
@@ -3240,12 +3247,17 @@ function Editor:setDiagnostics(diagnostics)
     end
 
     local errorCount = 0
+    local warningCount = 0
     for _, diagnostic in self.diagnostics do
-        if string.lower(tostring(diagnostic.severity or "")) == "error" then
+        local sev = string.lower(tostring(diagnostic.severity or ""))
+        if sev == "error" then
             errorCount += 1
+        elseif sev == "warning" then
+            warningCount += 1
         end
     end
     self.errorCount = errorCount
+    self.warningCount = warningCount
 
     refresh(self)
 end
@@ -3657,6 +3669,18 @@ function Editor:applySettings(settings)
     end
 
     refresh(self)
+end
+
+function Editor:setCursorPosition(line, column)
+    if not self.textBox then
+        return
+    end
+
+    local source = self.textBox.Text or ""
+    local lineStarts = buildLineStarts(source)
+    local index = lineColumnToIndex(lineStarts, line, column, #source)
+    self.textBox.CursorPosition = math.clamp(index, 1, #source + 1)
+    self.textBox.SelectionStart = -1
 end
 
 function Editor:focus()
