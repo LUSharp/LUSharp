@@ -23,6 +23,7 @@ local TYPE_MAP = {
     boolean = "boolean",
     void = "nil",
     object = "table",
+    Thread = "thread",
 }
 
 -- C# operator to Lua operator mapping
@@ -68,6 +69,146 @@ local lowerBlock
 
 local needsEventConnectionCache = false
 local loweringContext = nil
+
+-- C# guarantees left-to-right operand evaluation. Luau does not: in
+-- `a + B()`, Luau may read `a` AFTER B() has mutated it, producing a
+-- different result.  The helpers below detect binary expressions that
+-- mix identifiers (left) with function calls (right) and hoist the
+-- left operand into a temporary so evaluation order matches C#.
+
+local evalOrderCounter = 0
+
+local function containsCallExpr(expr)
+    if not expr or type(expr) ~= "table" then return false end
+    local et = expr.type
+    if et == "call" or et == "method_call" then return true end
+    if et == "binary_op" then
+        return containsCallExpr(expr.left) or containsCallExpr(expr.right)
+    end
+    if et == "unary_op" or et == "negate" or et == "not_op" then
+        return containsCallExpr(expr.operand)
+    end
+    if et == "incdec_expr" then return containsCallExpr(expr.operand) end
+    if et == "index_access" then
+        return containsCallExpr(expr.object) or containsCallExpr(expr.key)
+    end
+    if et == "dot_access" then return containsCallExpr(expr.object) end
+    if et == "ternary" then
+        return containsCallExpr(expr.condition) or containsCallExpr(expr.consequent) or containsCallExpr(expr.alternate)
+    end
+    return false
+end
+
+local function isPureLiteral(expr)
+    if not expr or type(expr) ~= "table" then return true end
+    return expr.type == "literal"
+end
+
+-- Walk a lowered expression tree.  For every binary_op where the right
+-- sub-tree contains a function call and the left sub-tree is NOT a pure
+-- literal, hoist the left operand into a temp.  Returns (preamble, expr)
+-- where preamble is a list of local_decl statements.
+local function ensureEvalOrder(expr)
+    if not expr or type(expr) ~= "table" then return {}, expr end
+
+    if expr.type == "binary_op" then
+        local lPre, lExpr = ensureEvalOrder(expr.left)
+        local rPre, rExpr = ensureEvalOrder(expr.right)
+
+        if containsCallExpr(rExpr) and not isPureLiteral(lExpr) then
+            evalOrderCounter += 1
+            local tempName = "__eval" .. evalOrderCounter
+            local preamble = {}
+            for _, s in lPre do table.insert(preamble, s) end
+            table.insert(preamble, { type = "local_decl", name = tempName, value = lExpr })
+            for _, s in rPre do table.insert(preamble, s) end
+            return preamble, {
+                type = "binary_op",
+                left = { type = "identifier", name = tempName },
+                op = expr.op,
+                right = rExpr,
+            }
+        end
+
+        local preamble = {}
+        for _, s in lPre do table.insert(preamble, s) end
+        for _, s in rPre do table.insert(preamble, s) end
+        return preamble, { type = "binary_op", left = lExpr, op = expr.op, right = rExpr }
+    end
+
+    return {}, expr
+end
+
+-- Wrap a lowered statement with eval-order preamble if needed.
+local function fixStatementEvalOrder(stmt)
+    if not stmt then return stmt end
+
+    -- Recursively fix inner statements of compounds
+    if stmt.type == "compound" then
+        local newStmts = {}
+        for _, inner in stmt.statements or {} do
+            local fixed = fixStatementEvalOrder(inner)
+            if fixed.type == "compound" and fixed.statements then
+                for _, s in fixed.statements do
+                    table.insert(newStmts, s)
+                end
+            else
+                table.insert(newStmts, fixed)
+            end
+        end
+        stmt.statements = newStmts
+        return stmt
+    end
+
+    local expr, exprField
+    if stmt.type == "expr_statement" then
+        expr = stmt.expression
+        exprField = "expression"
+    elseif stmt.type == "local_decl" then
+        expr = stmt.value
+        exprField = "value"
+    elseif stmt.type == "return_stmt" then
+        expr = stmt.value
+        exprField = "value"
+    elseif stmt.type == "assignment" then
+        expr = stmt.value
+        exprField = "value"
+    end
+
+    if not expr then return stmt end
+
+    -- For call/method_call at the top level, also fix their arguments
+    if expr.type == "call" or expr.type == "method_call" then
+        local allPreamble = {}
+        local newArgs = {}
+        for _, arg in expr.args or {} do
+            local pre, fixed = ensureEvalOrder(arg)
+            for _, s in pre do table.insert(allPreamble, s) end
+            table.insert(newArgs, fixed)
+        end
+        if #allPreamble > 0 then
+            local newExpr = {}
+            for k, v in expr do newExpr[k] = v end
+            newExpr.args = newArgs
+            local stmts = {}
+            for _, s in allPreamble do table.insert(stmts, s) end
+            stmt[exprField] = newExpr
+            table.insert(stmts, stmt)
+            return { type = "compound", statements = stmts }
+        end
+        return stmt
+    end
+
+    local preamble, fixedExpr = ensureEvalOrder(expr)
+    if #preamble > 0 then
+        local stmts = {}
+        for _, s in preamble do table.insert(stmts, s) end
+        stmt[exprField] = fixedExpr
+        table.insert(stmts, stmt)
+        return { type = "compound", statements = stmts }
+    end
+    return stmt
+end
 
 local function normalizeTypeName(typeName)
     typeName = tostring(typeName or "")
@@ -367,6 +508,46 @@ local function rewriteStackCall(methodName, objectExpr, args)
     return nil
 end
 
+-- Task static method rewrites: Task.Run() → task.spawn(), Task.Delay() → task.wait()
+local TASK_REWRITES = {
+    Run = { lib = "task", method = "spawn" },
+    Delay = { lib = "task", method = "wait" },
+}
+
+local function rewriteTaskCall(methodName, args)
+    local rewrite = TASK_REWRITES[methodName]
+    if not rewrite then return nil end
+    return {
+        type = "call",
+        callee = {
+            type = "dot_access",
+            object = { type = "identifier", name = rewrite.lib },
+            field = rewrite.method,
+        },
+        args = args,
+    }
+end
+
+-- Thread static method rewrites: Thread.Sleep() → task.wait(), Thread.Yield() → coroutine.yield()
+local THREAD_REWRITES = {
+    Sleep = { lib = "task", method = "wait" },
+    Yield = { lib = "coroutine", method = "yield" },
+}
+
+local function rewriteThreadCall(methodName, args)
+    local rewrite = THREAD_REWRITES[methodName]
+    if not rewrite then return nil end
+    return {
+        type = "call",
+        callee = {
+            type = "dot_access",
+            object = { type = "identifier", name = rewrite.lib },
+            field = rewrite.method,
+        },
+        args = args,
+    }
+end
+
 -- Lower an expression AST node to IR expression node
 lowerExpression = function(expr)
     if not expr then
@@ -453,6 +634,28 @@ lowerExpression = function(expr)
                 table.insert(args, lowerExpression(arg))
             end
             return { type = "call", callee = { type = "identifier", name = "print" }, args = args }
+        end
+
+        -- Task.Run() → task.spawn(), Task.Delay() → task.wait()
+        if expr.target and expr.target.type == "identifier" and expr.target.name == "Task"
+            and expr.name and TASK_REWRITES[expr.name] then
+            local args = {}
+            for _, arg in expr.arguments do
+                table.insert(args, lowerExpression(arg))
+            end
+            local result = rewriteTaskCall(expr.name, args)
+            if result then return result end
+        end
+
+        -- Thread.Sleep() → task.wait(), Thread.Yield() → coroutine.yield()
+        if expr.target and expr.target.type == "identifier" and expr.target.name == "Thread"
+            and expr.name and THREAD_REWRITES[expr.name] then
+            local args = {}
+            for _, arg in expr.arguments do
+                table.insert(args, lowerExpression(arg))
+            end
+            local result = rewriteThreadCall(expr.name, args)
+            if result then return result end
         end
 
         -- Generic GetService<T>() → game:GetService("T")
@@ -582,6 +785,34 @@ lowerExpression = function(expr)
                 end
             end
 
+            -- Thread instance methods
+            if loweringContext and loweringContext.localTypes[targetName] == "Thread" then
+                -- thread.Start() → coroutine.resume(thread)
+                if methodName == "Start" then
+                    return {
+                        type = "call",
+                        callee = {
+                            type = "dot_access",
+                            object = { type = "identifier", name = "coroutine" },
+                            field = "resume",
+                        },
+                        args = { lowerExpression(expr.target) },
+                    }
+                end
+                -- thread.Abort() → task.cancel(thread)
+                if methodName == "Abort" then
+                    return {
+                        type = "call",
+                        callee = {
+                            type = "dot_access",
+                            object = { type = "identifier", name = "task" },
+                            field = "cancel",
+                        },
+                        args = { lowerExpression(expr.target) },
+                    }
+                end
+            end
+
             -- Fallback: unknown target type → default to method_call (colon)
             return {
                 type = "method_call",
@@ -614,6 +845,55 @@ lowerExpression = function(expr)
             }
         end
 
+        -- Thread.CurrentThread → coroutine.running()
+        if expr.object and expr.object.type == "identifier" and expr.object.name == "Thread"
+            and expr.member == "CurrentThread" then
+            return {
+                type = "call",
+                callee = {
+                    type = "dot_access",
+                    object = { type = "identifier", name = "coroutine" },
+                    field = "running",
+                },
+                args = {},
+            }
+        end
+
+        -- Thread instance properties: thread.IsAlive → coroutine.status(thread) ~= "dead"
+        if loweringContext and expr.object and expr.object.type == "identifier" then
+            local objName = expr.object.name
+            if loweringContext.localTypes[objName] == "Thread" then
+                local objExpr = lowerExpression(expr.object)
+                if expr.member == "IsAlive" then
+                    return {
+                        type = "binary_op",
+                        left = {
+                            type = "call",
+                            callee = {
+                                type = "dot_access",
+                                object = { type = "identifier", name = "coroutine" },
+                                field = "status",
+                            },
+                            args = { objExpr },
+                        },
+                        op = "~=",
+                        right = { type = "literal", value = '"dead"', literalType = "string" },
+                    }
+                end
+                if expr.member == "ThreadState" then
+                    return {
+                        type = "call",
+                        callee = {
+                            type = "dot_access",
+                            object = { type = "identifier", name = "coroutine" },
+                            field = "status",
+                        },
+                        args = { objExpr },
+                    }
+                end
+            end
+        end
+
         return {
             type = "dot_access",
             object = lowerExpression(expr.object),
@@ -632,6 +912,23 @@ lowerExpression = function(expr)
 
     -- new ClassName(args)
     if t == "new" then
+        -- new Thread(fn) → coroutine.create(fn)
+        if expr.className == "Thread" then
+            local args = {}
+            for _, arg in expr.arguments or {} do
+                table.insert(args, lowerExpression(arg))
+            end
+            return {
+                type = "call",
+                callee = {
+                    type = "dot_access",
+                    object = { type = "identifier", name = "coroutine" },
+                    field = "create",
+                },
+                args = args,
+            }
+        end
+
         -- Collection types → plain empty table or table with initializer
         local collectionKind = getCollectionKind(expr.className)
         if collectionKind then
@@ -975,6 +1272,32 @@ lowerStatement = function(stmt)
             type = "local_decl",
             name = stmt.name,
             value = loweredInit,
+        }
+    end
+
+    -- Local function declaration
+    if t == "local_function" then
+        local params = {}
+        local paramTypes = {}
+        for _, p in stmt.parameters or {} do
+            table.insert(params, p.name)
+            table.insert(paramTypes, p.type or "any")
+        end
+
+        local body = lowerBlock(stmt.body)
+
+        -- Track function name so calls to it resolve correctly
+        if loweringContext then
+            loweringContext.localTypes[stmt.name] = "function"
+        end
+
+        return {
+            type = "local_function",
+            name = stmt.name,
+            params = params,
+            paramTypes = paramTypes,
+            returnType = normalizeTypeName(stmt.returnType),
+            body = body,
         }
     end
 
@@ -1410,6 +1733,9 @@ lowerBlock = function(stmts)
     for _, stmt in stmts do
         local lowered = lowerStatement(stmt)
         if lowered then
+            -- Apply C# left-to-right evaluation order fix
+            lowered = fixStatementEvalOrder(lowered)
+
             if lowered.type == "compound" and lowered.statements then
                 for _, inner in lowered.statements do
                     table.insert(result, inner)
@@ -1618,6 +1944,11 @@ rewriteSelfCallsInBlock = function(stmts, ctx, locals)
             if stmt.finallyBody then
                 rewriteSelfCallsInBlock(stmt.finallyBody or {}, ctx, cloneSet(locals))
             end
+        elseif t == "local_function" then
+            locals[stmt.name] = true
+            local innerLocals = cloneSet(locals)
+            addListToSet(innerLocals, stmt.params)
+            rewriteSelfCallsInBlock(stmt.body or {}, ctx, innerLocals)
         elseif t == "compound" then
             rewriteSelfCallsInBlock(stmt.statements or {}, ctx, locals)
         end
@@ -1626,6 +1957,7 @@ end
 
 -- Lower a class AST node to IR class
 local function lowerClass(classNode)
+    evalOrderCounter = 0 -- reset per class
     local cls = {
         name = classNode.name,
         baseClass = classNode.baseClass,

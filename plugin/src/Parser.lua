@@ -915,6 +915,39 @@ function Parser.parse(tokens, options)
         return false
     end
 
+    -- Detect local function declarations: Type Name( patterns inside method bodies
+    -- e.g. int Add(int a, int b) { ... }  or  void Greet(string name) { ... }
+    local function isLocalFunctionDeclaration()
+        local tok = current()
+        -- Keyword type followed by identifier followed by '('
+        if tok.type == "keyword" and TYPE_KEYWORDS[tok.value] then
+            local next1 = peek(1)
+            local next2 = peek(2)
+            if next1.type == "identifier" and next2.type == "punctuation" and next2.value == "(" then
+                return true
+            end
+        end
+        -- User-defined type followed by identifier followed by '('
+        if tok.type == "identifier" then
+            local next1 = peek(1)
+            local next2 = peek(2)
+            if next1.type == "identifier" and next2.type == "punctuation" and next2.value == "(" then
+                return true
+            end
+            -- Generic return type: List<int> GetItems(
+            if next1.type == "operator" and next1.value == "<" then
+                local savePos = pos
+                local ok = pcall(function()
+                    parseTypeName()
+                end)
+                local isFunc = ok and check("identifier") and peek(1).type == "punctuation" and peek(1).value == "("
+                pos = savePos
+                return isFunc
+            end
+        end
+        return false
+    end
+
     local function isValidExpressionStatement(expr)
         if type(expr) ~= "table" then
             return false
@@ -1147,6 +1180,16 @@ function Parser.parse(tokens, options)
             end
             expect("punctuation", "}")
             return { type = "switch", expression = expression, cases = cases }
+        end
+
+        -- Local function declaration: Type Name(params) { body }
+        -- Must come before isVariableDeclaration() since both match Type Identifier prefix
+        if isLocalFunctionDeclaration() then
+            local returnType = parseTypeName()
+            local name = expect("identifier").value
+            local params = parseParameterList()
+            local body = parseBlock()
+            return { type = "local_function", name = name, returnType = returnType, parameters = params, body = body }
         end
 
         -- Variable declaration: Type name = expr;

@@ -80,6 +80,16 @@ local DOTNET_BASE_TYPES = {
         fullName = "System.Collections.Generic.Dictionary<TKey, TValue>",
         kind = "class",
     },
+    {
+        alias = "Task",
+        fullName = "System.Threading.Tasks.Task",
+        kind = "class",
+    },
+    {
+        alias = "Thread",
+        fullName = "System.Threading.Thread",
+        kind = "class",
+    },
 }
 
 local DOTNET_NAMESPACE_MEMBERS = {
@@ -167,6 +177,28 @@ local DOTNET_NAMESPACE_MEMBERS = {
             documentation = "System.Collections.Generic.Dictionary<TKey, TValue>",
         },
     },
+    ["System.Threading"] = {
+        {
+            label = "Tasks",
+            kind = "namespace",
+            detail = "namespace",
+            documentation = "System.Threading.Tasks",
+        },
+        {
+            label = "Thread",
+            kind = "type",
+            detail = "class",
+            documentation = "Static wrapper for Roblox coroutine library functions (System.Threading.Thread).",
+        },
+    },
+    ["System.Threading.Tasks"] = {
+        {
+            label = "Task",
+            kind = "type",
+            detail = "class",
+            documentation = "Static wrapper for Roblox task library functions.",
+        },
+    },
     ["Game"] = {
         { label = "Server", kind = "namespace", detail = "namespace", documentation = "Game.Server" },
         { label = "Client", kind = "namespace", detail = "namespace", documentation = "Game.Client" },
@@ -176,6 +208,8 @@ local DOTNET_NAMESPACE_MEMBERS = {
 
 local MANUAL_TYPE_ALIASES = {
     Console = "System.Console",
+    Task = "System.Threading.Tasks.Task",
+    Thread = "System.Threading.Thread",
 }
 
 local MANUAL_TYPES = {
@@ -188,9 +222,135 @@ local MANUAL_TYPES = {
             {
                 kind = "method",
                 name = "WriteLine",
-                static = true,
+                isStatic = true,
                 returnType = "Void",
                 parameters = { { name = "value", type = "Object" } },
+            },
+        },
+    },
+    ["System.Threading.Tasks.Task"] = {
+        name = "Task",
+        fullName = "System.Threading.Tasks.Task",
+        kind = "class",
+        baseType = nil,
+        members = {
+            {
+                kind = "method",
+                name = "Run",
+                isStatic = true,
+                returnType = "Thread",
+                parameters = { { name = "action", type = "Action" } },
+                documentation = "Queues the specified work to run asynchronously.\nLuau: task.spawn(function() ... end)",
+            },
+            {
+                kind = "method",
+                name = "Delay",
+                isStatic = true,
+                returnType = "double",
+                parameters = { { name = "seconds", type = "double" } },
+                documentation = "Creates a task that completes after the specified delay in seconds.\nLuau: task.wait(seconds)",
+            },
+            {
+                kind = "property",
+                name = "CompletedTask",
+                isStatic = true,
+                returnType = "Task",
+                documentation = "Gets a task that has already completed successfully.",
+            },
+        },
+    },
+    ["System.Threading.Thread"] = {
+        name = "Thread",
+        fullName = "System.Threading.Thread",
+        kind = "class",
+        baseType = nil,
+        members = {
+            -- Constructors
+            {
+                kind = "constructor",
+                name = "Thread",
+                isStatic = false,
+                returnType = "Thread",
+                parameters = { { name = "start", type = "Action" } },
+                documentation = "Initializes a new Thread instance with a delegate to execute.\nLuau: coroutine.create(function() ... end)",
+            },
+            -- Static methods
+            {
+                kind = "method",
+                name = "Sleep",
+                isStatic = true,
+                returnType = "void",
+                parameters = { { name = "seconds", type = "double" } },
+                documentation = "Suspends the current thread for the specified number of seconds.\nLuau: task.wait(seconds)",
+            },
+            {
+                kind = "method",
+                name = "Yield",
+                isStatic = true,
+                returnType = "bool",
+                parameters = {},
+                documentation = "Causes the calling thread to yield execution to another thread that is ready to run.\nLuau: coroutine.yield()",
+            },
+            -- Static properties
+            {
+                kind = "property",
+                name = "CurrentThread",
+                isStatic = true,
+                returnType = "Thread",
+                documentation = "Gets the currently running thread.\nLuau: coroutine.running()",
+            },
+            -- Instance methods
+            {
+                kind = "method",
+                name = "Start",
+                isStatic = false,
+                returnType = "void",
+                parameters = {},
+                documentation = "Causes the thread to begin executing.\nLuau: coroutine.resume(thread)",
+            },
+            {
+                kind = "method",
+                name = "Abort",
+                isStatic = false,
+                returnType = "void",
+                parameters = {},
+                documentation = "Terminates the thread.\nLuau: task.cancel(thread)",
+            },
+            -- Instance properties
+            {
+                kind = "property",
+                name = "IsAlive",
+                isStatic = false,
+                returnType = "bool",
+                documentation = "Gets a value indicating the execution status of the current thread.\nLuau: coroutine.status(thread) ~= \"dead\"",
+            },
+            {
+                kind = "property",
+                name = "ThreadState",
+                isStatic = false,
+                returnType = "string",
+                documentation = "Gets a value containing the state of the current thread.\nLuau: coroutine.status(thread)",
+            },
+            {
+                kind = "property",
+                name = "IsBackground",
+                isStatic = false,
+                returnType = "bool",
+                documentation = "Gets or sets a value indicating whether this thread is a background thread. Always true in Roblox.",
+            },
+            {
+                kind = "property",
+                name = "ManagedThreadId",
+                isStatic = false,
+                returnType = "int",
+                documentation = "Gets a unique identifier for the current managed thread.",
+            },
+            {
+                kind = "property",
+                name = "Name",
+                isStatic = false,
+                returnType = "string",
+                documentation = "Gets or sets the name of the thread.",
             },
         },
     },
@@ -4680,6 +4840,15 @@ local function collectScopeDiagnosticsForMethod(methodNode, source, lineStarts, 
                 for _, caseNode in statement.cases or {} do
                     walkStatements(caseNode.body, createScope(scope))
                 end
+            elseif statementType == "local_function" then
+                declareInScope(scope, allDeclared, statement.name)
+                declareTypeInScope(scope, statement.name, "function")
+                local funcScope = createScope(scope)
+                for _, param in statement.parameters or {} do
+                    declareInScope(funcScope, allDeclared, param.name)
+                    declareTypeInScope(funcScope, param.name, param.type)
+                end
+                walkStatements(statement.body, funcScope)
             elseif statementType == "try_catch" then
                 walkStatements(statement.tryBody, createScope(scope))
                 if statement.catchBody then
@@ -5123,16 +5292,16 @@ local function collectInvalidUserMemberAccessDiagnostics(source, opts)
             -- If the identifier itself is a type name (static access like ClassName.Method)
             local isStaticAccess = false
             if not objectType then
-                local userStub = resolveUserType(objectName)
-                if userStub then
+                local typeStub = resolveType(objectName)
+                if typeStub then
                     objectType = objectName
                     isStaticAccess = true
                 end
             end
 
             if objectType then
-                local userStub = resolveUserType(objectType)
-                if userStub then
+                local typeStub = resolveType(objectType)
+                if typeStub then
                     -- Check member existence and static/instance consistency
                     local members = {}
                     collectMembers(objectType, nil, members)

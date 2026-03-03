@@ -31,6 +31,7 @@ local CS_TO_LUAU_TYPE = {
     ["Object"] = "any",
     ["dynamic"] = "any",
     ["Action"] = "() -> ()",
+    ["Thread"] = "thread",
 }
 
 local function csTypeToLuau(csType)
@@ -290,6 +291,28 @@ emitStatement = function(stmt, lines, level)
         else
             appendLine(lines, level, "local " .. stmt.name)
         end
+        return
+    end
+
+    if t == "local_function" then
+        local typedParams = {}
+        for i, paramName in stmt.params or {} do
+            local paramType = stmt.paramTypes and stmt.paramTypes[i]
+            if paramType then
+                table.insert(typedParams, paramName .. ": " .. csTypeToLuau(paramType))
+            else
+                table.insert(typedParams, paramName)
+            end
+        end
+
+        local returnAnnotation = ""
+        if stmt.returnType and stmt.returnType ~= "void" and stmt.returnType ~= "()" then
+            returnAnnotation = ": " .. csTypeToLuau(stmt.returnType)
+        end
+
+        appendLine(lines, level, "local function " .. stmt.name .. "(" .. join(typedParams) .. ")" .. returnAnnotation)
+        emitBlock(stmt.body or {}, lines, level + 1)
+        appendLine(lines, level, "end")
         return
     end
 
