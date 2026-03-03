@@ -58,19 +58,56 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ./artifacts/${{ matrix.artifact }}
 
-  release:
-    needs: build
+  plugin:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rojo
+        run: |
+          gh release download --repo rojo-rbx/rojo --pattern 'rojo-*-linux-x86_64.zip' -D /tmp
+          unzip /tmp/rojo-*-linux-x86_64.zip -d /usr/local/bin
+          chmod +x /usr/local/bin/rojo
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build plugin
+        run: rojo build plugin/plugin.project.json -o plugin/LUSharp-plugin.rbxmx
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LUSharp-plugin.rbxmx
+          path: plugin/LUSharp-plugin.rbxmx
+
+  release:
+    needs: [build, plugin]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./release-assets
           merge-multiple: true
 
+      - name: Get tag annotation
+        id: tag_info
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          BODY=$(git tag -l --format='%(contents:body)' "$TAG")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "body<<$EOF" >> "$GITHUB_OUTPUT"
+          echo "$BODY" >> "$GITHUB_OUTPUT"
+          echo "$EOF" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ steps.tag_info.outputs.tag }}
+          body: ${{ steps.tag_info.outputs.body }}
           files: ./release-assets/*
-          generate_release_notes: true
