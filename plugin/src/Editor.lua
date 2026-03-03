@@ -1746,6 +1746,41 @@ function Editor.new(pluginObject, options)
 
         self._pendingAutoIndent = nil
 
+        -- Auto-indent: Roblox inserts \n natively, then we insert scope indent at cursor
+        if not skipEditorTransforms and self.options.autoIndent and prevText ~= textBox.Text then
+            local _nlStart, nlRemoved, nlInserted = findSingleSplice(prevText, textBox.Text)
+            if nlInserted == "\n" and (nlRemoved == nil or nlRemoved == "") then
+                local capturedTabText = self.options.tabText or "    "
+
+                task.defer(function()
+                    if not self.textBox or not self.textBox.Parent then return end
+
+                    local text = self.textBox.Text
+                    local cursor = self.textBox.CursorPosition
+                    local scopeIndent = EditorTextUtils.computeScopeIndent(text, cursor, capturedTabText)
+
+                    if #scopeIndent > 0 then
+                        local before = text:sub(1, cursor - 1)
+                        local after = text:sub(cursor)
+                        self._suppressTextChange = true
+                        self.textBox.Text = before .. scopeIndent .. after
+                        self.textBox.CursorPosition = cursor + #scopeIndent
+                        self.textBox.SelectionStart = -1
+                    end
+
+                    refresh(self)
+                    updateCaretPosition(self)
+                end)
+
+                self._lastText = textBox.Text
+                self._lastCursorPos = textBox.CursorPosition
+                self._lastSelectionStart = textBox.SelectionStart
+                self:hideCompletions()
+                self:hideHoverInfo()
+                return
+            end
+        end
+
         self._lastText = textBox.Text
         self._lastCursorPos = textBox.CursorPosition
         self._lastSelectionStart = textBox.SelectionStart
@@ -2000,57 +2035,7 @@ function Editor.new(pluginObject, options)
             return Enum.ContextActionResult.Sink
         end
 
-        -- Handle Enter key: insert newline + auto-indent ourselves
-        if (keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter)
-            and self.textBox:IsFocused() and self.options.autoIndent then
-            local text = self.textBox.Text
-            local cursor = self.textBox.CursorPosition
-            if cursor < 1 then cursor = #text + 1 end
-
-            local startPos = cursor
-            local endPos = cursor
-            if self.textBox.SelectionStart ~= -1 and self.textBox.SelectionStart ~= cursor then
-                startPos = math.min(cursor, self.textBox.SelectionStart)
-                endPos = math.max(cursor, self.textBox.SelectionStart)
-            end
-
-            -- Build the text before cursor (what the previous line looks like)
-            local before = text:sub(1, startPos - 1)
-            local after = text:sub(endPos)
-
-            -- Compute indent from the line before the cursor
-            local prevLineContent = before:match("([^\n]*)$") or ""
-            local baseIndent = prevLineContent:match("^([ \t]*)") or ""
-            local trimmed = prevLineContent:match("^%s*(.-)%s*$") or ""
-            local noComment = trimmed:gsub("//.*$", "")
-            noComment = noComment:match("^(.-)%s*$") or noComment
-
-            local desiredIndent = baseIndent
-            if noComment:sub(-1) == "{" then
-                desiredIndent = baseIndent .. (self.options.tabText or "    ")
-            end
-
-            local newText = before .. "\n" .. desiredIndent .. after
-            self._suppressTextChange = true
-            self.textBox.Text = newText
-            self.textBox.CursorPosition = startPos + 1 + #desiredIndent
-            self.textBox.SelectionStart = -1
-
-            self._lastText = self.textBox.Text
-            self._lastCursorPos = self.textBox.CursorPosition
-            self._lastSelectionStart = self.textBox.SelectionStart
-
-            refresh(self)
-            self:hideCompletions()
-            updateCaretPosition(self)
-
-            if self.onSourceChanged then
-                self.onSourceChanged(self.textBox.Text)
-            end
-
-            return Enum.ContextActionResult.Sink
-        end
-
+        -- Enter key: let TextBox handle natively; Text handler applies auto-indent
         return Enum.ContextActionResult.Pass
     end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Tab, Enum.KeyCode.Return, Enum.KeyCode.KeypadEnter, Enum.KeyCode.Delete, Enum.KeyCode.Backspace, Enum.KeyCode.Up, Enum.KeyCode.Down) end)
 
