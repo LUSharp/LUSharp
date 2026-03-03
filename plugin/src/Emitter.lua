@@ -545,9 +545,9 @@ local function emitClass(cls, lines, crossScriptDeps, enumNames)
 end
 
 local function emitEnum(enum, lines)
-    appendLine(lines, 0, "local " .. enum.name .. " = table.freeze({")
+    appendLine(lines, 0, "local " .. enum.name .. " = ({")
     for _, v in enum.values or {} do
-        appendLine(lines, 1, v.name .. " = \"" .. v.name .. "\";")
+        appendLine(lines, 1, "['" .. v.name .. "'] = \"" .. v.name .. "\";")
     end
     appendLine(lines, 0, "})")
     appendLine(lines, 0, "")

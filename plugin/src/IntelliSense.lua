@@ -310,7 +310,7 @@ local function extractTypeStubs(parseResult, namespace)
         for _, val in enum.values or {} do
             table.insert(members, {
                 name = val.name or val,
-                kind = "field",
+                kind = "enumitem",
                 type = enum.name,
                 access = "public",
                 isStatic = true,
@@ -1200,6 +1200,7 @@ local function memberKind(member)
     if member.kind == "field" then return "field" end
     if member.kind == "event" then return "event" end
     if member.kind == "constructor" then return "constructor" end
+    if member.kind == "enumitem" then return "enumitem" end
     return "member"
 end
 
@@ -1222,7 +1223,7 @@ local function memberDetail(member)
         return string.format("%s %s(%s)", returnType, member.name, table.concat(params, ", "))
     end
 
-    if member.kind == "property" or member.kind == "field" or member.kind == "event" then
+    if member.kind == "property" or member.kind == "field" or member.kind == "event" or member.kind == "enumitem" then
         return string.format("%s : %s", member.kind, displayTypeName(member.type or "Object"))
     end
 
@@ -3028,10 +3029,11 @@ local function buildTypeHoverInfo(identifier)
         return nil
     end
 
+    local resolvedKind = typeInfo.kind or "type"
     return {
         label = identifier,
-        kind = "type",
-        detail = tostring(typeInfo.kind or "type"),
+        kind = resolvedKind,
+        detail = tostring(resolvedKind) .. " " .. identifier,
         documentation = getRobloxTypeDocumentation(identifier, typeInfo.fullName or identifier, typeInfo),
     }
 end
@@ -3039,7 +3041,7 @@ end
 local function inferDeclarationHover(identifier, trailingText, beforeTrimmed, beforeIdentifier)
     local normalizedIdentifier = string.lower(tostring(identifier or ""))
 
-    if normalizedIdentifier == "class" or normalizedIdentifier == "interface" or normalizedIdentifier == "enum" then
+    if normalizedIdentifier == "class" or normalizedIdentifier == "interface" or normalizedIdentifier == "enum" or normalizedIdentifier == "struct" then
         return {
             label = normalizedIdentifier,
             kind = "keyword",
@@ -3099,11 +3101,29 @@ local function inferDeclarationHover(identifier, trailingText, beforeTrimmed, be
         }
     end
 
-    if beforeTrimmed:match("interface$") or beforeTrimmed:match("enum$") then
+    if beforeTrimmed:match("interface$") then
         return {
             label = identifier,
             kind = "type",
-            detail = string.format("%s %s", beforeTrimmed:match("([%a_]+)%s+$") or "type", identifier),
+            detail = "interface " .. identifier,
+            documentation = nil,
+        }
+    end
+
+    if beforeTrimmed:match("enum$") then
+        return {
+            label = identifier,
+            kind = "enum",
+            detail = "enum " .. identifier,
+            documentation = nil,
+        }
+    end
+
+    if beforeTrimmed:match("struct$") then
+        return {
+            label = identifier,
+            kind = "struct",
+            detail = "struct " .. identifier,
             documentation = nil,
         }
     end
@@ -3390,6 +3410,37 @@ local function resolveHoverInfoAtPosition(source, cursorPos, opts)
             detail = detail,
             documentation = documentation,
         }
+    end
+
+    -- Detect enum items inside enum body: scan backwards for "enum <Name> {"
+    do
+        local searchBack = beforeTrimmed
+        -- Find the nearest unmatched '{' before this identifier
+        local braceDepth = 0
+        local enumName = nil
+        for i = #searchBack, 1, -1 do
+            local ch = searchBack:sub(i, i)
+            if ch == "}" then
+                braceDepth += 1
+            elseif ch == "{" then
+                if braceDepth > 0 then
+                    braceDepth -= 1
+                else
+                    -- Found the opening brace — check if preceded by "enum <Name>"
+                    local preceding = searchBack:sub(1, i - 1):gsub("%s+$", "")
+                    enumName = preceding:match("enum%s+([%a_][%w_]*)%s*$")
+                    break
+                end
+            end
+        end
+        if enumName then
+            return {
+                label = identifier,
+                kind = "enumitem",
+                detail = "enumitem : " .. enumName,
+                documentation = "Enum value of " .. enumName,
+            }
+        end
     end
 
     local globalMember = findMemberInType("Globals", identifier)
