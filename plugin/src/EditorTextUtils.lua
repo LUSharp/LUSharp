@@ -162,6 +162,17 @@ function EditorTextUtils.deleteNextWordSegment(text, cursorPos)
     text = text or ""
     cursorPos = clampCursor(text, cursorPos)
 
+    -- At end of text: nothing to delete
+    if cursorPos > #text then
+        return text, cursorPos, false
+    end
+
+    -- At a newline: delete just the newline character
+    if text:sub(cursorPos, cursorPos) == "\n" then
+        local newText = text:sub(1, cursorPos - 1) .. text:sub(cursorPos + 1)
+        return newText, cursorPos, true
+    end
+
     local lineStart, startCol, endCol = resolveDirectionalDeleteSpan(text, cursorPos, "forward")
     if type(lineStart) ~= "number" then
         return text, cursorPos, false
@@ -196,6 +207,17 @@ end
 function EditorTextUtils.deletePrevWordSegment(text, cursorPos)
     text = text or ""
     cursorPos = clampCursor(text, cursorPos)
+
+    -- At start of text: nothing to delete
+    if cursorPos <= 1 then
+        return text, cursorPos, false
+    end
+
+    -- Character before cursor is a newline: delete just the newline
+    if text:sub(cursorPos - 1, cursorPos - 1) == "\n" then
+        local newText = text:sub(1, cursorPos - 2) .. text:sub(cursorPos)
+        return newText, cursorPos - 1, true
+    end
 
     local lineStart, startCol, endCol = resolveDirectionalDeleteSpan(text, cursorPos, "backward")
     if type(lineStart) ~= "number" then
@@ -1295,6 +1317,81 @@ function EditorTextUtils.shouldConsumeCompletionAcceptInput(keyCode, completionV
 
     local keyName = normalizeKeyName(keyCode)
     return keyName == "TAB" or keyName == "RETURN" or keyName == "KEYPADENTER"
+end
+
+-- Compute indent level by counting brace depth up to cursor position.
+-- Skips braces inside // comments, /* */ comments, and string literals.
+function EditorTextUtils.computeScopeIndent(text, cursorPos, tabText)
+    text = text or ""
+    tabText = tabText or "    "
+    cursorPos = math.min(math.max(cursorPos or 1, 1), #text + 1)
+
+    local before = text:sub(1, cursorPos - 1)
+    local depth = 0
+    local i = 1
+    local len = #before
+
+    while i <= len do
+        local c = before:sub(i, i)
+
+        if c == "/" and i < len then
+            local next = before:sub(i + 1, i + 1)
+            if next == "/" then
+                -- Line comment: skip to end of line
+                local nl = before:find("\n", i + 2)
+                i = nl and (nl + 1) or (len + 1)
+            elseif next == "*" then
+                -- Block comment: skip to */
+                local close = before:find("*/", i + 2, true)
+                i = close and (close + 2) or (len + 1)
+            else
+                i = i + 1
+            end
+        elseif c == '"' then
+            -- String literal: skip to closing "
+            i = i + 1
+            while i <= len do
+                local sc = before:sub(i, i)
+                if sc == "\\" then
+                    i = i + 2
+                elseif sc == '"' then
+                    i = i + 1
+                    break
+                elseif sc == "\n" then
+                    break
+                else
+                    i = i + 1
+                end
+            end
+        elseif c == "'" then
+            -- Char literal: skip to closing '
+            i = i + 1
+            while i <= len do
+                local sc = before:sub(i, i)
+                if sc == "\\" then
+                    i = i + 2
+                elseif sc == "'" then
+                    i = i + 1
+                    break
+                elseif sc == "\n" then
+                    break
+                else
+                    i = i + 1
+                end
+            end
+        elseif c == "{" then
+            depth = depth + 1
+            i = i + 1
+        elseif c == "}" then
+            depth = depth - 1
+            i = i + 1
+        else
+            i = i + 1
+        end
+    end
+
+    depth = math.max(0, depth)
+    return string.rep(tabText, depth), depth
 end
 
 function EditorTextUtils.shouldAutoTriggerCompletions(text, cursorPos)
