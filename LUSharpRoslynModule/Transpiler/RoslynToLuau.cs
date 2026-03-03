@@ -41,6 +41,9 @@ public class RoslynToLuau
                 case ClassDeclarationSyntax classDecl:
                     emitter.EmitClass(classDecl);
                     break;
+                case StructDeclarationSyntax structDecl:
+                    emitter.EmitStruct(structDecl);
+                    break;
                 default:
                     Console.Error.WriteLine($"Warning: unsupported top-level declaration: {member.Kind()}");
                     break;
@@ -69,6 +72,9 @@ public class RoslynToLuau
                     break;
                 case ClassDeclarationSyntax classDecl:
                     emitter.EmitClass(classDecl);
+                    break;
+                case StructDeclarationSyntax structDecl:
+                    emitter.EmitStruct(structDecl);
                     break;
                 default:
                     Console.Error.WriteLine($"Warning: unsupported member: {member.Kind()}");
