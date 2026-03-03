@@ -213,9 +213,12 @@ local symbolTable = {
     game = "DataModel",
     workspace = "Workspace",
     script = "LuaSourceContainer",
+    this = "LuaSourceContainer",
     Enum = "Enums",
     shared = "List<Object>",
 }
+
+local _currentScriptInstance = nil -- Set per getCompletions/getHoverInfo/getDiagnostics call
 
 -- Cross-script user type registry
 local userTypeCache = {}
@@ -659,6 +662,45 @@ local function resolveType(typeName)
     if resolved then return resolved end
 
     return userTypesByName[normalized]
+end
+
+local function isInstanceDerived(typeName)
+    if not typeName then return false end
+    if typeName == "Instance" then return true end
+    local visited = {}
+    local current = typeName
+    while current and not visited[current] do
+        visited[current] = true
+        if current == "Instance" then return true end
+        local typeInfo = resolveType(current)
+        if not typeInfo then break end
+        current = typeInfo.baseType
+    end
+    return false
+end
+
+local function resolveInstanceFromExpr(expr)
+    if not expr or not _currentScriptInstance then return nil end
+
+    if expr.kind == "identifier" then
+        if expr.name == "script" or expr.name == "this" then
+            return _currentScriptInstance
+        end
+        return nil
+    end
+
+    if expr.kind == "member" then
+        local parentInstance = resolveInstanceFromExpr(expr.object)
+        if parentInstance then
+            local ok, child = pcall(function() return parentInstance:FindFirstChild(expr.name) end)
+            if ok and child then
+                return child
+            end
+        end
+        return nil
+    end
+
+    return nil
 end
 
 local function collectMembers(typeName, seen, out)
@@ -1256,6 +1298,50 @@ local function buildMemberDocumentation(ownerTypeName, member)
     return table.concat(lines, "\n")
 end
 
+local function appendChildInstanceCompletions(completions, instance, prefix)
+    if not instance then return end
+    local normalizedPrefix = string.lower(prefix or "")
+    local seen = {}
+    for _, existing in completions do
+        if existing.label then
+            seen[existing.label] = true
+        end
+    end
+    local ok, children = pcall(function() return instance:GetChildren() end)
+    if not ok or not children then return end
+    for _, child in children do
+        local name = child.Name
+        if type(name) == "string" and name ~= "" and not seen[name] then
+            if normalizedPrefix == "" or string.sub(string.lower(name), 1, #normalizedPrefix) == normalizedPrefix then
+                seen[name] = true
+                table.insert(completions, {
+                    label = name,
+                    kind = "field",
+                    detail = child.ClassName,
+                    documentation = "Child instance: " .. child.ClassName .. " \"" .. name .. "\"",
+                })
+            end
+        end
+    end
+end
+
+local function resolveScriptInstanceFromPath(path, scriptInstance)
+    if not scriptInstance then return nil end
+    local parts = {}
+    for part in path:gmatch("[%a_][%w_]*") do
+        table.insert(parts, part)
+    end
+    if #parts == 0 then return nil end
+    if parts[1] ~= "script" and parts[1] ~= "this" then return nil end
+    local current = scriptInstance
+    for i = 2, #parts do
+        local ok, child = pcall(function() return current:FindFirstChild(parts[i]) end)
+        if not ok or not child then return nil end
+        current = child
+    end
+    return current
+end
+
 local function getMemberCompletions(typeName, prefix, accessContext, staticOnly)
     local members = {}
     collectMembers(typeName, nil, members)
@@ -1608,7 +1694,16 @@ local function getUsingNamespaceCompletions(source, left, opts)
         for _, fullName in namespaceNames do
             local root = fullName:match("^([%a_][%w_]*)")
             if root then
-                maybeAddNamespace(root, root)
+                -- At root level, show namespace if it has ANY unimported children.
+                -- E.g. "System" should still appear even if `using System;` exists,
+                -- because the user may want `using System.Collections.Generic;`.
+                local lowerRoot = string.lower(root)
+                if not seenChildren[lowerRoot] then
+                    if normalizedPrefix == "" or string.sub(lowerRoot, 1, #normalizedPrefix) == normalizedPrefix then
+                        seenChildren[lowerRoot] = true
+                        addUniqueCompletion(result, seen, makeCompletion(root, "namespace", "namespace", root))
+                    end
+                end
             end
         end
 
@@ -2267,15 +2362,25 @@ local function inferExprTypeFromTokens(tokens, endIndex, symbolTypes)
             end
 
             local member = findMemberInType(objType, expr.name)
-            if not member then
-                return nil
+            if member then
+                if member.kind == "method" then
+                    return member.returnType
+                end
+                return member.type
             end
 
-            if member.kind == "method" then
-                return member.returnType
+            -- Fallback: resolve child instance from game hierarchy
+            if _currentScriptInstance and isInstanceDerived(objType) then
+                local parentInstance = resolveInstanceFromExpr(expr.object)
+                if parentInstance then
+                    local ok, child = pcall(function() return parentInstance:FindFirstChild(expr.name) end)
+                    if ok and child then
+                        return child.ClassName
+                    end
+                end
             end
 
-            return member.type
+            return nil
         end
 
         if expr.kind == "call" then
@@ -2691,6 +2796,7 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
     opts = opts or {}
     local _context = opts.context
     local currentScriptInstance = opts.currentScript
+    _currentScriptInstance = currentScriptInstance
     ensureUsingsResolved(source, currentScriptInstance)
 
     local left, prefix = extractPrefix(source, cursorPos)
@@ -2716,7 +2822,20 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
                 if exprBeforeDot and not symbolTypes[exprBeforeDot] and resolveType(exprBeforeDot) then
                     isStaticAccess = true
                 end
-                return getMemberCompletions(interpolationType, interpolationMemberPrefix, nil, isStaticAccess)
+                local completions = getMemberCompletions(interpolationType, interpolationMemberPrefix, nil, isStaticAccess)
+
+                -- Add child instance completions for Instance-derived types in interpolation
+                if not isStaticAccess and currentScriptInstance and isInstanceDerived(interpolationType) then
+                    local pathBeforeDot = interpolationPrefix:match("([%a_][%w_%.]+)%.[%a_]*$") or interpolationPrefix:match("([%a_][%w_]*)%.$")
+                    if pathBeforeDot then
+                        local instance = resolveScriptInstanceFromPath(pathBeforeDot, currentScriptInstance)
+                        if instance then
+                            appendChildInstanceCompletions(completions, instance, interpolationMemberPrefix)
+                        end
+                    end
+                end
+
+                return completions
             end
 
             local interpolationWordPrefix = interpolationPrefix:match("([%a_][%w_]*)$") or ""
@@ -2766,7 +2885,20 @@ function IntelliSense.getCompletions(source, cursorPos, opts)
             if exprBeforeDot and not symbolTypes[exprBeforeDot] and resolveType(exprBeforeDot) then
                 isStaticAccess = true
             end
-            return getMemberCompletions(objType, memberPrefix, nil, isStaticAccess)
+            local completions = getMemberCompletions(objType, memberPrefix, nil, isStaticAccess)
+
+            -- Add child instance completions for Instance-derived types
+            if not isStaticAccess and currentScriptInstance and isInstanceDerived(objType) then
+                local pathBeforeDot = left:match("([%a_][%w_%.]+)%.[%a_]*$") or left:match("([%a_][%w_]*)%.$")
+                if pathBeforeDot then
+                    local instance = resolveScriptInstanceFromPath(pathBeforeDot, currentScriptInstance)
+                    if instance then
+                        appendChildInstanceCompletions(completions, instance, memberPrefix)
+                    end
+                end
+            end
+
+            return completions
         end
     end
 
