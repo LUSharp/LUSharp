@@ -14,6 +14,11 @@ public class LiteralExpressionSyntax : ExpressionSyntax
         return Token.Text;
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitLiteralExpression(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Literal(" + Token.Text + ")";
@@ -32,6 +37,11 @@ public class IdentifierNameSyntax : ExpressionSyntax
     public override string Accept()
     {
         return Identifier.Text;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitIdentifierName(this);
     }
 
     public override string ToDisplayString()
@@ -58,6 +68,11 @@ public class BinaryExpressionSyntax : ExpressionSyntax
         return Left.Accept() + " " + OperatorToken.Text + " " + Right.Accept();
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitBinaryExpression(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Binary(" + Left.ToDisplayString() + " " + OperatorToken.Text + " " + Right.ToDisplayString() + ")";
@@ -76,6 +91,11 @@ public class ParenthesizedExpressionSyntax : ExpressionSyntax
     public override string Accept()
     {
         return "(" + Expression.Accept() + ")";
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitParenthesizedExpression(this);
     }
 
     public override string ToDisplayString()
@@ -98,6 +118,11 @@ public class PrefixUnaryExpressionSyntax : ExpressionSyntax
     public override string Accept()
     {
         return OperatorToken.Text + Operand.Accept();
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitPrefixUnaryExpression(this);
     }
 
     public override string ToDisplayString()
@@ -128,6 +153,11 @@ public class InvocationExpressionSyntax : ExpressionSyntax
         return Expression.Accept() + "(" + args + ")";
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitInvocationExpression(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Invocation(" + Expression.ToDisplayString() + ")";
@@ -148,6 +178,11 @@ public class MemberAccessExpressionSyntax : ExpressionSyntax
     public override string Accept()
     {
         return Expression.Accept() + "." + Name.Text;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitMemberAccessExpression(this);
     }
 
     public override string ToDisplayString()
@@ -172,6 +207,11 @@ public class AssignmentExpressionSyntax : ExpressionSyntax
     public override string Accept()
     {
         return Left.Accept() + " " + OperatorToken.Text + " " + Right.Accept();
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitAssignmentExpression(this);
     }
 
     public override string ToDisplayString()
@@ -200,6 +240,11 @@ public class ObjectCreationExpressionSyntax : ExpressionSyntax
             args += Arguments[i].Accept();
         }
         return "new " + TypeName + "(" + args + ")";
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitObjectCreationExpression(this);
     }
 
     public override string ToDisplayString()
@@ -246,6 +291,11 @@ public class LambdaExpressionSyntax : ExpressionSyntax
         return parms + " => {}";
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitLambdaExpression(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Lambda(" + ParameterNames.Length + " params)";
@@ -266,6 +316,11 @@ public class CastExpressionSyntax : ExpressionSyntax
     public override string Accept()
     {
         return "(" + TypeName + ")" + Expression.Accept();
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitCastExpression(this);
     }
 
     public override string ToDisplayString()

@@ -9,6 +9,11 @@ public class BlockSyntax : StatementSyntax
         Statements = statements;
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitBlock(this);
+    }
+
     public override string Accept()
     {
         string result = "{\n";
@@ -30,6 +35,11 @@ public class ReturnStatementSyntax : StatementSyntax
         Expression = expression;
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitReturnStatement(this);
+    }
+
     public override string Accept()
     {
         if (Expression == null)
@@ -45,6 +55,11 @@ public class ExpressionStatementSyntax : StatementSyntax
     public ExpressionStatementSyntax(ExpressionSyntax expression) : base(8797)
     {
         Expression = expression;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitExpressionStatement(this);
     }
 
     public override string Accept()
@@ -64,6 +79,11 @@ public class LocalDeclarationStatementSyntax : StatementSyntax
         TypeName = typeName;
         VariableName = variableName;
         Initializer = initializer;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitLocalDeclaration(this);
     }
 
     public override string Accept()
@@ -87,6 +107,11 @@ public class IfStatementSyntax : StatementSyntax
         ElseBody = elseBody;
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitIfStatement(this);
+    }
+
     public override string Accept()
     {
         string result = "if (" + Condition.Accept() + ") " + ThenBody.Accept();
@@ -107,6 +132,11 @@ public class WhileStatementSyntax : StatementSyntax
     {
         Condition = condition;
         Body = body;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitWhileStatement(this);
     }
 
     public override string Accept()

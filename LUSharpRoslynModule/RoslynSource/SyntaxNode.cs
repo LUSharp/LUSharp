@@ -13,6 +13,11 @@ public abstract class SyntaxNode
 
     public abstract string Accept();
 
+    public virtual void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.DefaultVisit(this);
+    }
+
     public virtual string ToDisplayString()
     {
         return "SyntaxNode(" + Kind + ")";

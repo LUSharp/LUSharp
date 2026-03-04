@@ -2079,6 +2079,13 @@ public class LuauEmitter
                 ReferencedModules.Add(ownerName);
             }
 
+            // If the owner is a parameter or local variable (not a static/enum type),
+            // use colon syntax for instance method dispatch
+            if (_currentMethodParams.Contains(ownerName) || _currentMethodLocals.Contains(ownerName))
+            {
+                return $"{luauOwner}:{memberName}({argStr})";
+            }
+
             return $"{luauOwner}.{memberName}({argStr})";
         }
 

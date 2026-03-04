@@ -47,6 +47,11 @@ public class MethodDeclarationSyntax : MemberDeclarationSyntax
         return mods + ReturnType + " " + Name + "(" + parms + ") " + Body.Accept();
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitMethodDeclaration(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Method(" + Name + ")";
@@ -77,6 +82,11 @@ public class FieldDeclarationSyntax : MemberDeclarationSyntax
         return mods + TypeName + " " + Name + " = " + Initializer.Accept() + ";";
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitFieldDeclaration(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Field(" + Name + ")";
@@ -103,6 +113,11 @@ public class ClassDeclarationSyntax : MemberDeclarationSyntax
         }
         result = result + "}";
         return result;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitClassDeclaration(this);
     }
 
     public override string ToDisplayString()
@@ -153,6 +168,11 @@ public class EnumDeclarationSyntax : MemberDeclarationSyntax
         return result;
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitEnumDeclaration(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Enum(" + Name + ", " + Members.Length + " members)";
@@ -179,6 +199,11 @@ public class StructDeclarationSyntax : MemberDeclarationSyntax
         }
         result = result + "}";
         return result;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitStructDeclaration(this);
     }
 
     public override string ToDisplayString()
@@ -223,6 +248,11 @@ public class PropertyDeclarationSyntax : MemberDeclarationSyntax
             result = result + "}";
         }
         return result;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitPropertyDeclaration(this);
     }
 
     public override string ToDisplayString()
@@ -271,6 +301,11 @@ public class ConstructorDeclarationSyntax : MemberDeclarationSyntax
         return result;
     }
 
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitConstructorDeclaration(this);
+    }
+
     public override string ToDisplayString()
     {
         return "Constructor(" + Name + ")";
@@ -294,6 +329,11 @@ public class CompilationUnitSyntax : SyntaxNode
             result = result + Members[i].Accept() + "\n";
         }
         return result;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitCompilationUnit(this);
     }
 
     public override string ToDisplayString()
