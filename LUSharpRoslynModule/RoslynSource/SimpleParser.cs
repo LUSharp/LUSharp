@@ -79,7 +79,7 @@ public class SimpleParser
 
     public CompilationUnitSyntax ParseCompilationUnit()
     {
-        var members = new MemberDeclarationSyntax[64];
+        var members = new MemberDeclarationSyntax[256];
         int count = 0;
 
         // Skip 'using' directives
@@ -97,7 +97,7 @@ public class SimpleParser
         while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
         {
             var member = ParseMemberDeclaration();
-            if (member != null && count < 64)
+            if (member != null && count < 256)
             {
                 members[count] = member;
                 count++;
@@ -304,13 +304,13 @@ public class SimpleParser
         string previousClassName = _currentClassName;
         _currentClassName = name;
 
-        var members = new MemberDeclarationSyntax[64];
+        var members = new MemberDeclarationSyntax[256];
         int count = 0;
 
         while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
         {
             var member = ParseMemberDeclaration();
-            if (member != null && count < 64)
+            if (member != null && count < 256)
             {
                 members[count] = member;
                 count++;
@@ -412,13 +412,13 @@ public class SimpleParser
         string previousClassName = _currentClassName;
         _currentClassName = name;
 
-        var members = new MemberDeclarationSyntax[64];
+        var members = new MemberDeclarationSyntax[256];
         int count = 0;
 
         while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
         {
             var member = ParseMemberDeclaration();
-            if (member != null && count < 64)
+            if (member != null && count < 256)
             {
                 members[count] = member;
                 count++;
@@ -1262,13 +1262,27 @@ public class SimpleParser
 
     private ExpressionSyntax ParseConditionalAnd()
     {
-        var left = ParseEquality();
+        var left = ParseNullCoalescing();
 
         while (!IsAtEnd() && Current().Kind == SyntaxKind.AmpersandAmpersandToken)
         {
             var op = MakeSyntaxToken(Advance());
-            var right = ParseEquality();
+            var right = ParseNullCoalescing();
             left = new BinaryExpressionSyntax(8676, left, op, right);
+        }
+
+        return left;
+    }
+
+    private ExpressionSyntax ParseNullCoalescing()
+    {
+        var left = ParseEquality();
+
+        while (!IsAtEnd() && Current().Kind == SyntaxKind.QuestionQuestionToken)
+        {
+            var op = MakeSyntaxToken(Advance());
+            var right = ParseEquality();
+            left = new BinaryExpressionSyntax(8688, left, op, right); // CoalesceExpression
         }
 
         return left;
@@ -1311,6 +1325,30 @@ public class SimpleParser
                     : kind == SyntaxKind.LessThanEqualsToken ? 8679
                     : 8681;
                 left = new BinaryExpressionSyntax(exprKind, left, op, right);
+            }
+            else if (kind == SyntaxKind.IsKeyword)
+            {
+                // is type-pattern: expr is TypeName optionalIdentifier
+                var op = MakeSyntaxToken(Advance()); // skip 'is'
+                string typeName = ParseTypeName();
+                var typeIdent = new SyntaxToken((int)SyntaxKind.IdentifierToken, typeName, 0, typeName.Length);
+                var right = new IdentifierNameSyntax(typeIdent);
+                left = new BinaryExpressionSyntax(8657, left, op, right); // IsExpression
+
+                // Consume optional pattern variable: is TypeName varName
+                if (!IsAtEnd() && Current().Kind == SyntaxKind.IdentifierToken)
+                {
+                    Advance(); // skip pattern variable (we don't model it in AST)
+                }
+            }
+            else if (kind == SyntaxKind.AsKeyword)
+            {
+                // as cast: expr as TypeName
+                var op = MakeSyntaxToken(Advance()); // skip 'as'
+                string typeName = ParseTypeName();
+                var typeIdent = new SyntaxToken((int)SyntaxKind.IdentifierToken, typeName, 0, typeName.Length);
+                var right = new IdentifierNameSyntax(typeIdent);
+                left = new BinaryExpressionSyntax(8658, left, op, right); // AsExpression
             }
             else break;
         }

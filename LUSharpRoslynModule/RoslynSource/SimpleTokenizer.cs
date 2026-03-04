@@ -201,7 +201,25 @@ public class SimpleTokenizer
         {
             _window.AdvanceChar(); // skip backslash
             if (!_window.IsReallyAtEnd())
-                _window.AdvanceChar(); // skip escaped char
+            {
+                char esc = _window.PeekChar();
+                if (esc == 'u')
+                {
+                    _window.AdvanceChar(); // skip u
+                    for (int i = 0; i < 4 && !_window.IsReallyAtEnd() && SyntaxFacts.IsHexDigit(_window.PeekChar()); i++)
+                        _window.AdvanceChar();
+                }
+                else if (esc == 'U')
+                {
+                    _window.AdvanceChar(); // skip U
+                    for (int i = 0; i < 8 && !_window.IsReallyAtEnd() && SyntaxFacts.IsHexDigit(_window.PeekChar()); i++)
+                        _window.AdvanceChar();
+                }
+                else
+                {
+                    _window.AdvanceChar(); // skip single escaped char
+                }
+            }
         }
         else if (!_window.IsReallyAtEnd())
         {
@@ -232,7 +250,7 @@ public class SimpleTokenizer
             ',' => SyntaxKind.CommaToken,
             '.' => SyntaxKind.DotToken,
             ':' => SyntaxKind.ColonToken,
-            '?' => SyntaxKind.QuestionToken,
+            '?' => ScanQuestionToken(),
             '~' => SyntaxKind.TildeToken,
             '+' => ScanPlusToken(),
             '-' => ScanMinusToken(),
@@ -294,6 +312,12 @@ public class SimpleTokenizer
         if (_window.PeekChar() == '|') { _window.AdvanceChar(); return SyntaxKind.BarBarToken; }
         if (_window.PeekChar() == '=') { _window.AdvanceChar(); return SyntaxKind.BarEqualsToken; }
         return SyntaxKind.BarToken;
+    }
+
+    private SyntaxKind ScanQuestionToken()
+    {
+        if (_window.PeekChar() == '?') { _window.AdvanceChar(); return SyntaxKind.QuestionQuestionToken; }
+        return SyntaxKind.QuestionToken;
     }
 
     private SyntaxKind ScanExclamationToken()
