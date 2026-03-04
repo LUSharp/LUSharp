@@ -4,6 +4,7 @@
 
 local _SyntaxNode = require(script.Parent.SyntaxNode)
 local StatementSyntax = _SyntaxNode.StatementSyntax
+local SyntaxNode = _SyntaxNode.SyntaxNode
 
 type BlockSyntax_self = {
 	Statements: { StatementSyntax };
@@ -175,4 +176,313 @@ function WhileStatementSyntax.Accept(self: WhileStatementSyntax): string
 	return "while (" .. self.Condition:Accept() .. ") " .. self.Body:Accept()
 end
 
-return { BlockSyntax = BlockSyntax, ReturnStatementSyntax = ReturnStatementSyntax, ExpressionStatementSyntax = ExpressionStatementSyntax, LocalDeclarationStatementSyntax = LocalDeclarationStatementSyntax, IfStatementSyntax = IfStatementSyntax, WhileStatementSyntax = WhileStatementSyntax }
+type ForStatementSyntax_self = {
+	Declaration: StatementSyntax;
+	Condition: ExpressionSyntax;
+	Incrementors: { ExpressionSyntax };
+	Body: StatementSyntax;
+}
+
+local ForStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+ForStatementSyntax.__index = ForStatementSyntax
+export type ForStatementSyntax = typeof(setmetatable({} :: ForStatementSyntax_self, ForStatementSyntax))
+
+function ForStatementSyntax.new(declaration: StatementSyntax, condition: ExpressionSyntax, incrementors: { ExpressionSyntax }, body: StatementSyntax): ForStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8811) :: any, ForStatementSyntax)
+	self.Declaration = nil :: any
+	self.Condition = nil :: any
+	self.Incrementors = {}
+	self.Body = nil :: any
+	self.Declaration = declaration
+	self.Condition = condition
+	self.Incrementors = incrementors
+	self.Body = body
+	return self
+end
+
+function ForStatementSyntax.AcceptWalker(self: ForStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitForStatement(self)
+end
+
+function ForStatementSyntax.Accept(self: ForStatementSyntax): string
+	local init = if self.Declaration ~= nil then self.Declaration:Accept() else ";"
+	local cond = if self.Condition ~= nil then self.Condition:Accept() else ""
+	local inc = ""
+	local i = 0
+	while i < #self.Incrementors do
+		if i > 0 then
+			inc = inc .. ", "
+		end
+		inc = inc .. self.Incrementors[i + 1]:Accept()
+		i += 1
+	end
+	return "for (" .. init .. " " .. cond .. "; " .. inc .. ") " .. self.Body:Accept()
+end
+
+type ForEachStatementSyntax_self = {
+	TypeName: string;
+	Identifier: string;
+	Expression: ExpressionSyntax;
+	Body: StatementSyntax;
+}
+
+local ForEachStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+ForEachStatementSyntax.__index = ForEachStatementSyntax
+export type ForEachStatementSyntax = typeof(setmetatable({} :: ForEachStatementSyntax_self, ForEachStatementSyntax))
+
+function ForEachStatementSyntax.new(typeName: string, identifier: string, expression: ExpressionSyntax, body: StatementSyntax): ForEachStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8812) :: any, ForEachStatementSyntax)
+	self.TypeName = ""
+	self.Identifier = ""
+	self.Expression = nil :: any
+	self.Body = nil :: any
+	self.TypeName = typeName
+	self.Identifier = identifier
+	self.Expression = expression
+	self.Body = body
+	return self
+end
+
+function ForEachStatementSyntax.AcceptWalker(self: ForEachStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitForEachStatement(self)
+end
+
+function ForEachStatementSyntax.Accept(self: ForEachStatementSyntax): string
+	return "foreach (" .. self.TypeName .. " " .. self.Identifier .. " in " .. self.Expression:Accept() .. ") " .. self.Body:Accept()
+end
+
+type DoStatementSyntax_self = {
+	Body: StatementSyntax;
+	Condition: ExpressionSyntax;
+}
+
+local DoStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+DoStatementSyntax.__index = DoStatementSyntax
+export type DoStatementSyntax = typeof(setmetatable({} :: DoStatementSyntax_self, DoStatementSyntax))
+
+function DoStatementSyntax.new(body: StatementSyntax, condition: ExpressionSyntax): DoStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8810) :: any, DoStatementSyntax)
+	self.Body = nil :: any
+	self.Condition = nil :: any
+	self.Body = body
+	self.Condition = condition
+	return self
+end
+
+function DoStatementSyntax.AcceptWalker(self: DoStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitDoStatement(self)
+end
+
+function DoStatementSyntax.Accept(self: DoStatementSyntax): string
+	return "do " .. self.Body:Accept() .. " while (" .. self.Condition:Accept() .. ");"
+end
+
+local BreakStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+BreakStatementSyntax.__index = BreakStatementSyntax
+export type BreakStatementSyntax = typeof(setmetatable({}, BreakStatementSyntax))
+
+function BreakStatementSyntax.new(): BreakStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8803) :: any, BreakStatementSyntax)
+	return self
+end
+
+function BreakStatementSyntax.AcceptWalker(self: BreakStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitBreakStatement(self)
+end
+
+function BreakStatementSyntax.Accept(self: BreakStatementSyntax): string
+	return "break;"
+end
+
+local ContinueStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+ContinueStatementSyntax.__index = ContinueStatementSyntax
+export type ContinueStatementSyntax = typeof(setmetatable({}, ContinueStatementSyntax))
+
+function ContinueStatementSyntax.new(): ContinueStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8804) :: any, ContinueStatementSyntax)
+	return self
+end
+
+function ContinueStatementSyntax.AcceptWalker(self: ContinueStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitContinueStatement(self)
+end
+
+function ContinueStatementSyntax.Accept(self: ContinueStatementSyntax): string
+	return "continue;"
+end
+
+type SwitchStatementSyntax_self = {
+	Expression: ExpressionSyntax;
+	Sections: { SwitchSectionSyntax };
+}
+
+local SwitchStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+SwitchStatementSyntax.__index = SwitchStatementSyntax
+export type SwitchStatementSyntax = typeof(setmetatable({} :: SwitchStatementSyntax_self, SwitchStatementSyntax))
+
+function SwitchStatementSyntax.new(expression: ExpressionSyntax, sections: { SwitchSectionSyntax }): SwitchStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8821) :: any, SwitchStatementSyntax)
+	self.Expression = nil :: any
+	self.Sections = {}
+	self.Expression = expression
+	self.Sections = sections
+	return self
+end
+
+function SwitchStatementSyntax.AcceptWalker(self: SwitchStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitSwitchStatement(self)
+end
+
+function SwitchStatementSyntax.Accept(self: SwitchStatementSyntax): string
+	local result = "switch (" .. self.Expression:Accept() .. ") {"
+	local i = 0
+	while i < #self.Sections do
+		result = result .. "\n" .. self.Sections[i + 1]:Accept()
+		i += 1
+	end
+	result = result .. "\n}"
+	return result
+end
+
+type SwitchSectionSyntax_self = {
+	Labels: { ExpressionSyntax };
+	Statements: { StatementSyntax };
+}
+
+local SwitchSectionSyntax = setmetatable({}, {__index = SyntaxNode})
+SwitchSectionSyntax.__index = SwitchSectionSyntax
+export type SwitchSectionSyntax = typeof(setmetatable({} :: SwitchSectionSyntax_self, SwitchSectionSyntax))
+
+function SwitchSectionSyntax.new(labels: { ExpressionSyntax }, statements: { StatementSyntax }): SwitchSectionSyntax
+	local self = setmetatable(SyntaxNode.new(8822) :: any, SwitchSectionSyntax)
+	self.Labels = {}
+	self.Statements = {}
+	self.Labels = labels
+	self.Statements = statements
+	return self
+end
+
+function SwitchSectionSyntax.AcceptWalker(self: SwitchSectionSyntax, walker: SyntaxWalker): ()
+	walker:VisitSwitchSection(self)
+end
+
+function SwitchSectionSyntax.Accept(self: SwitchSectionSyntax): string
+	local result = ""
+	local i = 0
+	while i < #self.Labels do
+		if self.Labels[i + 1] == nil then
+			result = result .. "default:\n"
+		else
+			result = result .. "case " .. self.Labels[i + 1]:Accept() .. ":\n"
+		end
+		i += 1
+	end
+	local i = 0
+	while i < #self.Statements do
+		result = result .. "  " .. self.Statements[i + 1]:Accept() .. "\n"
+		i += 1
+	end
+	return result
+end
+
+type TryStatementSyntax_self = {
+	Block: BlockSyntax;
+	Catches: { CatchClauseSyntax };
+	FinallyBlock: BlockSyntax;
+}
+
+local TryStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+TryStatementSyntax.__index = TryStatementSyntax
+export type TryStatementSyntax = typeof(setmetatable({} :: TryStatementSyntax_self, TryStatementSyntax))
+
+function TryStatementSyntax.new(block: BlockSyntax, catches: { CatchClauseSyntax }, finallyBlock: BlockSyntax): TryStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8825) :: any, TryStatementSyntax)
+	self.Block = nil :: any
+	self.Catches = {}
+	self.FinallyBlock = nil :: any
+	self.Block = block
+	self.Catches = catches
+	self.FinallyBlock = finallyBlock
+	return self
+end
+
+function TryStatementSyntax.AcceptWalker(self: TryStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitTryStatement(self)
+end
+
+function TryStatementSyntax.Accept(self: TryStatementSyntax): string
+	local result = "try " .. BlockSyntax.Accept(self.Block)
+	local i = 0
+	while i < #self.Catches do
+		result = result .. " " .. self.Catches[i + 1]:Accept()
+		i += 1
+	end
+	if self.FinallyBlock ~= nil then
+		result = result .. " finally " .. BlockSyntax.Accept(self.FinallyBlock)
+	end
+	return result
+end
+
+type CatchClauseSyntax_self = {
+	ExceptionTypeName: string;
+	Identifier: string;
+	Block: BlockSyntax;
+}
+
+local CatchClauseSyntax = setmetatable({}, {__index = SyntaxNode})
+CatchClauseSyntax.__index = CatchClauseSyntax
+export type CatchClauseSyntax = typeof(setmetatable({} :: CatchClauseSyntax_self, CatchClauseSyntax))
+
+function CatchClauseSyntax.new(exceptionTypeName: string, identifier: string, block: BlockSyntax): CatchClauseSyntax
+	local self = setmetatable(SyntaxNode.new(8826) :: any, CatchClauseSyntax)
+	self.ExceptionTypeName = ""
+	self.Identifier = ""
+	self.Block = nil :: any
+	self.ExceptionTypeName = exceptionTypeName
+	self.Identifier = identifier
+	self.Block = block
+	return self
+end
+
+function CatchClauseSyntax.AcceptWalker(self: CatchClauseSyntax, walker: SyntaxWalker): ()
+	walker:VisitCatchClause(self)
+end
+
+function CatchClauseSyntax.Accept(self: CatchClauseSyntax): string
+	if self.ExceptionTypeName ~= nil then
+		local decl = self.ExceptionTypeName
+		if self.Identifier ~= nil then
+			decl = decl .. " " .. self.Identifier
+		end
+		return "catch (" .. decl .. ") " .. BlockSyntax.Accept(self.Block)
+	end
+	return "catch " .. BlockSyntax.Accept(self.Block)
+end
+
+type ThrowStatementSyntax_self = {
+	Expression: ExpressionSyntax;
+}
+
+local ThrowStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+ThrowStatementSyntax.__index = ThrowStatementSyntax
+export type ThrowStatementSyntax = typeof(setmetatable({} :: ThrowStatementSyntax_self, ThrowStatementSyntax))
+
+function ThrowStatementSyntax.new(expression: ExpressionSyntax): ThrowStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8808) :: any, ThrowStatementSyntax)
+	self.Expression = nil :: any
+	self.Expression = expression
+	return self
+end
+
+function ThrowStatementSyntax.AcceptWalker(self: ThrowStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitThrowStatement(self)
+end
+
+function ThrowStatementSyntax.Accept(self: ThrowStatementSyntax): string
+	if self.Expression == nil then
+		return "throw;"
+	end
+	return "throw " .. self.Expression:Accept() .. ";"
+end
+
+return { BlockSyntax = BlockSyntax, ReturnStatementSyntax = ReturnStatementSyntax, ExpressionStatementSyntax = ExpressionStatementSyntax, LocalDeclarationStatementSyntax = LocalDeclarationStatementSyntax, IfStatementSyntax = IfStatementSyntax, WhileStatementSyntax = WhileStatementSyntax, ForStatementSyntax = ForStatementSyntax, ForEachStatementSyntax = ForEachStatementSyntax, DoStatementSyntax = DoStatementSyntax, BreakStatementSyntax = BreakStatementSyntax, ContinueStatementSyntax = ContinueStatementSyntax, SwitchStatementSyntax = SwitchStatementSyntax, SwitchSectionSyntax = SwitchSectionSyntax, TryStatementSyntax = TryStatementSyntax, CatchClauseSyntax = CatchClauseSyntax, ThrowStatementSyntax = ThrowStatementSyntax }

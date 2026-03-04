@@ -1,0 +1,106 @@
+=== Expanded Parser Test ===
+Input:
+class TestClass {
+    void ForLoop() {
+        for (int i = 0; i < 10; i++) {
+            if (i == 5) break;
+            continue;
+        }
+    }
+    void ForEachLoop(int[] items) {
+        foreach (var item in items) {
+            int x = item;
+        }
+    }
+    void SwitchTest(int val) {
+        switch (val) {
+            case 1:
+                return;
+            default:
+                break;
+        }
+    }
+    void TryCatchTest() {
+        try {
+            int x = 1;
+        } catch (Exception ex) {
+            throw;
+        }
+    }
+    void ExpressionTests(int[] arr) {
+        int x = arr[0];
+        x++;
+        int y = x > 0 ? 1 : 0;
+        var fn = x => x + 1;
+        var obj = new Foo() { X = 1 };
+    }
+}
+
+=== Tree Output ===
+CompilationUnit
+  ClassDeclaration: TestClass
+    MethodDeclaration: void ForLoop
+      Block (1 statements)
+        ForStatement
+          LocalDeclaration: int i
+            Literal: 0
+          BinaryExpression: <
+            Identifier: i
+            Literal: 10
+          PostfixUnary: ++
+            Identifier: i
+          Block (2 statements)
+            IfStatement
+              BinaryExpression: ==
+                Identifier: i
+                Literal: 5
+              BreakStatement
+            ContinueStatement
+    MethodDeclaration: void ForEachLoop
+      Block (1 statements)
+        ForEachStatement: var item
+          Identifier: items
+          Block (1 statements)
+            LocalDeclaration: int x
+              Identifier: item
+    MethodDeclaration: void SwitchTest
+      Block (1 statements)
+        SwitchStatement
+          Identifier: val
+          SwitchSection: 1 case(s)
+            Literal: 1
+            ReturnStatement
+          SwitchSection: 0 case(s) +default
+            BreakStatement
+    MethodDeclaration: void TryCatchTest
+      Block (1 statements)
+        TryStatement (1 catch)
+          Block (1 statements)
+            LocalDeclaration: int x
+              Literal: 1
+          CatchClause: Exception ex
+            Block (1 statements)
+              ThrowStatement (re-throw)
+    MethodDeclaration: void ExpressionTests
+      Block (5 statements)
+        LocalDeclaration: int x
+          ElementAccess
+            Identifier: arr
+            Literal: 0
+        ExpressionStatement
+          PostfixUnary: ++
+            Identifier: x
+        LocalDeclaration: int y
+          ConditionalExpression
+            BinaryExpression: >
+              Identifier: x
+              Literal: 0
+            Literal: 1
+            Literal: 0
+        LocalDeclaration: var fn
+          Lambda (1 params)
+            BinaryExpression: +
+              Identifier: x
+              Literal: 1
+        LocalDeclaration: var obj
+          ObjectCreation: Foo

@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.5.0"
+local PLUGIN_VERSION = "0.6.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -432,6 +432,100 @@ local function runWalkerTest()
 	warn("[LUSharp-Test] Walker test completed")
 end
 
+local function runExpandedParserTest()
+	local syntaxWalkerModule = modules:FindFirstChild("SyntaxWalker")
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+
+	if not syntaxWalkerModule or not simpleParserModule then
+		warn("[LUSharp-Test] Expanded parser modules not found, skipping")
+		return
+	end
+
+	local ok1, swResult = pcall(require, syntaxWalkerModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SyntaxWalker failed to load: " .. tostring(swResult))
+		return
+	end
+
+	local ok2, spResult = pcall(require, simpleParserModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local TreePrinter = swResult.TreePrinter
+	local SimpleParser = spResult.SimpleParser
+
+	if not TreePrinter or not SimpleParser then
+		warn("[LUSharp-Test] FAIL: TreePrinter or SimpleParser table not found")
+		return
+	end
+
+	-- Test input matching ExpandedParserReference.cs
+	local input = "class TestClass {\n"
+		.. "    void ForLoop() {\n"
+		.. "        for (int i = 0; i < 10; i++) {\n"
+		.. "            if (i == 5) break;\n"
+		.. "            continue;\n"
+		.. "        }\n"
+		.. "    }\n"
+		.. "    void ForEachLoop(int[] items) {\n"
+		.. "        foreach (var item in items) {\n"
+		.. "            int x = item;\n"
+		.. "        }\n"
+		.. "    }\n"
+		.. "    void SwitchTest(int val) {\n"
+		.. "        switch (val) {\n"
+		.. "            case 1:\n"
+		.. "                return;\n"
+		.. "            default:\n"
+		.. "                break;\n"
+		.. "        }\n"
+		.. "    }\n"
+		.. "    void TryCatchTest() {\n"
+		.. "        try {\n"
+		.. "            int x = 1;\n"
+		.. "        } catch (Exception ex) {\n"
+		.. "            throw;\n"
+		.. "        }\n"
+		.. "    }\n"
+		.. "    void ExpressionTests(int[] arr) {\n"
+		.. "        int x = arr[0];\n"
+		.. "        x++;\n"
+		.. "        int y = x > 0 ? 1 : 0;\n"
+		.. "        var fn = x => x + 1;\n"
+		.. "        var obj = new Foo() { X = 1 };\n"
+		.. "    }\n"
+		.. "}"
+
+	print("=== Expanded Parser Test ===")
+	print("Input:")
+	for line in string.gmatch(input, "[^\n]+") do
+		print(line)
+	end
+	print("")
+
+	-- Parse and walk with TreePrinter
+	local parser = SimpleParser.new(input)
+	local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+	local printer = TreePrinter.new()
+	printer:Visit(compilationUnit)
+
+	local output = TreePrinter.GetOutput(printer)
+
+	print("=== Tree Output ===")
+	-- Print tree output, strip trailing newline
+	if string.sub(output, #output, #output) == "\n" then
+		output = string.sub(output, 1, #output - 1)
+	end
+	for line in string.gmatch(output, "[^\n]*") do
+		print(line)
+	end
+
+	warn("[LUSharp-Test] Expanded parser test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
@@ -439,4 +533,5 @@ runSyntaxFactsTest()
 runTokenizerTest()
 runParserTest()
 runWalkerTest()
+runExpandedParserTest()
 warn("[LUSharp-Test] All tests finished")
