@@ -100,7 +100,7 @@ public class IfStatementSyntax : StatementSyntax
     public StatementSyntax ThenBody { get; }
     public StatementSyntax ElseBody { get; }
 
-    public IfStatementSyntax(ExpressionSyntax condition, StatementSyntax thenBody, StatementSyntax elseBody) : base(8803)
+    public IfStatementSyntax(ExpressionSyntax condition, StatementSyntax thenBody, StatementSyntax elseBody) : base(8819)
     {
         Condition = condition;
         ThenBody = thenBody;

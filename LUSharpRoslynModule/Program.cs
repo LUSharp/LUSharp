@@ -272,6 +272,9 @@ internal class Program
             case "emitter":
                 Reference.EmitterReference.PrintAll();
                 break;
+            case "self-emit":
+                Reference.SelfEmitReference.PrintAll();
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;

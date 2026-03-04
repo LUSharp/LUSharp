@@ -754,10 +754,8 @@ public class SimpleEmitter : SyntaxWalker
             return;
         }
 
-        // BreakStatement (kind 8803) and ContinueStatement (kind 8804),
-        // and IfStatement (kind 8803 — shared with Break due to a node definition quirk):
-        // delegate to double-dispatch so VisitIfStatement / VisitBreakStatement /
-        // VisitContinueStatement are called correctly.
+        // All remaining statements (IfStatement, BreakStatement, ContinueStatement)
+        // are handled via double-dispatch through AcceptWalker.
         stmt.AcceptWalker(this);
     }
 
@@ -799,22 +797,32 @@ public class SimpleEmitter : SyntaxWalker
             return;
         }
 
-        // else-if: kind 8803 in an else position is always IfStatement
-        // (BreakStatement only appears inside loop/switch bodies, not as else branches)
-        IfStatementSyntax elseIf = (IfStatementSyntax)elseBody;
-        AppendLine("elseif " + EmitExpression(elseIf.Condition) + " then");
-        Indent();
-        EmitBlockBody(elseIf.ThenBody);
-        Dedent();
+        // else-if chain: IfStatement (kind 8819)
+        if (elseBody.Kind == 8819)
+        {
+            IfStatementSyntax elseIf = (IfStatementSyntax)elseBody;
+            AppendLine("elseif " + EmitExpression(elseIf.Condition) + " then");
+            Indent();
+            EmitBlockBody(elseIf.ThenBody);
+            Dedent();
 
-        if (elseIf.ElseBody != null)
-        {
-            EmitElseBody(elseIf.ElseBody);
+            if (elseIf.ElseBody != null)
+            {
+                EmitElseBody(elseIf.ElseBody);
+            }
+            else
+            {
+                AppendLine("end");
+            }
+            return;
         }
-        else
-        {
-            AppendLine("end");
-        }
+
+        // Fallback: bare statement in else position (shouldn't happen in well-formed code)
+        AppendLine("else");
+        Indent();
+        EmitStatement(elseBody);
+        Dedent();
+        AppendLine("end");
     }
 
     public override void VisitBreakStatement(BreakStatementSyntax node)
