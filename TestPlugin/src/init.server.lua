@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.10.0"
+local PLUGIN_VERSION = "0.11.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -1176,6 +1176,160 @@ local function runSelfEmitTest()
 	warn("[LUSharp-Test] Self-emit test completed")
 end
 
+local function runTranspilerTest()
+	local simpleTranspilerModule = modules:FindFirstChild("SimpleTranspiler")
+	if not simpleTranspilerModule then
+		warn("[LUSharp-Test] SimpleTranspiler module not found, skipping")
+		return
+	end
+
+	local ok, stResult = pcall(require, simpleTranspilerModule)
+	if not ok then
+		warn("[LUSharp-Test] FAIL: SimpleTranspiler failed to load: " .. tostring(stResult))
+		return
+	end
+
+	local SimpleTranspiler = stResult.SimpleTranspiler
+	if not SimpleTranspiler then
+		warn("[LUSharp-Test] FAIL: SimpleTranspiler table not found")
+		return
+	end
+
+	print("=== Cross-Module Transpiler Validation (Luau) ===")
+
+	-- Two source files: SyntaxToken (standalone) and SyntaxNode (references SyntaxToken)
+	local sources = {
+		"namespace RoslynLuau;\n"
+			.. "public struct SyntaxToken\n"
+			.. "{\n"
+			.. "    public int Kind { get; }\n"
+			.. "    public string Text { get; }\n"
+			.. "    public SyntaxToken(int kind, string text)\n"
+			.. "    {\n"
+			.. "        Kind = kind;\n"
+			.. "        Text = text;\n"
+			.. "    }\n"
+			.. "}",
+		"namespace RoslynLuau;\n"
+			.. "public abstract class SyntaxNode\n"
+			.. "{\n"
+			.. "    public int Kind { get; }\n"
+			.. "    protected SyntaxNode(int kind)\n"
+			.. "    {\n"
+			.. "        Kind = kind;\n"
+			.. "    }\n"
+			.. "    public abstract string Accept();\n"
+			.. "}\n"
+			.. "public abstract class ExpressionSyntax : SyntaxNode\n"
+			.. "{\n"
+			.. "    protected ExpressionSyntax(int kind) : base(kind) { }\n"
+			.. "}",
+		"namespace RoslynLuau;\n"
+			.. "public class ReturnStatement : SyntaxNode\n"
+			.. "{\n"
+			.. "    public ExpressionSyntax Expression { get; }\n"
+			.. "    public ReturnStatement(ExpressionSyntax expression) : base(8805)\n"
+			.. "    {\n"
+			.. "        Expression = expression;\n"
+			.. "    }\n"
+			.. "    public override string Accept()\n"
+			.. "    {\n"
+			.. "        return \"return \" + Expression.Accept();\n"
+			.. "    }\n"
+			.. "}",
+	}
+
+	local fileNames = {
+		"SyntaxToken.cs",
+		"SyntaxNode.cs",
+		"StatementNodes.cs",
+	}
+
+	local fileCount = 3
+
+	-- Phase 1: PreScan
+	local transpiler = SimpleTranspiler.new()
+	local scanOk, scanErr = pcall(function()
+		SimpleTranspiler.PreScan(transpiler, sources, fileNames, fileCount)
+	end)
+
+	if not scanOk then
+		warn("[LUSharp-Test] FAIL: PreScan failed: " .. tostring(scanErr))
+		return
+	end
+	print("  PreScan completed successfully")
+
+	-- Phase 2: TranspileAll
+	local transpileOk, outputs = pcall(function()
+		return SimpleTranspiler.TranspileAll(transpiler, sources, fileNames, fileCount)
+	end)
+
+	if not transpileOk then
+		warn("[LUSharp-Test] FAIL: TranspileAll failed: " .. tostring(outputs))
+		return
+	end
+	print("  TranspileAll completed successfully")
+
+	-- Validate each output
+	local passed = 0
+	for i = 1, fileCount do
+		local output = outputs[i]
+		if output == nil or output == "" then
+			print("  FAIL " .. fileNames[i] .. " — empty output")
+		else
+			local lineCount = 0
+			for _ in string.gmatch(output, "[^\n]+") do
+				lineCount += 1
+			end
+
+			local hasStrict = string.find(output, "--!strict", 1, true) ~= nil
+			local hasReturn = string.find(output, "return {", 1, true) ~= nil
+			local requireCount = 0
+			local searchStart = 1
+			while true do
+				local pos = string.find(output, "require(script.Parent.", searchStart, true)
+				if pos then
+					requireCount += 1
+					searchStart = pos + 1
+				else
+					break
+				end
+			end
+
+			local pad = string.rep(" ", math.max(0, 25 - #fileNames[i]))
+			print("  OK   " .. fileNames[i] .. pad
+				.. " " .. lineCount .. " lines"
+				.. "  requires=" .. requireCount
+				.. "  strict=" .. tostring(hasStrict)
+				.. "  return=" .. tostring(hasReturn))
+			passed += 1
+		end
+	end
+
+	print("")
+	print("Transpiler: " .. passed .. "/" .. fileCount .. " files passed")
+
+	-- Print StatementNodes output (should have require for SyntaxNode)
+	if passed >= 3 then
+		print("")
+		print("=== StatementNodes.cs → Luau (with requires) ===")
+		local output = outputs[3]
+		-- Print first 20 lines
+		local lineNum = 0
+		for line in string.gmatch(output, "[^\n]*") do
+			lineNum += 1
+			if lineNum <= 20 then
+				print(line)
+			end
+		end
+		if lineNum > 20 then
+			print("  ... (" .. lineNum .. " total lines)")
+		end
+	end
+
+	warn("[LUSharp-Test] Transpiler test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
@@ -1188,4 +1342,5 @@ runSelfParseTest()
 runFullSelfParseTest()
 runEmitterTest()
 runSelfEmitTest()
+runTranspilerTest()
 warn("[LUSharp-Test] All tests finished")
