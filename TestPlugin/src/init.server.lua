@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.8.0"
+local PLUGIN_VERSION = "0.9.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -898,6 +898,96 @@ local function runFullSelfParseTest()
 	warn("[LUSharp-Test] Full self-parse test completed")
 end
 
+local function runEmitterTest()
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+	local simpleEmitterModule = modules:FindFirstChild("SimpleEmitter")
+
+	if not simpleParserModule or not simpleEmitterModule then
+		warn("[LUSharp-Test] Emitter modules not found, skipping")
+		return
+	end
+
+	local ok1, spResult = pcall(require, simpleParserModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local ok2, seResult = pcall(require, simpleEmitterModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleEmitter failed to load: " .. tostring(seResult))
+		return
+	end
+
+	local SimpleParser = spResult.SimpleParser
+	local SimpleEmitter = seResult.SimpleEmitter
+
+	if not SimpleParser or not SimpleEmitter then
+		warn("[LUSharp-Test] FAIL: SimpleParser or SimpleEmitter table not found")
+		return
+	end
+
+	-- Same input as EmitterReference.cs
+	local input = "class Calculator {\n"
+		.. "    int _result;\n"
+		.. "\n"
+		.. "    Calculator(int initial) {\n"
+		.. "        _result = initial;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    int Add(int a, int b) {\n"
+		.. "        return a + b;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    void Reset() {\n"
+		.. "        _result = 0;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    static int Max(int a, int b) {\n"
+		.. "        if (a > b) {\n"
+		.. "            return a;\n"
+		.. "        }\n"
+		.. "        return b;\n"
+		.. "    }\n"
+		.. "}\n"
+		.. "\n"
+		.. "enum Operation { Add, Subtract = 1, Multiply }"
+
+	print("=== Emitter Test ===")
+	print("Input:")
+	for line in string.gmatch(input, "[^\n]+") do
+		print(line)
+	end
+	print("")
+
+	-- Parse
+	local parser = SimpleParser.new(input)
+	local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+	-- Emit Luau
+	local emitter = SimpleEmitter.new()
+	local luauOutput = SimpleEmitter.Emit(emitter, compilationUnit)
+
+	print("=== Emitter Luau Output ===")
+	-- Print each line
+	if string.sub(luauOutput, #luauOutput, #luauOutput) == "\n" then
+		luauOutput = string.sub(luauOutput, 1, #luauOutput - 1)
+	end
+	for line in string.gmatch(luauOutput, "[^\n]*") do
+		print(line)
+	end
+
+	-- Count output lines
+	local lineCount = 0
+	for _ in string.gmatch(luauOutput, "[^\n]+") do
+		lineCount += 1
+	end
+	print("")
+	print("Total Luau output lines: " .. lineCount)
+
+	warn("[LUSharp-Test] Emitter test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
@@ -908,4 +998,5 @@ runWalkerTest()
 runExpandedParserTest()
 runSelfParseTest()
 runFullSelfParseTest()
+runEmitterTest()
 warn("[LUSharp-Test] All tests finished")
