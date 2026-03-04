@@ -371,6 +371,16 @@ public class SyntaxWalker
         }
     }
 
+    public virtual void VisitArrayCreationExpression(ArrayCreationExpressionSyntax node)
+    {
+        if (node.SizeExpression != null)
+        {
+            _depth++;
+            Visit(node.SizeExpression);
+            _depth--;
+        }
+    }
+
     public virtual void VisitLambdaExpression(LambdaExpressionSyntax node)
     {
         if (node.ExpressionBody != null)
@@ -701,6 +711,12 @@ public class TreePrinter : SyntaxWalker
     {
         PrintNode("ObjectCreation: " + node.TypeName);
         base.VisitObjectCreationExpression(node);
+    }
+
+    public override void VisitArrayCreationExpression(ArrayCreationExpressionSyntax node)
+    {
+        PrintNode("ArrayCreation: " + node.TypeName);
+        base.VisitArrayCreationExpression(node);
     }
 
     public override void VisitLambdaExpression(LambdaExpressionSyntax node)

@@ -14,6 +14,7 @@ local ParameterSyntax = _DeclarationNodes.ParameterSyntax
 local PropertyDeclarationSyntax = _DeclarationNodes.PropertyDeclarationSyntax
 local StructDeclarationSyntax = _DeclarationNodes.StructDeclarationSyntax
 local _ExpressionNodes = require(script.Parent.ExpressionNodes)
+local ArrayCreationExpressionSyntax = _ExpressionNodes.ArrayCreationExpressionSyntax
 local AssignmentExpressionSyntax = _ExpressionNodes.AssignmentExpressionSyntax
 local BinaryExpressionSyntax = _ExpressionNodes.BinaryExpressionSyntax
 local CastExpressionSyntax = _ExpressionNodes.CastExpressionSyntax
@@ -642,11 +643,9 @@ function SimpleParser.ParseTypeName(self: SimpleParser): string
 			SimpleParser.Advance(self)
 		end
 	end
-	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBracketToken then
+	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBracketToken and self._position + 1 < #self._tokens and self._tokens[self._position + 1 + 1].Kind == SyntaxKind.CloseBracketToken then
 		SimpleParser.Advance(self)
-		if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.CloseBracketToken then
-			SimpleParser.Advance(self)
-		end
+		SimpleParser.Advance(self)
 		name = name .. "[]"
 	end
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.QuestionToken then
@@ -1313,9 +1312,18 @@ function SimpleParser.ParseSwitchExpression(self: SimpleParser, governing: Expre
 	return SwitchExpressionSyntax.new(governing, result)
 end
 
-function SimpleParser.ParseObjectCreation(self: SimpleParser): ObjectCreationExpressionSyntax
+function SimpleParser.ParseObjectCreation(self: SimpleParser): ExpressionSyntax
 	SimpleParser.Advance(self)
 	local typeName = SimpleParser.ParseTypeName(self)
+	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBracketToken then
+		SimpleParser.Advance(self)
+		local sizeExpr = nil
+		if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBracketToken then
+			sizeExpr = SimpleParser.ParseExpression(self)
+		end
+		SimpleParser.Expect(self, SyntaxKind.CloseBracketToken)
+		return ArrayCreationExpressionSyntax.new(typeName, sizeExpr)
+	end
 	local args = table.create(16)
 	local argCount = 0
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenParenToken then
@@ -1333,28 +1341,46 @@ function SimpleParser.ParseObjectCreation(self: SimpleParser): ObjectCreationExp
 	end
 	local initializers = nil
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBraceToken then
-		SimpleParser.Advance(self)
-		local inits = table.create(32)
-		local initCount = 0
-		while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
-			if initCount > 0 and SimpleParser.Current(self).Kind == SyntaxKind.CommaToken then
-				SimpleParser.Advance(self)
+		local isArrayType = #typeName > 2 and typeName[#typeName - 1 + 1] == 93 and typeName[#typeName - 2 + 1] == 91
+		if isArrayType then
+			SimpleParser.Advance(self)
+			while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
+				if argCount > 0 and SimpleParser.Current(self).Kind == SyntaxKind.CommaToken then
+					SimpleParser.Advance(self)
+				end
+				if SimpleParser.Current(self).Kind == SyntaxKind.CloseBraceToken then
+					break
+				end
+				if argCount < 16 then
+					args[argCount + 1] = SimpleParser.ParseExpression(self)
+					argCount += 1
+				end
 			end
-			if SimpleParser.Current(self).Kind == SyntaxKind.CloseBraceToken then
-				break
+			SimpleParser.Expect(self, SyntaxKind.CloseBraceToken)
+		else
+			SimpleParser.Advance(self)
+			local inits = table.create(32)
+			local initCount = 0
+			while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
+				if initCount > 0 and SimpleParser.Current(self).Kind == SyntaxKind.CommaToken then
+					SimpleParser.Advance(self)
+				end
+				if SimpleParser.Current(self).Kind == SyntaxKind.CloseBraceToken then
+					break
+				end
+				local expr = SimpleParser.ParseExpression(self)
+				if --[[TODO: IsPatternExpression]] nil and initCount < 32 then
+					inits[initCount + 1] = assign
+					initCount += 1
+				end
 			end
-			local expr = SimpleParser.ParseExpression(self)
-			if --[[TODO: IsPatternExpression]] nil and initCount < 32 then
-				inits[initCount + 1] = assign
-				initCount += 1
+			SimpleParser.Expect(self, SyntaxKind.CloseBraceToken)
+			initializers = table.create(initCount)
+			local i = 0
+			while i < initCount do
+				initializers[i + 1] = inits[i + 1]
+				i += 1
 			end
-		end
-		SimpleParser.Expect(self, SyntaxKind.CloseBraceToken)
-		initializers = table.create(initCount)
-		local i = 0
-		while i < initCount do
-			initializers[i + 1] = inits[i + 1]
-			i += 1
 		end
 	end
 	local result = table.create(argCount)

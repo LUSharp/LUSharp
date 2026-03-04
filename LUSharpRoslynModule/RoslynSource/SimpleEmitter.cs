@@ -1410,6 +1410,12 @@ public class SimpleEmitter : SyntaxWalker
             return EmitObjectCreation(expr);
         }
 
+        // ── Array creation ───────────────────────────────────
+        if (kind == 8651)
+        {
+            return EmitArrayCreation(expr);
+        }
+
         // ── Element access ────────────────────────────────────
         if (kind == 8635)
         {
@@ -2074,7 +2080,33 @@ public class SimpleEmitter : SyntaxWalker
             return iife;
         }
 
+        // Array type: new T[] or new T[] { a, b }
+        if (typeName.Length > 2 && typeName.Substring(typeName.Length - 2) == "[]")
+        {
+            if (args.Length == 0) return "{}";
+            // Collection initializer: { a, b, c }
+            string elems = "";
+            for (int i = 0; i < obj.Arguments.Length; i++)
+            {
+                if (i > 0) elems = elems + ", ";
+                elems = elems + EmitExpression(obj.Arguments[i]);
+            }
+            return "{ " + elems + " }";
+        }
+
         return typeName + ".new(" + args + ")";
+    }
+
+    // ── Array creation ────────────────────────────────────────
+    private string EmitArrayCreation(ExpressionSyntax expr)
+    {
+        ArrayCreationExpressionSyntax arr = (ArrayCreationExpressionSyntax)expr;
+        if (arr.SizeExpression != null)
+        {
+            string size = EmitExpression(arr.SizeExpression);
+            return "table.create(" + size + ")";
+        }
+        return "{}";
     }
 
     /// <summary>

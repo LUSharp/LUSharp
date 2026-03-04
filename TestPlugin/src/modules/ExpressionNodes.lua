@@ -558,4 +558,37 @@ function CastExpressionSyntax.ToDisplayString(self: CastExpressionSyntax): strin
 	return "Cast(" .. self.TypeName .. ")"
 end
 
-return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, ElementAccessExpressionSyntax = ElementAccessExpressionSyntax, PostfixUnaryExpressionSyntax = PostfixUnaryExpressionSyntax, ConditionalExpressionSyntax = ConditionalExpressionSyntax, SwitchExpressionArmSyntax = SwitchExpressionArmSyntax, SwitchExpressionSyntax = SwitchExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax }
+type ArrayCreationExpressionSyntax_self = {
+	TypeName: string;
+	SizeExpression: ExpressionSyntax;
+}
+
+local ArrayCreationExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+ArrayCreationExpressionSyntax.__index = ArrayCreationExpressionSyntax
+export type ArrayCreationExpressionSyntax = typeof(setmetatable({} :: ArrayCreationExpressionSyntax_self, ArrayCreationExpressionSyntax))
+
+function ArrayCreationExpressionSyntax.new(typeName: string, sizeExpression: ExpressionSyntax): ArrayCreationExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(8651) :: any, ArrayCreationExpressionSyntax)
+	self.TypeName = ""
+	self.SizeExpression = nil :: any
+	self.TypeName = typeName
+	self.SizeExpression = sizeExpression
+	return self
+end
+
+function ArrayCreationExpressionSyntax.Accept(self: ArrayCreationExpressionSyntax): string
+	if self.SizeExpression ~= nil then
+		return "new " .. self.TypeName .. "[" .. self.SizeExpression:Accept() .. "]"
+	end
+	return "new " .. self.TypeName .. "[]"
+end
+
+function ArrayCreationExpressionSyntax.AcceptWalker(self: ArrayCreationExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitArrayCreationExpression(self)
+end
+
+function ArrayCreationExpressionSyntax.ToDisplayString(self: ArrayCreationExpressionSyntax): string
+	return "NewArray(" .. self.TypeName .. ")"
+end
+
+return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, ElementAccessExpressionSyntax = ElementAccessExpressionSyntax, PostfixUnaryExpressionSyntax = PostfixUnaryExpressionSyntax, ConditionalExpressionSyntax = ConditionalExpressionSyntax, SwitchExpressionArmSyntax = SwitchExpressionArmSyntax, SwitchExpressionSyntax = SwitchExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax, ArrayCreationExpressionSyntax = ArrayCreationExpressionSyntax }

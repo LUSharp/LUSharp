@@ -1143,6 +1143,9 @@ function SimpleEmitter.EmitExpression(self: SimpleEmitter, expr: ExpressionSynta
 	if kind == 8649 then
 		return SimpleEmitter.EmitObjectCreation(self, expr)
 	end
+	if kind == 8651 then
+		return SimpleEmitter.EmitArrayCreation(self, expr)
+	end
 	if kind == 8635 then
 		return SimpleEmitter.EmitElementAccess(self, expr)
 	end
@@ -1711,7 +1714,31 @@ function SimpleEmitter.EmitObjectCreation(self: SimpleEmitter, expr: ExpressionS
 		iife = iife .. "return __obj end)()"
 		return iife
 	end
+	if #typeName > 2 and string.sub(typeName, #typeName - 2 + 1) == "[]" then
+		if #args == 0 then
+			return "{}"
+		end
+		local elems = ""
+		local i = 0
+		while i < #obj.Arguments do
+			if i > 0 then
+				elems = elems .. ", "
+			end
+			elems = elems + SimpleEmitter.EmitExpression(self, obj.Arguments[i + 1])
+			i += 1
+		end
+		return "{ " .. elems .. " }"
+	end
 	return typeName .. ".new(" .. args .. ")"
+end
+
+function SimpleEmitter.EmitArrayCreation(self: SimpleEmitter, expr: ExpressionSyntax): string
+	local arr = expr
+	if arr.SizeExpression ~= nil then
+		local size = SimpleEmitter.EmitExpression(self, arr.SizeExpression)
+		return "table.create(" .. size .. ")"
+	end
+	return "{}"
 end
 
 function SimpleEmitter.GetVariableType(self: SimpleEmitter, name: string): string

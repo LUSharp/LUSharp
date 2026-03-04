@@ -342,6 +342,14 @@ function SyntaxWalker.VisitObjectCreationExpression(self: SyntaxWalker, node: Ob
 	end
 end
 
+function SyntaxWalker.VisitArrayCreationExpression(self: SyntaxWalker, node: ArrayCreationExpressionSyntax): ()
+	if node.SizeExpression ~= nil then
+		self._depth += 1
+		SyntaxWalker.Visit(self, node.SizeExpression)
+		self._depth -= 1
+	end
+end
+
 function SyntaxWalker.VisitLambdaExpression(self: SyntaxWalker, node: LambdaExpressionSyntax): ()
 	if node.ExpressionBody ~= nil then
 		self._depth += 1
@@ -653,6 +661,11 @@ end
 function TreePrinter.VisitObjectCreationExpression(self: TreePrinter, node: ObjectCreationExpressionSyntax): ()
 	TreePrinter.PrintNode(self, "ObjectCreation: " .. node.TypeName)
 	SyntaxWalker.VisitObjectCreationExpression(self, node)
+end
+
+function TreePrinter.VisitArrayCreationExpression(self: TreePrinter, node: ArrayCreationExpressionSyntax): ()
+	TreePrinter.PrintNode(self, "ArrayCreation: " .. node.TypeName)
+	SyntaxWalker.VisitArrayCreationExpression(self, node)
 end
 
 function TreePrinter.VisitLambdaExpression(self: TreePrinter, node: LambdaExpressionSyntax): ()

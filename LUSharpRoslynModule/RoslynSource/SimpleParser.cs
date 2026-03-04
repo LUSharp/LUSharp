@@ -724,12 +724,12 @@ public class SimpleParser
             }
         }
 
-        // Handle array types: int[]
-        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBracketToken)
+        // Handle array types: int[] (only empty brackets, not int[size])
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBracketToken
+            && _position + 1 < _tokens.Length && _tokens[_position + 1].Kind == SyntaxKind.CloseBracketToken)
         {
-            Advance();
-            if (!IsAtEnd() && Current().Kind == SyntaxKind.CloseBracketToken)
-                Advance();
+            Advance(); // skip [
+            Advance(); // skip ]
             name = name + "[]";
         }
 
@@ -1676,10 +1676,23 @@ public class SimpleParser
         return new SwitchExpressionSyntax(governing, result);
     }
 
-    private ObjectCreationExpressionSyntax ParseObjectCreation()
+    private ExpressionSyntax ParseObjectCreation()
     {
         Advance(); // skip 'new'
         string typeName = ParseTypeName();
+
+        // Detect array creation: new Type[size]
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBracketToken)
+        {
+            Advance(); // skip [
+            ExpressionSyntax sizeExpr = null;
+            if (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBracketToken)
+            {
+                sizeExpr = ParseExpression();
+            }
+            Expect(SyntaxKind.CloseBracketToken);
+            return new ArrayCreationExpressionSyntax(typeName, sizeExpr);
+        }
 
         var args = new ExpressionSyntax[16];
         int argCount = 0;
@@ -1701,33 +1714,57 @@ public class SimpleParser
         }
 
         // Parse object initializer if present: { Field = value, ... }
+        // For array types (T[]), parse as collection initializer: { expr, ... }
         AssignmentExpressionSyntax[] initializers = null;
         if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
         {
-            Advance(); // skip {
-            var inits = new AssignmentExpressionSyntax[32];
-            int initCount = 0;
+            bool isArrayType = typeName.Length > 2 && typeName[typeName.Length - 1] == ']' && typeName[typeName.Length - 2] == '[';
 
-            while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+            if (isArrayType)
             {
-                if (initCount > 0 && Current().Kind == SyntaxKind.CommaToken)
-                    Advance(); // skip comma
-                if (Current().Kind == SyntaxKind.CloseBraceToken)
-                    break;
-
-                var expr = ParseExpression();
-                if (expr is AssignmentExpressionSyntax assign && initCount < 32)
+                // Collection initializer: new T[] { a, b, c } → store elements as args
+                Advance(); // skip {
+                while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
                 {
-                    inits[initCount] = assign;
-                    initCount++;
+                    if (argCount > 0 && Current().Kind == SyntaxKind.CommaToken)
+                        Advance();
+                    if (Current().Kind == SyntaxKind.CloseBraceToken)
+                        break;
+                    if (argCount < 16)
+                    {
+                        args[argCount] = ParseExpression();
+                        argCount++;
+                    }
                 }
+                Expect(SyntaxKind.CloseBraceToken);
             }
+            else
+            {
+                Advance(); // skip {
+                var inits = new AssignmentExpressionSyntax[32];
+                int initCount = 0;
 
-            Expect(SyntaxKind.CloseBraceToken);
+                while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+                {
+                    if (initCount > 0 && Current().Kind == SyntaxKind.CommaToken)
+                        Advance(); // skip comma
+                    if (Current().Kind == SyntaxKind.CloseBraceToken)
+                        break;
 
-            initializers = new AssignmentExpressionSyntax[initCount];
-            for (int i = 0; i < initCount; i++)
-                initializers[i] = inits[i];
+                    var expr = ParseExpression();
+                    if (expr is AssignmentExpressionSyntax assign && initCount < 32)
+                    {
+                        inits[initCount] = assign;
+                        initCount++;
+                    }
+                }
+
+                Expect(SyntaxKind.CloseBraceToken);
+
+                initializers = new AssignmentExpressionSyntax[initCount];
+                for (int i = 0; i < initCount; i++)
+                    initializers[i] = inits[i];
+            }
         }
 
         var result = new ExpressionSyntax[argCount];

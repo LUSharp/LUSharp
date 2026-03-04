@@ -487,3 +487,32 @@ public class CastExpressionSyntax : ExpressionSyntax
         return "Cast(" + TypeName + ")";
     }
 }
+
+public class ArrayCreationExpressionSyntax : ExpressionSyntax
+{
+    public string TypeName { get; }
+    public ExpressionSyntax SizeExpression { get; }
+
+    public ArrayCreationExpressionSyntax(string typeName, ExpressionSyntax sizeExpression) : base(8651)
+    {
+        TypeName = typeName;
+        SizeExpression = sizeExpression;
+    }
+
+    public override string Accept()
+    {
+        if (SizeExpression != null)
+            return "new " + TypeName + "[" + SizeExpression.Accept() + "]";
+        return "new " + TypeName + "[]";
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitArrayCreationExpression(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "NewArray(" + TypeName + ")";
+    }
+}
