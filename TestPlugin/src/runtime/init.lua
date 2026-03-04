@@ -1,13 +1,18 @@
 --!strict
--- LUSharp .NET BCL Runtime for Luau
--- Provides .NET type equivalents used by transpiled Roslyn code
+-- LUSharp Runtime Library
+-- Provides .NET BCL equivalents for transpiled C# code
 
 local Runtime = {}
 
-Runtime.System = {}
-Runtime.Collections = {}
-Runtime.Text = {}
+-- Load sub-modules
+local System = require(script.System)
+local Collections = require(script.Collections)
 
+-- Re-export
+Runtime.System = System
+Runtime.Collections = Collections
+
+-- Flags helpers
 Runtime.Flags = {
 	HasFlag = function(value: number, flag: number): boolean
 		return bit32.band(value, flag) == flag
