@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.2.0"
+local PLUGIN_VERSION = "0.3.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -259,9 +259,81 @@ local function runTokenizerTest()
 	warn("[LUSharp-Test] Tokenizer test completed")
 end
 
+local function runParserTest()
+	local syntaxKindModule = modules:FindFirstChild("SyntaxKind")
+	local syntaxTokenModule = modules:FindFirstChild("SyntaxToken")
+	local syntaxNodeModule = modules:FindFirstChild("SyntaxNode")
+	local expressionNodesModule = modules:FindFirstChild("ExpressionNodes")
+	local statementNodesModule = modules:FindFirstChild("StatementNodes")
+	local declarationNodesModule = modules:FindFirstChild("DeclarationNodes")
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+
+	if not syntaxKindModule or not syntaxTokenModule or not syntaxNodeModule
+		or not expressionNodesModule or not statementNodesModule
+		or not declarationNodesModule or not simpleParserModule then
+		warn("[LUSharp-Test] Parser modules not found, skipping")
+		return
+	end
+
+	local ok1, skResult = pcall(require, syntaxKindModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SyntaxKind failed to load: " .. tostring(skResult))
+		return
+	end
+
+	local ok2, spResult = pcall(require, simpleParserModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local SimpleParser = spResult.SimpleParser
+
+	if not SimpleParser then
+		warn("[LUSharp-Test] FAIL: SimpleParser table not found in module return")
+		return
+	end
+
+	local input = "class Foo { int x = 5; void Bar() { return; } }"
+
+	print("=== Parser Test ===")
+	print("Input: " .. input)
+
+	local parser = SimpleParser.new(input)
+	local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+	-- Print Accept() output (reconstructed source)
+	print("=== Accept Output ===")
+	local acceptOutput = compilationUnit:Accept()
+	-- Print line by line (Accept adds trailing newline per member)
+	-- Strip trailing newline if present
+	if string.sub(acceptOutput, #acceptOutput, #acceptOutput) == "\n" then
+		acceptOutput = string.sub(acceptOutput, 1, #acceptOutput - 1)
+	end
+	for line in string.gmatch(acceptOutput, "[^\n]*") do
+		print(line)
+	end
+
+	-- Print tree walk using ToDisplayString()
+	print("=== Tree Walk ===")
+	print(compilationUnit:ToDisplayString())
+	for _, member in compilationUnit.Members do
+		print("  " .. member:ToDisplayString())
+		-- If it's a class, walk its members too
+		if member.Members then
+			for _, classMember in member.Members do
+				print("    " .. classMember:ToDisplayString())
+			end
+		end
+	end
+
+	warn("[LUSharp-Test] Parser test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
 runSyntaxFactsTest()
 runTokenizerTest()
+runParserTest()
 warn("[LUSharp-Test] All tests finished")

@@ -1,0 +1,14 @@
+=== Parser Test ===
+Input: class Foo { int x = 5; void Bar() { return; } }
+=== Accept Output ===
+class Foo {
+  int x = 5;
+  void Bar() {
+  return;
+}
+}
+=== Tree Walk ===
+CompilationUnit(1 members)
+  Class(Foo, 2 members)
+    Field(x)
+    Method(Bar)

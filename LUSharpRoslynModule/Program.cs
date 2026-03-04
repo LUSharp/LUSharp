@@ -251,6 +251,9 @@ internal class Program
             case "tokenizer":
                 Reference.TokenizerReference.PrintAll();
                 break;
+            case "parser":
+                Reference.ParserReference.PrintAll();
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;
