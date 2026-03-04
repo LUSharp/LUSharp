@@ -1,0 +1,181 @@
+namespace RoslynLuau;
+
+public class LiteralExpressionSyntax : ExpressionSyntax
+{
+    public SyntaxToken Token { get; }
+
+    public LiteralExpressionSyntax(int kind, SyntaxToken token) : base(kind)
+    {
+        Token = token;
+    }
+
+    public override string Accept()
+    {
+        return Token.Text;
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Literal(" + Token.Text + ")";
+    }
+}
+
+public class IdentifierNameSyntax : ExpressionSyntax
+{
+    public SyntaxToken Identifier { get; }
+
+    public IdentifierNameSyntax(SyntaxToken identifier) : base(8616)
+    {
+        Identifier = identifier;
+    }
+
+    public override string Accept()
+    {
+        return Identifier.Text;
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Identifier(" + Identifier.Text + ")";
+    }
+}
+
+public class BinaryExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Left { get; }
+    public SyntaxToken OperatorToken { get; }
+    public ExpressionSyntax Right { get; }
+
+    public BinaryExpressionSyntax(int kind, ExpressionSyntax left, SyntaxToken operatorToken, ExpressionSyntax right) : base(kind)
+    {
+        Left = left;
+        OperatorToken = operatorToken;
+        Right = right;
+    }
+
+    public override string Accept()
+    {
+        return Left.Accept() + " " + OperatorToken.Text + " " + Right.Accept();
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Binary(" + Left.ToDisplayString() + " " + OperatorToken.Text + " " + Right.ToDisplayString() + ")";
+    }
+}
+
+public class ParenthesizedExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+
+    public ParenthesizedExpressionSyntax(ExpressionSyntax expression) : base(8632)
+    {
+        Expression = expression;
+    }
+
+    public override string Accept()
+    {
+        return "(" + Expression.Accept() + ")";
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Paren(" + Expression.ToDisplayString() + ")";
+    }
+}
+
+public class PrefixUnaryExpressionSyntax : ExpressionSyntax
+{
+    public SyntaxToken OperatorToken { get; }
+    public ExpressionSyntax Operand { get; }
+
+    public PrefixUnaryExpressionSyntax(int kind, SyntaxToken operatorToken, ExpressionSyntax operand) : base(kind)
+    {
+        OperatorToken = operatorToken;
+        Operand = operand;
+    }
+
+    public override string Accept()
+    {
+        return OperatorToken.Text + Operand.Accept();
+    }
+
+    public override string ToDisplayString()
+    {
+        return "PrefixUnary(" + OperatorToken.Text + Operand.ToDisplayString() + ")";
+    }
+}
+
+public class InvocationExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public ExpressionSyntax[] Arguments { get; }
+
+    public InvocationExpressionSyntax(ExpressionSyntax expression, ExpressionSyntax[] arguments) : base(8634)
+    {
+        Expression = expression;
+        Arguments = arguments;
+    }
+
+    public override string Accept()
+    {
+        string args = "";
+        for (int i = 0; i < Arguments.Length; i++)
+        {
+            if (i > 0) args = args + ", ";
+            args = args + Arguments[i].Accept();
+        }
+        return Expression.Accept() + "(" + args + ")";
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Invocation(" + Expression.ToDisplayString() + ")";
+    }
+}
+
+public class MemberAccessExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public SyntaxToken Name { get; }
+
+    public MemberAccessExpressionSyntax(ExpressionSyntax expression, SyntaxToken name) : base(8689)
+    {
+        Expression = expression;
+        Name = name;
+    }
+
+    public override string Accept()
+    {
+        return Expression.Accept() + "." + Name.Text;
+    }
+
+    public override string ToDisplayString()
+    {
+        return "MemberAccess(" + Expression.ToDisplayString() + "." + Name.Text + ")";
+    }
+}
+
+public class AssignmentExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Left { get; }
+    public SyntaxToken OperatorToken { get; }
+    public ExpressionSyntax Right { get; }
+
+    public AssignmentExpressionSyntax(int kind, ExpressionSyntax left, SyntaxToken operatorToken, ExpressionSyntax right) : base(kind)
+    {
+        Left = left;
+        OperatorToken = operatorToken;
+        Right = right;
+    }
+
+    public override string Accept()
+    {
+        return Left.Accept() + " " + OperatorToken.Text + " " + Right.Accept();
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Assignment(" + Left.ToDisplayString() + " " + OperatorToken.Text + " " + Right.ToDisplayString() + ")";
+    }
+}

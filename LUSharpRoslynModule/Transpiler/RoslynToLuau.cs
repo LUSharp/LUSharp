@@ -13,6 +13,14 @@ public class RoslynToLuau
     private Dictionary<(string TypeName, string MethodName, int ArgCount), string> _globalOverloadMap = new();
 
     /// <summary>
+    /// Maps each type name to the module file name (without extension) that contains it.
+    /// For example, if SyntaxNode.cs defines SyntaxNode, ExpressionSyntax, StatementSyntax,
+    /// this maps all three to "SyntaxNode".
+    /// Built during PreScan, used by InsertRequires to generate correct require() paths.
+    /// </summary>
+    private Dictionary<string, string> _typeToModuleMap = new();
+
+    /// <summary>
     /// Pre-scan source files to build a global overload map before emitting any code.
     /// Call this once with all source files before calling Transpile for each file.
     /// </summary>
@@ -27,6 +35,14 @@ public class RoslynToLuau
             if (diagnostics.Count > 0) continue;
 
             ScanOverloads(root.Members);
+
+            // Build type-to-module mapping: each type defined in this file maps to the module name
+            var moduleName = Path.GetFileNameWithoutExtension(fileName);
+            var typeNames = CollectTypeNames(root.Members);
+            foreach (var typeName in typeNames)
+            {
+                _typeToModuleMap[typeName] = moduleName;
+            }
         }
     }
 
@@ -122,6 +138,10 @@ public class RoslynToLuau
         emitter.GlobalOverloadMap = _globalOverloadMap;
         emitter.EmitHeader();
 
+        // Count top-level type declarations to decide whether to suppress individual returns
+        var topLevelTypeCount = CountTopLevelTypes(root.Members);
+        emitter.SuppressReturn = topLevelTypeCount > 1;
+
         foreach (var member in root.Members)
         {
             switch (member)
@@ -145,6 +165,12 @@ public class RoslynToLuau
                     Console.Error.WriteLine($"Warning: unsupported top-level declaration: {member.Kind()}");
                     break;
             }
+        }
+
+        // Emit unified return for multi-type files
+        if (emitter.SuppressReturn)
+        {
+            emitter.EmitUnifiedReturn();
         }
 
         // Collect type names defined in this file to exclude from requires
@@ -184,6 +210,33 @@ public class RoslynToLuau
     }
 
     /// <summary>
+    /// Count the number of top-level type declarations (classes, structs, enums) in a file.
+    /// Used to determine whether to suppress individual return statements.
+    /// </summary>
+    private int CountTopLevelTypes(SyntaxList<MemberDeclarationSyntax> members)
+    {
+        int count = 0;
+        foreach (var member in members)
+        {
+            switch (member)
+            {
+                case NamespaceDeclarationSyntax ns:
+                    count += CountTopLevelTypes(ns.Members);
+                    break;
+                case FileScopedNamespaceDeclarationSyntax ns:
+                    count += CountTopLevelTypes(ns.Members);
+                    break;
+                case ClassDeclarationSyntax:
+                case StructDeclarationSyntax:
+                case EnumDeclarationSyntax:
+                    count++;
+                    break;
+            }
+        }
+        return count;
+    }
+
+    /// <summary>
     /// Collect all type names defined in a set of members (classes, structs, enums).
     /// Used to exclude same-file types from require() statements.
     /// </summary>
@@ -216,9 +269,12 @@ public class RoslynToLuau
 
     /// <summary>
     /// After emission, insert require() statements for any external modules referenced.
-    /// Uses the pattern:
+    /// Uses the type-to-module map (built during PreScan) to resolve the correct module
+    /// file for each referenced type. Groups types by module to avoid duplicate requires.
+    /// Pattern:
     ///   local _ModuleName = require(script.Parent.ModuleName)
-    ///   local ModuleName = _ModuleName.ModuleName
+    ///   local TypeA = _ModuleName.TypeA
+    ///   local TypeB = _ModuleName.TypeB
     /// Excludes types defined in the same file (localTypeNames).
     /// </summary>
     private void InsertRequires(LuauEmitter emitter, HashSet<string>? localTypeNames = null)
@@ -226,19 +282,33 @@ public class RoslynToLuau
         if (emitter.ReferencedModules.Count == 0) return;
 
         // Filter out modules that are known not to need requires or are defined in the same file
-        var modulesToRequire = emitter.ReferencedModules
+        var typesToRequire = emitter.ReferencedModules
             .Where(m => !IsIgnoredModule(m))
             .Where(m => localTypeNames == null || !localTypeNames.Contains(m))
             .OrderBy(m => m)
             .ToList();
 
-        if (modulesToRequire.Count == 0) return;
+        if (typesToRequire.Count == 0) return;
+
+        // Group types by their source module (using the type-to-module map)
+        var moduleToTypes = new Dictionary<string, List<string>>();
+        foreach (var typeName in typesToRequire)
+        {
+            // Look up which module file this type is defined in
+            var moduleName = _typeToModuleMap.GetValueOrDefault(typeName, typeName);
+            if (!moduleToTypes.ContainsKey(moduleName))
+                moduleToTypes[moduleName] = new List<string>();
+            moduleToTypes[moduleName].Add(typeName);
+        }
 
         var requireBlock = new System.Text.StringBuilder();
-        foreach (var module in modulesToRequire)
+        foreach (var (moduleName, types) in moduleToTypes.OrderBy(kv => kv.Key))
         {
-            requireBlock.AppendLine($"local _{module} = require(script.Parent.{module})");
-            requireBlock.AppendLine($"local {module} = _{module}.{module}");
+            requireBlock.AppendLine($"local _{moduleName} = require(script.Parent.{moduleName})");
+            foreach (var typeName in types.OrderBy(t => t))
+            {
+                requireBlock.AppendLine($"local {typeName} = _{moduleName}.{typeName}");
+            }
         }
         requireBlock.AppendLine();
 

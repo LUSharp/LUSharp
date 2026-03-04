@@ -54,6 +54,13 @@ public class LuauEmitter
     private HashSet<string> _currentMethodLocals = new();
 
     /// <summary>
+    /// When true, all + binary expressions should emit as .. (string concatenation).
+    /// Set by the top-level string concat detection in EmitBinary, so inner + nodes
+    /// in the same chain also use .. instead of +.
+    /// </summary>
+    private bool _forceStringConcat = false;
+
+    /// <summary>
     /// Set of const field names for the current class (accessed as ClassName.ConstField).
     /// </summary>
     private HashSet<string> _constFields = new();
@@ -89,6 +96,17 @@ public class LuauEmitter
     /// Set by the orchestrator before emission for cross-type overload resolution.
     /// </summary>
     public Dictionary<(string TypeName, string MethodName, int ArgCount), string> GlobalOverloadMap { get; set; } = new();
+
+    /// <summary>
+    /// When true, individual type emissions will not emit their own return statements.
+    /// The orchestrator is responsible for emitting a unified return at the end.
+    /// </summary>
+    public bool SuppressReturn { get; set; } = false;
+
+    /// <summary>
+    /// Track all top-level type names emitted in this file (used for unified return).
+    /// </summary>
+    public List<string> EmittedTopLevelTypes { get; } = new();
 
     public string GetOutput() => _sb.ToString();
 
@@ -153,11 +171,17 @@ public class LuauEmitter
         AppendLine("})");
         AppendLine();
 
+        // Track as top-level type
+        EmittedTopLevelTypes.Add(name);
+
         // Return table
-        if (isFlags)
-            AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name, {name}_HasFlag = {name}_HasFlag }}");
-        else
-            AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name }}");
+        if (!SuppressReturn)
+        {
+            if (isFlags)
+                AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name, {name}_HasFlag = {name}_HasFlag }}");
+            else
+                AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name }}");
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -223,7 +247,11 @@ public class LuauEmitter
             }
         }
 
-        AppendLine($"return {{ {className} = {className} }}");
+        EmittedTopLevelTypes.Add(className);
+        if (!SuppressReturn)
+        {
+            AppendLine($"return {{ {className} = {className} }}");
+        }
         _currentClassName = null;
     }
 
@@ -627,14 +655,24 @@ public class LuauEmitter
         // ── Phase 7: return (only for top-level types, not nested) ──
         if (!isNested)
         {
-            // Build return table including the main class and any nested types
-            var returnEntries = new List<string>();
-            returnEntries.Add($"{className} = {className}");
+            // Track this type for the unified return
+            EmittedTopLevelTypes.Add(className);
             foreach (var nested in _nestedTypeNames)
             {
-                returnEntries.Add($"{nested} = {nested}");
+                EmittedTopLevelTypes.Add(nested);
             }
-            AppendLine($"return {{ {string.Join(", ", returnEntries)} }}");
+
+            if (!SuppressReturn)
+            {
+                // Build return table including the main class and any nested types
+                var returnEntries = new List<string>();
+                returnEntries.Add($"{className} = {className}");
+                foreach (var nested in _nestedTypeNames)
+                {
+                    returnEntries.Add($"{nested} = {nested}");
+                }
+                AppendLine($"return {{ {string.Join(", ", returnEntries)} }}");
+            }
         }
         _currentClassName = null;
         _baseClassName = null;
@@ -1993,6 +2031,12 @@ public class LuauEmitter
                 if (_instanceFieldTypes.TryGetValue(ownerName, out var fieldType)
                     && GlobalOverloadMap.TryGetValue((fieldType, memberName, args.Count), out var resolvedName))
                 {
+                    // Track the field type as a referenced module (it's used for explicit dispatch)
+                    if (fieldType != _currentClassName && !_nestedTypeNames.Contains(fieldType))
+                    {
+                        ReferencedModules.Add(fieldType);
+                    }
+
                     // Use Type.Method(self.field, args) for explicit dispatch with correct overload
                     var fullArgs = string.IsNullOrEmpty(argStr)
                         ? luauOwner
@@ -2039,6 +2083,16 @@ public class LuauEmitter
         var left = EmitExpression(memberAccess.Expression);
 
         // .Length → # operator (already handled in EmitMemberAccess, but catch here for method form)
+
+        // For method calls on element access or complex expressions (non-type),
+        // use colon syntax for instance method dispatch (e.g., arr[i]:Method())
+        if (memberAccess.Expression is ElementAccessExpressionSyntax
+            || (memberAccess.Expression is MemberAccessExpressionSyntax nestedMA
+                && nestedMA.Expression is not PredefinedTypeSyntax
+                && !IsLikelyEnumOrExternalType(nestedMA.Expression.ToString())))
+        {
+            return $"{left}:{memberName}({argStr})";
+        }
 
         return $"{left}.{memberName}({argStr})";
     }
@@ -2183,17 +2237,38 @@ public class LuauEmitter
 
     private string EmitBinary(BinaryExpressionSyntax binary)
     {
+        // Handle null-coalescing early (before emitting children) since it has special syntax
+        if (binary.Kind() == SyntaxKind.CoalesceExpression)
+        {
+            var coalLeft = EmitExpression(binary.Left);
+            var coalRight = EmitExpression(binary.Right);
+            return $"if {coalLeft} ~= nil then {coalLeft} else {coalRight}";
+        }
+
+        // Detect string concatenation: + with a string expression anywhere in the chain → ..
+        // We must detect this BEFORE emitting children, so that inner + nodes in the same
+        // chain also use .. instead of +. The _forceStringConcat flag propagates this.
+        bool isTopLevelStringConcat = false;
+        if (binary.Kind() == SyntaxKind.AddExpression && !_forceStringConcat)
+        {
+            if (IsStringConcatenation(binary) || IsStringConcatenationChain(binary))
+            {
+                isTopLevelStringConcat = true;
+                _forceStringConcat = true;
+            }
+        }
+
         var left = EmitExpression(binary.Left);
         var right = EmitExpression(binary.Right);
 
-        // Handle null-coalescing: x ?? y → if x ~= nil then x else y
-        if (binary.Kind() == SyntaxKind.CoalesceExpression)
+        // Restore flag if we set it at this level
+        if (isTopLevelStringConcat)
         {
-            return $"if {left} ~= nil then {left} else {right}";
+            _forceStringConcat = false;
         }
 
-        // Detect string concatenation: + with string literal on either side → ..
-        if (binary.Kind() == SyntaxKind.AddExpression && IsStringConcatenation(binary))
+        // Use .. for string concatenation (either detected here or forced by parent)
+        if (binary.Kind() == SyntaxKind.AddExpression && (_forceStringConcat || isTopLevelStringConcat))
         {
             return $"{left} .. {right}";
         }
@@ -2682,7 +2757,7 @@ public class LuauEmitter
         if (expr is LiteralExpressionSyntax literal && literal.Kind() == SyntaxKind.StringLiteralExpression)
             return true;
 
-        // Method calls named "GetText" — likely returns string
+        // Method calls that likely return string
         if (expr is InvocationExpressionSyntax invocation)
         {
             var name = invocation.Expression switch
@@ -2691,7 +2766,17 @@ public class LuauEmitter
                 MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
                 _ => null
             };
-            if (name is "GetText" or "ToString" or "Substring")
+            if (name is "GetText" or "ToString" or "Substring" or "Accept"
+                or "ToDisplayString" or "ToLower" or "ToUpper" or "Trim")
+                return true;
+        }
+
+        // Member access ending in string-like property names
+        if (expr is MemberAccessExpressionSyntax memberAccess)
+        {
+            var memberName = memberAccess.Name.Identifier.Text;
+            if (memberName is "Text" or "Name" or "Value" or "ReturnType"
+                or "TypeName" or "VariableName")
                 return true;
         }
 
@@ -2703,6 +2788,30 @@ public class LuauEmitter
     }
 
     /// <summary>
+    /// Deep-scan an entire chain of + binary expressions to detect if ANY leaf
+    /// in the chain is a known string expression. This allows us to mark the entire
+    /// chain as string concatenation even when the innermost nodes lack string evidence.
+    /// </summary>
+    private static bool IsStringConcatenationChain(BinaryExpressionSyntax binary)
+    {
+        return ContainsStringLeaf(binary);
+    }
+
+    /// <summary>
+    /// Recursively scan all leaves of a + chain for any string expression.
+    /// Unlike IsStringConcatenation which only checks direct children,
+    /// this walks the full tree of chained + operators.
+    /// </summary>
+    private static bool ContainsStringLeaf(ExpressionSyntax expr)
+    {
+        if (expr is BinaryExpressionSyntax binary && binary.Kind() == SyntaxKind.AddExpression)
+        {
+            return ContainsStringLeaf(binary.Left) || ContainsStringLeaf(binary.Right);
+        }
+        return IsStringExpression(expr);
+    }
+
+    /// <summary>
     /// Heuristic: is this identifier likely an enum/external type used in member access?
     /// Returns true for PascalCase identifiers that aren't our own class.
     /// </summary>
@@ -2711,6 +2820,18 @@ public class LuauEmitter
         if (string.IsNullOrEmpty(name)) return false;
         // PascalCase heuristic: starts with uppercase, has at least 2 chars
         return char.IsUpper(name[0]) && name.Length >= 2;
+    }
+
+    /// <summary>
+    /// Emit a unified return statement for all top-level types emitted in this file.
+    /// Called by the orchestrator when SuppressReturn is true (multi-type files).
+    /// </summary>
+    public void EmitUnifiedReturn()
+    {
+        if (EmittedTopLevelTypes.Count == 0) return;
+
+        var entries = EmittedTopLevelTypes.Select(t => $"{t} = {t}");
+        AppendLine($"return {{ {string.Join(", ", entries)} }}");
     }
 
     // ────────────────────────────────────────────────────────────────────
