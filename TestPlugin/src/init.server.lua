@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.9.0"
+local PLUGIN_VERSION = "0.10.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -988,6 +988,194 @@ local function runEmitterTest()
 	warn("[LUSharp-Test] Emitter test completed")
 end
 
+local function runSelfEmitTest()
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+	local simpleEmitterModule = modules:FindFirstChild("SimpleEmitter")
+
+	if not simpleParserModule or not simpleEmitterModule then
+		warn("[LUSharp-Test] Self-emit modules not found, skipping")
+		return
+	end
+
+	local ok1, spResult = pcall(require, simpleParserModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local ok2, seResult = pcall(require, simpleEmitterModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleEmitter failed to load: " .. tostring(seResult))
+		return
+	end
+
+	local SimpleParser = spResult.SimpleParser
+	local SimpleEmitter = seResult.SimpleEmitter
+
+	if not SimpleParser or not SimpleEmitter then
+		warn("[LUSharp-Test] FAIL: SimpleParser or SimpleEmitter table not found")
+		return
+	end
+
+	print("=== Self-Emit Validation (Luau) ===")
+
+	-- Test files: actual C# source code for key types
+	local sources: { { name: string, source: string } } = {}
+
+	-- SyntaxToken.cs (simple struct)
+	table.insert(sources, {
+		name = "SyntaxToken.cs",
+		source = "namespace RoslynLuau;\n"
+			.. "public struct SyntaxToken\n"
+			.. "{\n"
+			.. "    public int Kind { get; }\n"
+			.. "    public string Text { get; }\n"
+			.. "    public int Start { get; }\n"
+			.. "    public int Length { get; }\n"
+			.. "    public SyntaxToken(int kind, string text, int start, int length)\n"
+			.. "    {\n"
+			.. "        Kind = kind;\n"
+			.. "        Text = text;\n"
+			.. "        Start = start;\n"
+			.. "        Length = length;\n"
+			.. "    }\n"
+			.. "    public bool IsMissing()\n"
+			.. "    {\n"
+			.. "        return Kind == 0;\n"
+			.. "    }\n"
+			.. "}"
+	})
+
+	-- SyntaxNode.cs (abstract class hierarchy)
+	table.insert(sources, {
+		name = "SyntaxNode.cs",
+		source = "namespace RoslynLuau;\n"
+			.. "public abstract class SyntaxNode\n"
+			.. "{\n"
+			.. "    public int Kind { get; }\n"
+			.. "    protected SyntaxNode(int kind)\n"
+			.. "    {\n"
+			.. "        Kind = kind;\n"
+			.. "    }\n"
+			.. "    public abstract string Accept();\n"
+			.. "}\n"
+			.. "public abstract class ExpressionSyntax : SyntaxNode\n"
+			.. "{\n"
+			.. "    protected ExpressionSyntax(int kind) : base(kind)\n"
+			.. "    {\n"
+			.. "    }\n"
+			.. "}\n"
+			.. "public abstract class StatementSyntax : SyntaxNode\n"
+			.. "{\n"
+			.. "    protected StatementSyntax(int kind) : base(kind)\n"
+			.. "    {\n"
+			.. "    }\n"
+			.. "}"
+	})
+
+	-- Calculator class (full: fields, ctor, instance+static methods, if/else)
+	table.insert(sources, {
+		name = "Calculator.cs",
+		source = "class Calculator {\n"
+			.. "    int _result;\n"
+			.. "    Calculator(int initial) {\n"
+			.. "        _result = initial;\n"
+			.. "    }\n"
+			.. "    int Add(int a, int b) {\n"
+			.. "        return a + b;\n"
+			.. "    }\n"
+			.. "    void Reset() {\n"
+			.. "        _result = 0;\n"
+			.. "    }\n"
+			.. "    static int Max(int a, int b) {\n"
+			.. "        if (a > b) {\n"
+			.. "            return a;\n"
+			.. "        }\n"
+			.. "        return b;\n"
+			.. "    }\n"
+			.. "}\n"
+			.. "enum Operation { Add, Subtract = 1, Multiply }"
+	})
+
+	-- ControlFlow class (for, foreach, while, switch, try/catch)
+	table.insert(sources, {
+		name = "ControlFlow.cs",
+		source = "class ControlFlow {\n"
+			.. "    void ForLoop() {\n"
+			.. "        for (int i = 0; i < 10; i++) {\n"
+			.. "            if (i == 5) break;\n"
+			.. "        }\n"
+			.. "    }\n"
+			.. "    void ForEachLoop(int[] items) {\n"
+			.. "        foreach (var item in items) {\n"
+			.. "            int x = item;\n"
+			.. "        }\n"
+			.. "    }\n"
+			.. "    void TryCatch() {\n"
+			.. "        try {\n"
+			.. "            int x = 1;\n"
+			.. "        } catch (Exception ex) {\n"
+			.. "            throw;\n"
+			.. "        }\n"
+			.. "    }\n"
+			.. "}"
+	})
+
+	local passed = 0
+	local total = #sources
+
+	for _, entry in sources do
+		local parseOk, parseErr = pcall(function()
+			local parser = SimpleParser.new(entry.source)
+			local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+			local emitter = SimpleEmitter.new()
+			local luauOutput = SimpleEmitter.Emit(emitter, compilationUnit)
+
+			-- Count output lines
+			local lineCount = 0
+			for _ in string.gmatch(luauOutput, "[^\n]+") do
+				lineCount += 1
+			end
+
+			-- Check key patterns
+			local hasStrict = string.find(luauOutput, "--!strict", 1, true) ~= nil
+			local hasReturn = string.find(luauOutput, "return {", 1, true) ~= nil
+
+			print("  OK   " .. entry.name .. string.rep(" ", 30 - #entry.name)
+				.. " " .. lineCount .. " Luau lines"
+				.. "  strict=" .. tostring(hasStrict)
+				.. "  return=" .. tostring(hasReturn))
+			passed += 1
+		end)
+
+		if not parseOk then
+			print("  FAIL " .. entry.name .. string.rep(" ", 30 - #entry.name) .. " " .. tostring(parseErr))
+		end
+	end
+
+	print("")
+	print("Self-emit: " .. passed .. "/" .. total .. " files emitted in Luau")
+
+	-- Print the Calculator Luau output for visual inspection
+	if passed >= 3 then
+		print("")
+		print("=== Calculator.cs → Luau Output ===")
+		local parser = SimpleParser.new(sources[3].source)
+		local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+		local emitter = SimpleEmitter.new()
+		local luauOutput = SimpleEmitter.Emit(emitter, compilationUnit)
+		if string.sub(luauOutput, #luauOutput, #luauOutput) == "\n" then
+			luauOutput = string.sub(luauOutput, 1, #luauOutput - 1)
+		end
+		for line in string.gmatch(luauOutput, "[^\n]*") do
+			print(line)
+		end
+	end
+
+	warn("[LUSharp-Test] Self-emit test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
@@ -999,4 +1187,5 @@ runExpandedParserTest()
 runSelfParseTest()
 runFullSelfParseTest()
 runEmitterTest()
+runSelfEmitTest()
 warn("[LUSharp-Test] All tests finished")

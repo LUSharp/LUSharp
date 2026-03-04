@@ -128,7 +128,7 @@ IfStatementSyntax.__index = IfStatementSyntax
 export type IfStatementSyntax = typeof(setmetatable({} :: IfStatementSyntax_self, IfStatementSyntax))
 
 function IfStatementSyntax.new(condition: ExpressionSyntax, thenBody: StatementSyntax, elseBody: StatementSyntax): IfStatementSyntax
-	local self = setmetatable(StatementSyntax.new(8803) :: any, IfStatementSyntax)
+	local self = setmetatable(StatementSyntax.new(8819) :: any, IfStatementSyntax)
 	self.Condition = nil :: any
 	self.ThenBody = nil :: any
 	self.ElseBody = nil :: any

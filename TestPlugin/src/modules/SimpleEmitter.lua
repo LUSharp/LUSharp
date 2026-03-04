@@ -656,16 +656,24 @@ function SimpleEmitter.EmitElseBody(self: SimpleEmitter, elseBody: StatementSynt
 		SimpleEmitter.AppendLine(self, "end")
 		return
 	end
-	local elseIf = elseBody
-	SimpleEmitter.AppendLine(self, "elseif " .. SimpleEmitter.EmitExpression(self, elseIf.Condition) .. " then")
-	SimpleEmitter.Indent(self)
-	SimpleEmitter.EmitBlockBody(self, elseIf.ThenBody)
-	SimpleEmitter.Dedent(self)
-	if elseIf.ElseBody ~= nil then
-		SimpleEmitter.EmitElseBody(self, elseIf.ElseBody)
-	else
-		SimpleEmitter.AppendLine(self, "end")
+	if elseBody.Kind == 8819 then
+		local elseIf = elseBody
+		SimpleEmitter.AppendLine(self, "elseif " .. SimpleEmitter.EmitExpression(self, elseIf.Condition) .. " then")
+		SimpleEmitter.Indent(self)
+		SimpleEmitter.EmitBlockBody(self, elseIf.ThenBody)
+		SimpleEmitter.Dedent(self)
+		if elseIf.ElseBody ~= nil then
+			SimpleEmitter.EmitElseBody(self, elseIf.ElseBody)
+		else
+			SimpleEmitter.AppendLine(self, "end")
+		end
+		return
 	end
+	SimpleEmitter.AppendLine(self, "else")
+	SimpleEmitter.Indent(self)
+	SimpleEmitter.EmitStatement(self, elseBody)
+	SimpleEmitter.Dedent(self)
+	SimpleEmitter.AppendLine(self, "end")
 end
 
 function SimpleEmitter.VisitBreakStatement(self: SimpleEmitter, node: BreakStatementSyntax): ()
