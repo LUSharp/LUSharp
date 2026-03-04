@@ -423,6 +423,32 @@ public class SyntaxWalker
         Visit(node.WhenFalse);
         _depth--;
     }
+
+    public virtual void VisitSwitchExpression(SwitchExpressionSyntax node)
+    {
+        _depth++;
+        Visit(node.GoverningExpression);
+        _depth--;
+        for (int i = 0; i < node.Arms.Length; i++)
+        {
+            _depth++;
+            node.Arms[i].AcceptWalker(this);
+            _depth--;
+        }
+    }
+
+    public virtual void VisitSwitchExpressionArm(SwitchExpressionArmSyntax node)
+    {
+        if (node.Pattern != null)
+        {
+            _depth++;
+            Visit(node.Pattern);
+            _depth--;
+        }
+        _depth++;
+        Visit(node.Expression);
+        _depth--;
+    }
 }
 
 /// <summary>
@@ -706,5 +732,18 @@ public class TreePrinter : SyntaxWalker
     {
         PrintNode("ConditionalExpression");
         base.VisitConditionalExpression(node);
+    }
+
+    public override void VisitSwitchExpression(SwitchExpressionSyntax node)
+    {
+        PrintNode("SwitchExpression (" + node.Arms.Length + " arms)");
+        base.VisitSwitchExpression(node);
+    }
+
+    public override void VisitSwitchExpressionArm(SwitchExpressionArmSyntax node)
+    {
+        string label = node.Pattern != null ? "case" : "default";
+        PrintNode("SwitchArm: " + label);
+        base.VisitSwitchExpressionArm(node);
     }
 }

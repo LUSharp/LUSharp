@@ -400,6 +400,67 @@ public class ConditionalExpressionSyntax : ExpressionSyntax
     }
 }
 
+public class SwitchExpressionArmSyntax : SyntaxNode
+{
+    public ExpressionSyntax Pattern { get; }
+    public ExpressionSyntax Expression { get; }
+
+    public SwitchExpressionArmSyntax(ExpressionSyntax pattern, ExpressionSyntax expression) : base(9025)
+    {
+        Pattern = pattern;
+        Expression = expression;
+    }
+
+    public override string Accept()
+    {
+        string pat = Pattern != null ? Pattern.Accept() : "_";
+        return pat + " => " + Expression.Accept();
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitSwitchExpressionArm(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "SwitchArm";
+    }
+}
+
+public class SwitchExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax GoverningExpression { get; }
+    public SwitchExpressionArmSyntax[] Arms { get; }
+
+    public SwitchExpressionSyntax(ExpressionSyntax governingExpression, SwitchExpressionArmSyntax[] arms) : base(9023)
+    {
+        GoverningExpression = governingExpression;
+        Arms = arms;
+    }
+
+    public override string Accept()
+    {
+        string result = GoverningExpression.Accept() + " switch { ";
+        for (int i = 0; i < Arms.Length; i++)
+        {
+            if (i > 0) result += ", ";
+            result += Arms[i].Accept();
+        }
+        return result + " }";
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitSwitchExpression(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "SwitchExpression(" + Arms.Length + " arms)";
+    }
+}
+
 public class CastExpressionSyntax : ExpressionSyntax
 {
     public string TypeName { get; }

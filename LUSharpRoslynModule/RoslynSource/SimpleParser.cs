@@ -686,6 +686,15 @@ public class SimpleParser
         string name = Current().Text;
         Advance();
 
+        // Handle dotted qualifiers: SimpleTokenizer.TokenInfo, System.Collections.Generic
+        while (!IsAtEnd() && Current().Kind == SyntaxKind.DotToken
+            && _position + 1 < _tokens.Length && _tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
+        {
+            Advance(); // skip .
+            name = name + "." + Current().Text;
+            Advance(); // skip identifier
+        }
+
         // Handle generic type parameters: List<int>, Dictionary<string, int>
         // We strip the generic args but preserve the base type name
         if (!IsAtEnd() && Current().Kind == SyntaxKind.LessThanToken)
@@ -1432,6 +1441,11 @@ public class SimpleParser
                     : (int)SyntaxKind.PostDecrementExpression;
                 expr = new PostfixUnaryExpressionSyntax(exprKind, expr, opKind);
             }
+            else if (Current().Kind == SyntaxKind.SwitchKeyword)
+            {
+                // Switch expression: expr switch { pattern => value, ... }
+                expr = ParseSwitchExpression(expr);
+            }
             else break;
         }
 
@@ -1557,6 +1571,52 @@ public class SimpleParser
         // Unknown — advance past it to avoid infinite loop
         var unknown = MakeSyntaxToken(Advance());
         return new LiteralExpressionSyntax(8753, unknown);
+    }
+
+    private SwitchExpressionSyntax ParseSwitchExpression(ExpressionSyntax governing)
+    {
+        Advance(); // skip 'switch'
+        Expect(SyntaxKind.OpenBraceToken);
+
+        var arms = new SwitchExpressionArmSyntax[64];
+        int armCount = 0;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+        {
+            if (armCount > 0 && Current().Kind == SyntaxKind.CommaToken)
+                Advance(); // skip comma between arms
+            if (Current().Kind == SyntaxKind.CloseBraceToken)
+                break;
+
+            // Parse pattern (or _ for discard)
+            ExpressionSyntax pattern = null;
+            if (Current().Text == "_")
+            {
+                Advance(); // skip _
+                pattern = null; // discard pattern
+            }
+            else
+            {
+                pattern = ParseExpression();
+            }
+
+            Expect(SyntaxKind.EqualsGreaterThanToken);
+            var value = ParseExpression();
+
+            if (armCount < 64)
+            {
+                arms[armCount] = new SwitchExpressionArmSyntax(pattern, value);
+                armCount++;
+            }
+        }
+
+        Expect(SyntaxKind.CloseBraceToken);
+
+        var result = new SwitchExpressionArmSyntax[armCount];
+        for (int i = 0; i < armCount; i++)
+            result[i] = arms[i];
+
+        return new SwitchExpressionSyntax(governing, result);
     }
 
     private ObjectCreationExpressionSyntax ParseObjectCreation()
