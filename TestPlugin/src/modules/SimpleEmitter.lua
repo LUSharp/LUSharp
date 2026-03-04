@@ -22,6 +22,12 @@ type SimpleEmitter_self = {
 	_hasInstanceMembers: boolean;
 	_typeNames: { string };
 	_typeCount: number;
+	_paramNames: { string };
+	_paramTypes: { string };
+	_paramCount: number;
+	_localNames: { string };
+	_localTypes: { string };
+	_localCount: number;
 }
 
 local SimpleEmitter = setmetatable({}, {__index = SyntaxWalker})
@@ -46,6 +52,12 @@ function SimpleEmitter.new(): SimpleEmitter
 	self._hasInstanceMembers = false
 	self._typeNames = {}
 	self._typeCount = 0
+	self._paramNames = {}
+	self._paramTypes = {}
+	self._paramCount = 0
+	self._localNames = {}
+	self._localTypes = {}
+	self._localCount = 0
 	self._output = ""
 	self._indent = 0
 	self._currentClassName = ""
@@ -62,6 +74,12 @@ function SimpleEmitter.new(): SimpleEmitter
 	self._hasInstanceMembers = false
 	self._typeNames = table.create(32)
 	self._typeCount = 0
+	self._paramNames = table.create(32)
+	self._paramTypes = table.create(32)
+	self._paramCount = 0
+	self._localNames = table.create(64)
+	self._localTypes = table.create(64)
+	self._localCount = 0
 	return self
 end
 
@@ -436,6 +454,17 @@ function SimpleEmitter.EmitConstructor(self: SimpleEmitter, className: string, c
 	end
 	SimpleEmitter.AppendLine(self, "function " .. className .. ".new(" .. parms .. "): " .. className)
 	SimpleEmitter.Indent(self)
+	local savedParamCount = self._paramCount
+	local savedLocalCount = self._localCount
+	self._paramCount = 0
+	self._localCount = 0
+	local i = 0
+	while i < #ctor.Parameters do
+		self._paramNames[self._paramCount + 1] = ctor.Parameters[i + 1].Name
+		self._paramTypes[self._paramCount + 1] = ctor.Parameters[i + 1].TypeName
+		self._paramCount = self._paramCount + 1
+		i += 1
+	end
 	if self._baseClassName ~= nil and ctor.BaseOrThisKeyword == "base" then
 		local baseArgs = ""
 		if ctor.InitializerArguments ~= nil then
@@ -493,6 +522,8 @@ function SimpleEmitter.EmitConstructor(self: SimpleEmitter, className: string, c
 		self._isStaticContext = savedStatic
 	end
 	SimpleEmitter.AppendLine(self, "return self")
+	self._paramCount = savedParamCount
+	self._localCount = savedLocalCount
 	SimpleEmitter.Dedent(self)
 	SimpleEmitter.AppendLine(self, "end")
 end
@@ -513,12 +544,25 @@ function SimpleEmitter.EmitMethod(self: SimpleEmitter, className: string, method
 	end
 	SimpleEmitter.AppendLine(self, "function " .. className .. "." .. method.Name .. "(" .. parms .. "): " .. retType)
 	SimpleEmitter.Indent(self)
+	local savedParamCount = self._paramCount
+	local savedLocalCount = self._localCount
+	self._paramCount = 0
+	self._localCount = 0
+	local i = 0
+	while i < #method.Parameters do
+		self._paramNames[self._paramCount + 1] = method.Parameters[i + 1].Name
+		self._paramTypes[self._paramCount + 1] = method.Parameters[i + 1].TypeName
+		self._paramCount = self._paramCount + 1
+		i += 1
+	end
 	local savedStatic = self._isStaticContext
 	self._isStaticContext = method.IsStatic or isAllStatic
 	if method.Body ~= nil then
 		SimpleEmitter.EmitStatements(self, method.Body.Statements)
 	end
 	self._isStaticContext = savedStatic
+	self._paramCount = savedParamCount
+	self._localCount = savedLocalCount
 	SimpleEmitter.Dedent(self)
 	SimpleEmitter.AppendLine(self, "end")
 end
@@ -613,6 +657,11 @@ function SimpleEmitter.EmitStatement(self: SimpleEmitter, stmt: StatementSyntax)
 	if kind == 8793 then
 		local local = stmt
 		local luauType = SimpleEmitter.MapType(self, local.TypeName)
+		if self._localCount < 64 then
+			self._localNames[self._localCount + 1] = local.VariableName
+			self._localTypes[self._localCount + 1] = local.TypeName
+			self._localCount = self._localCount + 1
+		end
 		if local.Initializer ~= nil then
 			local init = SimpleEmitter.EmitExpression(self, local.Initializer)
 			SimpleEmitter.AppendLine(self, "local " .. local.VariableName .. ": " .. luauType .. " = " .. init)
@@ -637,6 +686,11 @@ function SimpleEmitter.EmitStatement(self: SimpleEmitter, stmt: StatementSyntax)
 	end
 	if kind == 8812 then
 		local fes = stmt
+		if self._localCount < 64 then
+			self._localNames[self._localCount + 1] = fes.Identifier
+			self._localTypes[self._localCount + 1] = fes.TypeName
+			self._localCount = self._localCount + 1
+		end
 		SimpleEmitter.AppendLine(self, "for _, " .. fes.Identifier .. " in " .. SimpleEmitter.EmitExpression(self, fes.Expression) .. " do")
 		SimpleEmitter.Indent(self)
 		SimpleEmitter.EmitBlockBody(self, fes.Body)
@@ -1119,14 +1173,32 @@ function SimpleEmitter.EmitBinary(self: SimpleEmitter, expr: ExpressionSyntax): 
 		if bin.Right.Kind == 8751 then
 			isStringConcat = true
 		end
+		if SimpleEmitter.ContainsConcatOp(self, left) then
+			isStringConcat = true
+		end
+		if SimpleEmitter.ContainsConcatOp(self, right) then
+			isStringConcat = true
+		end
 		if bin.Left.Kind >= 8668 and bin.Left.Kind <= 8688 then
-			local leftBin = bin.Left
-			if leftBin.OperatorToken.Text == "+" and leftBin.Left.Kind == 8751 then
+			if SimpleEmitter.HasStringLiteralInChain(self, bin.Left) then
 				isStringConcat = true
 			end
 		end
+		if bin.Right.Kind >= 8668 and bin.Right.Kind <= 8688 then
+			if SimpleEmitter.HasStringLiteralInChain(self, bin.Right) then
+				isStringConcat = true
+			end
+		end
+		if not isStringConcat and SimpleEmitter.HasStringTypedOperand(self, bin.Left) then
+			isStringConcat = true
+		end
+		if not isStringConcat and SimpleEmitter.HasStringTypedOperand(self, bin.Right) then
+			isStringConcat = true
+		end
 		if isStringConcat then
-			return left .. " .. " .. right
+			local lVal = SimpleEmitter.WrapCharForConcat(self, bin.Left, left)
+			local rVal = SimpleEmitter.WrapCharForConcat(self, bin.Right, right)
+			return lVal .. " .. " .. rVal
 		end
 	end
 	if op == "&" then
@@ -1147,6 +1219,81 @@ function SimpleEmitter.EmitBinary(self: SimpleEmitter, expr: ExpressionSyntax): 
 	return left .. " " .. op .. " " .. right
 end
 
+function SimpleEmitter.HasStringLiteralInChain(self: SimpleEmitter, expr: ExpressionSyntax): boolean
+	if expr.Kind == 8751 then
+		return true
+	end
+	if expr.Kind >= 8668 and expr.Kind <= 8688 then
+		local bin = expr
+		if bin.OperatorToken.Text == "+" then
+			if SimpleEmitter.HasStringLiteralInChain(self, bin.Left) then
+				return true
+			end
+			if SimpleEmitter.HasStringLiteralInChain(self, bin.Right) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function SimpleEmitter.ContainsConcatOp(self: SimpleEmitter, emitted: string): boolean
+	local idx = 0
+	while idx <= #emitted - 4 do
+		if emitted[idx + 1] == 32 and emitted[idx + 1 + 1] == 46 and emitted[idx + 2 + 1] == 46 and emitted[idx + 3 + 1] == 32 then
+			return true
+		end
+		idx += 1
+	end
+	return false
+end
+
+function SimpleEmitter.HasStringTypedOperand(self: SimpleEmitter, expr: ExpressionSyntax): boolean
+	if expr.Kind == 8616 then
+		local id = expr
+		local name = id.Identifier.Text
+		local varType = SimpleEmitter.GetVariableType(self, name)
+		if varType ~= nil then
+			return SimpleEmitter.IsStringType(self, varType)
+		end
+		if not self._isStaticContext then
+			local fieldType = SimpleEmitter.GetFieldType(self, name)
+			if fieldType ~= nil then
+				return SimpleEmitter.IsStringType(self, fieldType)
+			end
+		end
+	end
+	return false
+end
+
+function SimpleEmitter.IsCharTypedExpression(self: SimpleEmitter, expr: ExpressionSyntax): boolean
+	if expr.Kind == 8616 then
+		local id = expr
+		local name = id.Identifier.Text
+		local varType = SimpleEmitter.GetVariableType(self, name)
+		if varType == "char" then
+			return true
+		end
+	end
+	return false
+end
+
+function SimpleEmitter.WrapCharForConcat(self: SimpleEmitter, expr: ExpressionSyntax, emitted: string): string
+	if expr.Kind == 8752 then
+		return "string.char(" .. emitted .. ")"
+	end
+	if SimpleEmitter.IsCharTypedExpression(self, expr) then
+		return "string.char(" .. emitted .. ")"
+	end
+	if expr.Kind == 8640 then
+		local cast = expr
+		if cast.TypeName == "char" then
+			return "string.char(" .. emitted .. ")"
+		end
+	end
+	return emitted
+end
+
 function SimpleEmitter.EmitAssignment(self: SimpleEmitter, expr: ExpressionSyntax): string
 	local assign = expr
 	local left = SimpleEmitter.EmitExpression(self, assign.Left)
@@ -1156,6 +1303,17 @@ function SimpleEmitter.EmitAssignment(self: SimpleEmitter, expr: ExpressionSynta
 		return left .. " = " .. right
 	end
 	if kind == 8715 then
+		if assign.Right.Kind == 8751 then
+			return left .. " ..= " .. right
+		end
+		if assign.Right.Kind >= 8668 and assign.Right.Kind <= 8688 then
+			if SimpleEmitter.HasStringLiteralInChain(self, assign.Right) then
+				return left .. " ..= " .. right
+			end
+		end
+		if SimpleEmitter.ContainsConcatOp(self, right) then
+			return left .. " ..= " .. right
+		end
 		return left .. " += " .. right
 	end
 	if kind == 8716 then
@@ -1244,6 +1402,58 @@ function SimpleEmitter.MapMathMember(self: SimpleEmitter, member: string): strin
 	return nil
 end
 
+function SimpleEmitter.IsKnownVariable(self: SimpleEmitter, name: string): boolean
+	local i = 0
+	while i < self._paramCount do
+		if self._paramNames[i + 1] == name then
+			return true
+		end
+		i += 1
+	end
+	local i = 0
+	while i < self._localCount do
+		if self._localNames[i + 1] == name then
+			return true
+		end
+		i += 1
+	end
+	return false
+end
+
+function SimpleEmitter.IsInstanceCallTarget(self: SimpleEmitter, target: ExpressionSyntax, emittedObj: string): boolean
+	if emittedObj == "self" then
+		return true
+	end
+	if #emittedObj > 5 and string.sub(emittedObj, 0 + 1, 0 + 5) == "self." then
+		return true
+	end
+	if target.Kind == 8690 then
+		return true
+	end
+	if target.Kind == 8616 then
+		local id = target
+		if SimpleEmitter.IsKnownVariable(self, id.Identifier.Text) then
+			return true
+		end
+	end
+	if target.Kind == 8689 then
+		local inner = target
+		if inner.Expression.Kind == 8616 then
+			local leftId = inner.Expression
+			if SimpleEmitter.IsKnownVariable(self, leftId.Identifier.Text) then
+				return true
+			end
+		end
+		if inner.Expression.Kind == 8616 then
+			local leftId2 = inner.Expression
+			if leftId2.Identifier.Text == "self" or leftId2.Identifier.Text == "this" then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function SimpleEmitter.EmitInvocation(self: SimpleEmitter, expr: ExpressionSyntax): string
 	local inv = expr
 	local args = ""
@@ -1329,6 +1539,9 @@ function SimpleEmitter.EmitInvocation(self: SimpleEmitter, expr: ExpressionSynta
 			end
 			return self._baseClassName .. "." .. methodName .. "(self)"
 		end
+		if SimpleEmitter.IsInstanceCallTarget(self, ma.Expression, obj) then
+			return obj .. ":" .. methodName .. "(" .. args .. ")"
+		end
 		return obj .. "." .. methodName .. "(" .. args .. ")"
 	end
 	local callee = SimpleEmitter.EmitExpression(self, inv.Expression)
@@ -1380,10 +1593,106 @@ function SimpleEmitter.EmitObjectCreation(self: SimpleEmitter, expr: ExpressionS
 	return typeName .. ".new(" .. args .. ")"
 end
 
+function SimpleEmitter.GetVariableType(self: SimpleEmitter, name: string): string
+	local i = 0
+	while i < self._paramCount do
+		if self._paramNames[i + 1] == name then
+			return self._paramTypes[i + 1]
+		end
+		i += 1
+	end
+	local i = 0
+	while i < self._localCount do
+		if self._localNames[i + 1] == name then
+			return self._localTypes[i + 1]
+		end
+		i += 1
+	end
+	return nil
+end
+
+function SimpleEmitter.IsStringType(self: SimpleEmitter, typeName: string): boolean
+	if typeName == nil then
+		return false
+	end
+	if typeName == "string" then
+		return true
+	end
+	if typeName == "String" then
+		return true
+	end
+	return false
+end
+
+function SimpleEmitter.GetFieldType(self: SimpleEmitter, fieldName: string): string
+	local i = 0
+	while i < self._fieldCount do
+		if self._fieldNames[i + 1] == fieldName then
+			return self._fieldTypes[i + 1]
+		end
+		i += 1
+	end
+	return nil
+end
+
+function SimpleEmitter.IsStringExpression(self: SimpleEmitter, expr: ExpressionSyntax): boolean
+	if expr.Kind == 8616 then
+		local id = expr
+		local name = id.Identifier.Text
+		local varType = SimpleEmitter.GetVariableType(self, name)
+		if varType ~= nil then
+			return SimpleEmitter.IsStringType(self, varType)
+		end
+		if not self._isStaticContext then
+			local fieldType = SimpleEmitter.GetFieldType(self, name)
+			if fieldType ~= nil then
+				return SimpleEmitter.IsStringType(self, fieldType)
+			end
+		end
+	end
+	if expr.Kind == 8689 then
+		local ma = expr
+		if ma.Expression.Kind == 8616 then
+			local leftId = ma.Expression
+			local leftName = leftId.Identifier.Text
+			if leftName == "this" or leftName == "self" then
+				local fieldType = SimpleEmitter.GetFieldType(self, ma.Name.Text)
+				if fieldType ~= nil then
+					return SimpleEmitter.IsStringType(self, fieldType)
+				end
+			end
+		end
+	end
+	return false
+end
+
 function SimpleEmitter.EmitElementAccess(self: SimpleEmitter, expr: ExpressionSyntax): string
 	local ea = expr
 	local obj = SimpleEmitter.EmitExpression(self, ea.Expression)
 	local index = SimpleEmitter.EmitExpression(self, ea.Index)
+	local isStringIndex = SimpleEmitter.IsStringExpression(self, ea.Expression)
+	if isStringIndex then
+		if ea.Index.Kind == 8750 then
+			local lit = ea.Index
+			local numText = lit.Token.Text
+			local numVal = 0
+			local isSimple = true
+			local i = 0
+			while i < #numText do
+				local c = numText[i + 1]
+				if c >= 48 and c <= 57 then
+					numVal = numVal * 10 + (c - 48)
+				else
+					isSimple = false
+				end
+				i += 1
+			end
+			if isSimple then
+				return "string.byte(" .. obj .. ", " .. SimpleEmitter.IntToString(self, numVal .. 1) .. ")"
+			end
+		end
+		return "string.byte(" .. obj .. ", " .. index .. " + 1)"
+	end
 	if ea.Index.Kind == 8750 then
 		local lit = ea.Index
 		local numText = lit.Token.Text

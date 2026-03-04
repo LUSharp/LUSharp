@@ -278,6 +278,10 @@ internal class Program
             case "transpiler":
                 Reference.TranspilerReference.PrintAll();
                 break;
+            case "emit-file":
+                if (args.Length < 2) { Console.Error.WriteLine("Usage: reference emit-file <FileName.cs>"); return 1; }
+                Reference.SelfEmitReference.EmitSingleFile(args[1]);
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;

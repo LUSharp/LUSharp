@@ -37,6 +37,16 @@ public class SimpleEmitter : SyntaxWalker
     private string[] _typeNames;
     private int _typeCount;
 
+    // Parameter names and types for the current method (used for colon-call and string indexing detection)
+    private string[] _paramNames;
+    private string[] _paramTypes;
+    private int _paramCount;
+
+    // Local variable names and types for the current method
+    private string[] _localNames;
+    private string[] _localTypes;
+    private int _localCount;
+
     public SimpleEmitter()
     {
         _output = "";
@@ -55,6 +65,12 @@ public class SimpleEmitter : SyntaxWalker
         _hasInstanceMembers = false;
         _typeNames = new string[32];
         _typeCount = 0;
+        _paramNames = new string[32];
+        _paramTypes = new string[32];
+        _paramCount = 0;
+        _localNames = new string[64];
+        _localTypes = new string[64];
+        _localCount = 0;
     }
 
     public string GetOutput()
@@ -492,6 +508,18 @@ public class SimpleEmitter : SyntaxWalker
         AppendLine("function " + className + ".new(" + parms + "): " + className);
         Indent();
 
+        // Save and set up parameter/local tracking for constructor scope
+        int savedParamCount = _paramCount;
+        int savedLocalCount = _localCount;
+        _paramCount = 0;
+        _localCount = 0;
+        for (int i = 0; i < ctor.Parameters.Length; i++)
+        {
+            _paramNames[_paramCount] = ctor.Parameters[i].Name;
+            _paramTypes[_paramCount] = ctor.Parameters[i].TypeName;
+            _paramCount = _paramCount + 1;
+        }
+
         if (_baseClassName != null && ctor.BaseOrThisKeyword == "base")
         {
             // Inheritance with explicit base(args): call parent constructor
@@ -556,6 +584,8 @@ public class SimpleEmitter : SyntaxWalker
         }
 
         AppendLine("return self");
+        _paramCount = savedParamCount;
+        _localCount = savedLocalCount;
         Dedent();
         AppendLine("end");
     }
@@ -579,6 +609,18 @@ public class SimpleEmitter : SyntaxWalker
         AppendLine("function " + className + "." + method.Name + "(" + parms + "): " + retType);
         Indent();
 
+        // Save and set up parameter/local tracking for this method scope
+        int savedParamCount = _paramCount;
+        int savedLocalCount = _localCount;
+        _paramCount = 0;
+        _localCount = 0;
+        for (int i = 0; i < method.Parameters.Length; i++)
+        {
+            _paramNames[_paramCount] = method.Parameters[i].Name;
+            _paramTypes[_paramCount] = method.Parameters[i].TypeName;
+            _paramCount = _paramCount + 1;
+        }
+
         bool savedStatic = _isStaticContext;
         _isStaticContext = method.IsStatic || isAllStatic;
 
@@ -588,6 +630,8 @@ public class SimpleEmitter : SyntaxWalker
         }
 
         _isStaticContext = savedStatic;
+        _paramCount = savedParamCount;
+        _localCount = savedLocalCount;
         Dedent();
         AppendLine("end");
     }
@@ -717,6 +761,15 @@ public class SimpleEmitter : SyntaxWalker
         {
             LocalDeclarationStatementSyntax local = (LocalDeclarationStatementSyntax)stmt;
             string luauType = MapType(local.TypeName);
+
+            // Track local variable for colon-call and string indexing detection
+            if (_localCount < 64)
+            {
+                _localNames[_localCount] = local.VariableName;
+                _localTypes[_localCount] = local.TypeName;
+                _localCount = _localCount + 1;
+            }
+
             if (local.Initializer != null)
             {
                 string init = EmitExpression(local.Initializer);
@@ -750,6 +803,13 @@ public class SimpleEmitter : SyntaxWalker
         if (kind == 8812) // ForEachStatement
         {
             ForEachStatementSyntax fes = (ForEachStatementSyntax)stmt;
+            // Track foreach variable for colon-call and string indexing detection
+            if (_localCount < 64)
+            {
+                _localNames[_localCount] = fes.Identifier;
+                _localTypes[_localCount] = fes.TypeName;
+                _localCount = _localCount + 1;
+            }
             AppendLine("for _, " + fes.Identifier + " in " + EmitExpression(fes.Expression) + " do");
             Indent();
             EmitBlockBody(fes.Body);
@@ -1391,24 +1451,41 @@ public class SimpleEmitter : SyntaxWalker
             return "if " + left + " ~= nil then " + left + " else " + right;
         }
 
-        // String concatenation: + where either operand is a string literal
+        // String concatenation: + where any operand in the chain is a string literal
+        // or a known string-typed variable
         if (op == "+")
         {
             bool isStringConcat = false;
             if (bin.Left.Kind == 8751) isStringConcat = true;
             if (bin.Right.Kind == 8751) isStringConcat = true;
-            // Propagate through left-hand + chains
+            // Check if the already-emitted left/right contain ".." (propagated from sub-expr)
+            if (ContainsConcatOp(left)) isStringConcat = true;
+            if (ContainsConcatOp(right)) isStringConcat = true;
+            // Propagate through left-hand + chains: check if any operand is a string literal
             if (bin.Left.Kind >= 8668 && bin.Left.Kind <= 8688)
             {
-                BinaryExpressionSyntax leftBin = (BinaryExpressionSyntax)bin.Left;
-                if (leftBin.OperatorToken.Text == "+" && leftBin.Left.Kind == 8751)
+                if (HasStringLiteralInChain(bin.Left))
                 {
                     isStringConcat = true;
                 }
             }
+            // Propagate through right-hand + chains
+            if (bin.Right.Kind >= 8668 && bin.Right.Kind <= 8688)
+            {
+                if (HasStringLiteralInChain(bin.Right))
+                {
+                    isStringConcat = true;
+                }
+            }
+            // Type-aware: check if either operand is a known string-typed variable
+            if (!isStringConcat && HasStringTypedOperand(bin.Left)) isStringConcat = true;
+            if (!isStringConcat && HasStringTypedOperand(bin.Right)) isStringConcat = true;
             if (isStringConcat)
             {
-                return left + " .. " + right;
+                // Wrap char-typed operands with string.char() for correct concat
+                string lVal = WrapCharForConcat(bin.Left, left);
+                string rVal = WrapCharForConcat(bin.Right, right);
+                return lVal + " .. " + rVal;
             }
         }
 
@@ -1423,6 +1500,101 @@ public class SimpleEmitter : SyntaxWalker
         return left + " " + op + " " + right;
     }
 
+    /// <summary>
+    /// Recursively check if any node in a binary + chain contains a string literal.
+    /// </summary>
+    private bool HasStringLiteralInChain(ExpressionSyntax expr)
+    {
+        if (expr.Kind == 8751) return true; // StringLiteral
+        if (expr.Kind >= 8668 && expr.Kind <= 8688)
+        {
+            BinaryExpressionSyntax bin = (BinaryExpressionSyntax)expr;
+            if (bin.OperatorToken.Text == "+")
+            {
+                if (HasStringLiteralInChain(bin.Left)) return true;
+                if (HasStringLiteralInChain(bin.Right)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Check if an already-emitted string contains " .. " (indicating a prior concat was detected).
+    /// </summary>
+    private bool ContainsConcatOp(string emitted)
+    {
+        int idx = 0;
+        while (idx <= emitted.Length - 4)
+        {
+            if (emitted[idx] == ' ' && emitted[idx + 1] == '.' && emitted[idx + 2] == '.' && emitted[idx + 3] == ' ')
+            {
+                return true;
+            }
+            idx++;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the expression is a known string-typed variable (param, local, or field).
+    /// </summary>
+    private bool HasStringTypedOperand(ExpressionSyntax expr)
+    {
+        if (expr.Kind == 8616) // IdentifierName
+        {
+            IdentifierNameSyntax id = (IdentifierNameSyntax)expr;
+            string name = id.Identifier.Text;
+            string varType = GetVariableType(name);
+            if (varType != null) return IsStringType(varType);
+            if (!_isStaticContext)
+            {
+                string fieldType = GetFieldType(name);
+                if (fieldType != null) return IsStringType(fieldType);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the expression is a known char-typed variable.
+    /// </summary>
+    private bool IsCharTypedExpression(ExpressionSyntax expr)
+    {
+        if (expr.Kind == 8616) // IdentifierName
+        {
+            IdentifierNameSyntax id = (IdentifierNameSyntax)expr;
+            string name = id.Identifier.Text;
+            string varType = GetVariableType(name);
+            if (varType == "char") return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Wraps a char-typed expression in string.char() for use in string concatenation.
+    /// </summary>
+    private string WrapCharForConcat(ExpressionSyntax expr, string emitted)
+    {
+        if (expr.Kind == 8752) // CharacterLiteralExpression → already a number, wrap
+        {
+            return "string.char(" + emitted + ")";
+        }
+        if (IsCharTypedExpression(expr))
+        {
+            return "string.char(" + emitted + ")";
+        }
+        // Cast expression to char: (char)(expr) → string.char(expr)
+        if (expr.Kind == 8640) // CastExpression
+        {
+            CastExpressionSyntax cast = (CastExpressionSyntax)expr;
+            if (cast.TypeName == "char")
+            {
+                return "string.char(" + emitted + ")";
+            }
+        }
+        return emitted;
+    }
+
     // ── Assignment expression ─────────────────────────────────
     private string EmitAssignment(ExpressionSyntax expr)
     {
@@ -1432,7 +1604,17 @@ public class SimpleEmitter : SyntaxWalker
         int kind = expr.Kind;
 
         if (kind == 8714) return left + " = " + right;
-        if (kind == 8715) return left + " += " + right;
+        if (kind == 8715)
+        {
+            // += on strings → ..=
+            if (assign.Right.Kind == 8751) return left + " ..= " + right;
+            if (assign.Right.Kind >= 8668 && assign.Right.Kind <= 8688)
+            {
+                if (HasStringLiteralInChain(assign.Right)) return left + " ..= " + right;
+            }
+            if (ContainsConcatOp(right)) return left + " ..= " + right;
+            return left + " += " + right;
+        }
         if (kind == 8716) return left + " -= " + right;
         if (kind == 8717) return left + " *= " + right;
         if (kind == 8718) return left + " /= " + right;
@@ -1501,6 +1683,68 @@ public class SimpleEmitter : SyntaxWalker
         if (member == "PI") return "math.pi";
         if (member == "E") return "math.exp(1)";
         return null;
+    }
+
+    /// <summary>
+    /// Returns true if the given identifier name is a known variable (parameter or local),
+    /// meaning method calls on it should use colon syntax.
+    /// </summary>
+    private bool IsKnownVariable(string name)
+    {
+        for (int i = 0; i < _paramCount; i++)
+        {
+            if (_paramNames[i] == name) return true;
+        }
+        for (int i = 0; i < _localCount; i++)
+        {
+            if (_localNames[i] == name) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the expression on the left of a member-access call is an instance
+    /// (should use colon syntax) rather than a type name (should use dot syntax).
+    /// Heuristic: self, self.field, known param/local, element access → instance.
+    /// Single uppercase identifier not in params/locals → type name → dot.
+    /// </summary>
+    private bool IsInstanceCallTarget(ExpressionSyntax target, string emittedObj)
+    {
+        // self → always instance
+        if (emittedObj == "self") return true;
+
+        // self.field → instance
+        if (emittedObj.Length > 5 && emittedObj.Substring(0, 5) == "self.") return true;
+
+        // Element access result (e.g. self.Items[i + 1]) → instance
+        if (target.Kind == 8690) return true; // ElementAccess
+
+        // Known parameter or local variable → instance
+        if (target.Kind == 8616) // IdentifierName
+        {
+            IdentifierNameSyntax id = (IdentifierNameSyntax)target;
+            if (IsKnownVariable(id.Identifier.Text)) return true;
+        }
+
+        // Member access on a known variable (e.g. walker.Something) → instance
+        if (target.Kind == 8689) // MemberAccess
+        {
+            MemberAccessExpressionSyntax inner = (MemberAccessExpressionSyntax)target;
+            if (inner.Expression.Kind == 8616) // left side is identifier
+            {
+                IdentifierNameSyntax leftId = (IdentifierNameSyntax)inner.Expression;
+                if (IsKnownVariable(leftId.Identifier.Text)) return true;
+            }
+            // Recursive: if left side is self → instance
+            if (inner.Expression.Kind == 8616)
+            {
+                IdentifierNameSyntax leftId2 = (IdentifierNameSyntax)inner.Expression;
+                if (leftId2.Identifier.Text == "self" || leftId2.Identifier.Text == "this") return true;
+            }
+        }
+
+        // Default: single uppercase identifier → likely type name → dot
+        return false;
     }
 
     // ── Invocation ────────────────────────────────────────────
@@ -1628,6 +1872,13 @@ public class SimpleEmitter : SyntaxWalker
                 return _baseClassName + "." + methodName + "(self)";
             }
 
+            // Determine colon vs dot syntax
+            if (IsInstanceCallTarget(ma.Expression, obj))
+            {
+                // Instance call: obj:Method(args)
+                return obj + ":" + methodName + "(" + args + ")";
+            }
+
             return obj + "." + methodName + "(" + args + ")";
         }
 
@@ -1693,6 +1944,87 @@ public class SimpleEmitter : SyntaxWalker
         return typeName + ".new(" + args + ")";
     }
 
+    /// <summary>
+    /// Returns the C# type name for an identifier if it is a known variable.
+    /// Checks params, locals, and instance fields (via self.X).
+    /// Returns null if not found.
+    /// </summary>
+    private string GetVariableType(string name)
+    {
+        for (int i = 0; i < _paramCount; i++)
+        {
+            if (_paramNames[i] == name) return _paramTypes[i];
+        }
+        for (int i = 0; i < _localCount; i++)
+        {
+            if (_localNames[i] == name) return _localTypes[i];
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Returns true if the given C# type name is a string type.
+    /// </summary>
+    private bool IsStringType(string typeName)
+    {
+        if (typeName == null) return false;
+        if (typeName == "string") return true;
+        if (typeName == "String") return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns the C# type of an instance field by name, or null if not found.
+    /// </summary>
+    private string GetFieldType(string fieldName)
+    {
+        for (int i = 0; i < _fieldCount; i++)
+        {
+            if (_fieldNames[i] == fieldName) return _fieldTypes[i];
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Determines if the expression being indexed is a string.
+    /// Checks identifier types (params, locals, fields) and self.field types.
+    /// </summary>
+    private bool IsStringExpression(ExpressionSyntax expr)
+    {
+        // Simple identifier: check params, locals, then fields
+        if (expr.Kind == 8616) // IdentifierName
+        {
+            IdentifierNameSyntax id = (IdentifierNameSyntax)expr;
+            string name = id.Identifier.Text;
+            string varType = GetVariableType(name);
+            if (varType != null) return IsStringType(varType);
+            // Also check instance fields (bare field access without this.)
+            if (!_isStaticContext)
+            {
+                string fieldType = GetFieldType(name);
+                if (fieldType != null) return IsStringType(fieldType);
+            }
+        }
+
+        // Member access: self.field or this.field → check field types
+        if (expr.Kind == 8689) // MemberAccess
+        {
+            MemberAccessExpressionSyntax ma = (MemberAccessExpressionSyntax)expr;
+            if (ma.Expression.Kind == 8616) // left is identifier
+            {
+                IdentifierNameSyntax leftId = (IdentifierNameSyntax)ma.Expression;
+                string leftName = leftId.Identifier.Text;
+                if (leftName == "this" || leftName == "self")
+                {
+                    string fieldType = GetFieldType(ma.Name.Text);
+                    if (fieldType != null) return IsStringType(fieldType);
+                }
+            }
+        }
+
+        return false;
+    }
+
     // ── Element access ────────────────────────────────────────
     private string EmitElementAccess(ExpressionSyntax expr)
     {
@@ -1700,7 +2032,39 @@ public class SimpleEmitter : SyntaxWalker
         string obj = EmitExpression(ea.Expression);
         string index = EmitExpression(ea.Index);
 
-        // Convert 0-based literal index to 1-based
+        // Detect string character indexing: str[i] → string.byte(str, i + 1)
+        bool isStringIndex = IsStringExpression(ea.Expression);
+
+        if (isStringIndex)
+        {
+            // Convert 0-based literal index to 1-based for string.byte
+            if (ea.Index.Kind == 8750) // NumericLiteral
+            {
+                LiteralExpressionSyntax lit = (LiteralExpressionSyntax)ea.Index;
+                string numText = lit.Token.Text;
+                int numVal = 0;
+                bool isSimple = true;
+                for (int i = 0; i < numText.Length; i++)
+                {
+                    char c = numText[i];
+                    if (c >= '0' && c <= '9')
+                    {
+                        numVal = numVal * 10 + (c - '0');
+                    }
+                    else
+                    {
+                        isSimple = false;
+                    }
+                }
+                if (isSimple)
+                {
+                    return "string.byte(" + obj + ", " + IntToString(numVal + 1) + ")";
+                }
+            }
+            return "string.byte(" + obj + ", " + index + " + 1)";
+        }
+
+        // Non-string: regular array indexing with 0→1 conversion
         if (ea.Index.Kind == 8750) // NumericLiteral
         {
             LiteralExpressionSyntax lit = (LiteralExpressionSyntax)ea.Index;

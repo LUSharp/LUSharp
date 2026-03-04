@@ -136,6 +136,29 @@ public static class SelfEmitReference
         Console.WriteLine($"Self-emit: {passed}/{passed + failed} files emitted successfully");
     }
 
+    public static void EmitSingleFile(string targetFileName)
+    {
+        var projectDir = FindProjectDirectory();
+        if (projectDir == null) { Console.Error.WriteLine("Error: project dir not found"); return; }
+        var roslynSourceDir = Path.Combine(projectDir, "RoslynSource");
+        var assembly = CompileSourceFiles(roslynSourceDir);
+        if (assembly == null) { Console.Error.WriteLine("Compile failed"); return; }
+
+        var parserType = assembly.GetType("RoslynLuau.SimpleParser")!;
+        var emitterType = assembly.GetType("RoslynLuau.SimpleEmitter")!;
+        var parseMethod = parserType.GetMethod("ParseCompilationUnit")!;
+        var emitMethod = emitterType.GetMethod("Emit")!;
+
+        var filePath = Path.Combine(roslynSourceDir, targetFileName);
+        if (!File.Exists(filePath)) { Console.Error.WriteLine($"File not found: {filePath}"); return; }
+        var source = File.ReadAllText(filePath);
+        var parser = Activator.CreateInstance(parserType, source);
+        var cu = parseMethod.Invoke(parser, null);
+        var emitter = Activator.CreateInstance(emitterType);
+        var output = (string)emitMethod.Invoke(emitter, new[] { cu })!;
+        Console.Write(output);
+    }
+
     private static Assembly? CompileSourceFiles(string sourceDir)
     {
         var syntaxTrees = new List<Microsoft.CodeAnalysis.SyntaxTree>();
