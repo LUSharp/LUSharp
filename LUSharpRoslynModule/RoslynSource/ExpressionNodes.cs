@@ -179,3 +179,97 @@ public class AssignmentExpressionSyntax : ExpressionSyntax
         return "Assignment(" + Left.ToDisplayString() + " " + OperatorToken.Text + " " + Right.ToDisplayString() + ")";
     }
 }
+
+public class ObjectCreationExpressionSyntax : ExpressionSyntax
+{
+    public string TypeName { get; }
+    public ExpressionSyntax[] Arguments { get; }
+
+    public ObjectCreationExpressionSyntax(string typeName, ExpressionSyntax[] arguments) : base(8649)
+    {
+        TypeName = typeName;
+        Arguments = arguments;
+    }
+
+    public override string Accept()
+    {
+        string args = "";
+        for (int i = 0; i < Arguments.Length; i++)
+        {
+            if (i > 0) args += ", ";
+            args += Arguments[i].Accept();
+        }
+        return "new " + TypeName + "(" + args + ")";
+    }
+
+    public override string ToDisplayString()
+    {
+        return "New(" + TypeName + ")";
+    }
+}
+
+public class LambdaExpressionSyntax : ExpressionSyntax
+{
+    public string[] ParameterNames { get; }
+    public ExpressionSyntax ExpressionBody { get; }
+    public StatementSyntax BlockBody { get; }
+
+    public LambdaExpressionSyntax(string[] parameterNames, ExpressionSyntax expressionBody, StatementSyntax blockBody) : base(8643)
+    {
+        ParameterNames = parameterNames;
+        ExpressionBody = expressionBody;
+        BlockBody = blockBody;
+    }
+
+    public override string Accept()
+    {
+        string parms = "";
+        if (ParameterNames.Length == 1)
+        {
+            parms = ParameterNames[0];
+        }
+        else
+        {
+            parms = "(";
+            for (int i = 0; i < ParameterNames.Length; i++)
+            {
+                if (i > 0) parms += ", ";
+                parms += ParameterNames[i];
+            }
+            parms += ")";
+        }
+
+        if (ExpressionBody != null)
+            return parms + " => " + ExpressionBody.Accept();
+        if (BlockBody != null)
+            return parms + " => " + BlockBody.Accept();
+        return parms + " => {}";
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Lambda(" + ParameterNames.Length + " params)";
+    }
+}
+
+public class CastExpressionSyntax : ExpressionSyntax
+{
+    public string TypeName { get; }
+    public ExpressionSyntax Expression { get; }
+
+    public CastExpressionSyntax(string typeName, ExpressionSyntax expression) : base(8640)
+    {
+        TypeName = typeName;
+        Expression = expression;
+    }
+
+    public override string Accept()
+    {
+        return "(" + TypeName + ")" + Expression.Accept();
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Cast(" + TypeName + ")";
+    }
+}

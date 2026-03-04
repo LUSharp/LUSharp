@@ -992,9 +992,42 @@ public class SimpleParser
             return new LiteralExpressionSyntax(8754, token);
         }
 
-        // Parenthesized expression
+        // new keyword → object creation
+        if (kind == SyntaxKind.NewKeyword)
+        {
+            return ParseObjectCreation();
+        }
+
+        // Parenthesized expression or cast
         if (kind == SyntaxKind.OpenParenToken)
         {
+            // Look ahead to detect cast: (Type)expr
+            int saved = _position;
+            Advance(); // skip (
+            if (!IsAtEnd() && IsTypeStart(Current().Kind))
+            {
+                string possibleType = Current().Text;
+                int savedInner = _position;
+                Advance();
+                // Check for closing paren right after type name
+                if (!IsAtEnd() && Current().Kind == SyntaxKind.CloseParenToken)
+                {
+                    // Check if next token starts an expression (not an operator)
+                    int savedAfterParen = _position;
+                    Advance(); // skip )
+                    if (!IsAtEnd() && IsExpressionStart(Current().Kind))
+                    {
+                        // It's a cast
+                        var operand = ParseUnary();
+                        return new CastExpressionSyntax(possibleType, operand);
+                    }
+                    _position = savedAfterParen; // not a cast, restore
+                }
+                _position = savedInner; // not a cast
+            }
+            _position = saved; // not a cast, restore to before (
+
+            // Regular parenthesized expression
             Advance(); // skip (
             var inner = ParseExpression();
             Expect(SyntaxKind.CloseParenToken);
@@ -1019,4 +1052,58 @@ public class SimpleParser
         var unknown = MakeSyntaxToken(Advance());
         return new LiteralExpressionSyntax(8753, unknown);
     }
+
+    private ObjectCreationExpressionSyntax ParseObjectCreation()
+    {
+        Advance(); // skip 'new'
+        string typeName = ParseTypeName();
+
+        var args = new ExpressionSyntax[16];
+        int argCount = 0;
+
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenParenToken)
+        {
+            Advance(); // skip (
+            while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+            {
+                if (argCount > 0)
+                    Expect(SyntaxKind.CommaToken);
+                if (argCount < 16)
+                {
+                    args[argCount] = ParseExpression();
+                    argCount++;
+                }
+            }
+            Expect(SyntaxKind.CloseParenToken);
+        }
+
+        // Skip object initializer if present: { ... }
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
+            SkipBlock();
+
+        var result = new ExpressionSyntax[argCount];
+        for (int i = 0; i < argCount; i++)
+            result[i] = args[i];
+
+        return new ObjectCreationExpressionSyntax(typeName, result);
+    }
+
+    private bool IsExpressionStart(SyntaxKind kind)
+    {
+        return kind == SyntaxKind.IdentifierToken
+            || kind == SyntaxKind.NumericLiteralToken
+            || kind == SyntaxKind.StringLiteralToken
+            || kind == SyntaxKind.CharacterLiteralToken
+            || kind == SyntaxKind.TrueKeyword
+            || kind == SyntaxKind.FalseKeyword
+            || kind == SyntaxKind.NullKeyword
+            || kind == SyntaxKind.OpenParenToken
+            || kind == SyntaxKind.NewKeyword
+            || kind == SyntaxKind.MinusToken
+            || kind == SyntaxKind.ExclamationToken;
+    }
+
+    // TODO: Lambda parsing — detecting `(params) => body` vs parenthesized expressions
+    // is complex. The emitter already handles lambdas from the Roslyn AST, so this
+    // simplified parser defers full lambda parsing to a future pass.
 }
