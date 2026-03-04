@@ -28,6 +28,9 @@ type SimpleEmitter_self = {
 	_localNames: { string };
 	_localTypes: { string };
 	_localCount: number;
+	_methodNames: { string };
+	_isMethodStatic: { boolean };
+	_methodCount: number;
 }
 
 local SimpleEmitter = setmetatable({}, {__index = SyntaxWalker})
@@ -58,6 +61,9 @@ function SimpleEmitter.new(): SimpleEmitter
 	self._localNames = {}
 	self._localTypes = {}
 	self._localCount = 0
+	self._methodNames = {}
+	self._isMethodStatic = {}
+	self._methodCount = 0
 	self._output = ""
 	self._indent = 0
 	self._currentClassName = ""
@@ -80,6 +86,9 @@ function SimpleEmitter.new(): SimpleEmitter
 	self._localNames = table.create(64)
 	self._localTypes = table.create(64)
 	self._localCount = 0
+	self._methodNames = table.create(128)
+	self._isMethodStatic = table.create(128)
+	self._methodCount = 0
 	return self
 end
 
@@ -281,6 +290,7 @@ function SimpleEmitter.EmitClassOrStruct(self: SimpleEmitter, name: string, base
 	self._baseClassName = baseTypeName
 	self._fieldCount = 0
 	self._staticFieldCount = 0
+	self._methodCount = 0
 	self._hasInstanceMembers = false
 	local i = 0
 	while i < #members do
@@ -325,6 +335,11 @@ function SimpleEmitter.EmitClassOrStruct(self: SimpleEmitter, name: string, base
 			local method = members[i + 1]
 			if not method.IsStatic then
 				self._hasInstanceMembers = true
+			end
+			if self._methodCount < 128 then
+				self._methodNames[self._methodCount + 1] = method.Name
+				self._isMethodStatic[self._methodCount + 1] = method.IsStatic
+				self._methodCount += 1
 			end
 		elseif kind == 8878 then
 			self._hasInstanceMembers = true
@@ -1201,6 +1216,11 @@ function SimpleEmitter.EmitBinary(self: SimpleEmitter, expr: ExpressionSyntax): 
 			return lVal .. " .. " .. rVal
 		end
 	end
+	if op == "/" then
+		if SimpleEmitter.IsIntegerExpression(self, bin.Left) and SimpleEmitter.IsIntegerExpression(self, bin.Right) then
+			return left .. " // " .. right
+		end
+	end
 	if op == "&" then
 		return "bit32.band(" .. left .. ", " .. right .. ")"
 	end
@@ -1261,6 +1281,68 @@ function SimpleEmitter.HasStringTypedOperand(self: SimpleEmitter, expr: Expressi
 			if fieldType ~= nil then
 				return SimpleEmitter.IsStringType(self, fieldType)
 			end
+		end
+	end
+	return false
+end
+
+function SimpleEmitter.IsIntegerType(self: SimpleEmitter, typeName: string): boolean
+	if typeName == nil then
+		return false
+	end
+	if typeName == "int" then
+		return true
+	end
+	if typeName == "long" then
+		return true
+	end
+	if typeName == "short" then
+		return true
+	end
+	if typeName == "byte" then
+		return true
+	end
+	if typeName == "sbyte" then
+		return true
+	end
+	if typeName == "ushort" then
+		return true
+	end
+	if typeName == "uint" then
+		return true
+	end
+	if typeName == "ulong" then
+		return true
+	end
+	if typeName == "char" then
+		return true
+	end
+	return false
+end
+
+function SimpleEmitter.IsIntegerExpression(self: SimpleEmitter, expr: ExpressionSyntax): boolean
+	if expr.Kind == 8750 then
+		return true
+	end
+	if expr.Kind == 8616 then
+		local id = expr
+		local name = id.Identifier.Text
+		local varType = SimpleEmitter.GetVariableType(self, name)
+		if varType ~= nil then
+			return SimpleEmitter.IsIntegerType(self, varType)
+		end
+		if not self._isStaticContext then
+			local fieldType = SimpleEmitter.GetFieldType(self, name)
+			if fieldType ~= nil then
+				return SimpleEmitter.IsIntegerType(self, fieldType)
+			end
+		end
+	end
+	if expr.Kind >= 8668 and expr.Kind <= 8688 then
+		local bin = expr
+		local op = bin.OperatorToken.Text
+		if op == "+" or op == "-" or op == "*" or op == "/" or op == "%" then
+			return SimpleEmitter.IsIntegerExpression(self, bin.Left) and SimpleEmitter.IsIntegerExpression(self, bin.Right)
 		end
 	end
 	return false
@@ -1402,6 +1484,28 @@ function SimpleEmitter.MapMathMember(self: SimpleEmitter, member: string): strin
 	return nil
 end
 
+function SimpleEmitter.IsInstanceMethod(self: SimpleEmitter, name: string): boolean
+	local i = 0
+	while i < self._methodCount do
+		if self._methodNames[i + 1] == name and not self._isMethodStatic[i + 1] then
+			return true
+		end
+		i += 1
+	end
+	return false
+end
+
+function SimpleEmitter.IsStaticMethod(self: SimpleEmitter, name: string): boolean
+	local i = 0
+	while i < self._methodCount do
+		if self._methodNames[i + 1] == name and self._isMethodStatic[i + 1] then
+			return true
+		end
+		i += 1
+	end
+	return false
+end
+
 function SimpleEmitter.IsKnownVariable(self: SimpleEmitter, name: string): boolean
 	local i = 0
 	while i < self._paramCount do
@@ -1513,7 +1617,11 @@ function SimpleEmitter.EmitInvocation(self: SimpleEmitter, expr: ExpressionSynta
 			end
 		end
 		if methodName == "IndexOf" then
-			return "(string.find(" .. obj .. ", " .. args .. ", 1, true) or 0) - 1"
+			local findArg = args
+			if #inv.Arguments == 1 and inv.Arguments[0 + 1].Kind == 8752 then
+				findArg = "string.char(" .. args .. ")"
+			end
+			return "(string.find(" .. obj .. ", " .. findArg .. ", 1, true) or 0) - 1"
 		end
 		if methodName == "StartsWith" then
 			return "string.sub(" .. obj .. ", 1, #" .. args .. ") == " .. args
@@ -1543,6 +1651,19 @@ function SimpleEmitter.EmitInvocation(self: SimpleEmitter, expr: ExpressionSynta
 			return obj .. ":" .. methodName .. "(" .. args .. ")"
 		end
 		return obj .. "." .. methodName .. "(" .. args .. ")"
+	end
+	if inv.Expression.Kind == 8616 then
+		local calleeId = inv.Expression
+		local methodName = calleeId.Identifier.Text
+		if not self._isStaticContext and #self._currentClassName > 0 and SimpleEmitter.IsInstanceMethod(self, methodName) then
+			if #args > 0 then
+				return self._currentClassName .. "." .. methodName .. "(self, " .. args .. ")"
+			end
+			return self._currentClassName .. "." .. methodName .. "(self)"
+		end
+		if #self._currentClassName > 0 and SimpleEmitter.IsStaticMethod(self, methodName) then
+			return self._currentClassName .. "." .. methodName .. "(" .. args .. ")"
+		end
 	end
 	local callee = SimpleEmitter.EmitExpression(self, inv.Expression)
 	return callee .. "(" .. args .. ")"

@@ -47,6 +47,11 @@ public class SimpleEmitter : SyntaxWalker
     private string[] _localTypes;
     private int _localCount;
 
+    // Method names for the current class (used for bare instance method dispatch)
+    private string[] _methodNames;
+    private bool[] _isMethodStatic;
+    private int _methodCount;
+
     public SimpleEmitter()
     {
         _output = "";
@@ -71,6 +76,9 @@ public class SimpleEmitter : SyntaxWalker
         _localNames = new string[64];
         _localTypes = new string[64];
         _localCount = 0;
+        _methodNames = new string[128];
+        _isMethodStatic = new bool[128];
+        _methodCount = 0;
     }
 
     public string GetOutput()
@@ -286,9 +294,10 @@ public class SimpleEmitter : SyntaxWalker
         _currentClassName = name;
         _baseClassName = baseTypeName;
 
-        // Reset field collectors for this type
+        // Reset field and method collectors for this type
         _fieldCount = 0;
         _staticFieldCount = 0;
+        _methodCount = 0;
         _hasInstanceMembers = false;
 
         // First pass: collect fields and auto-properties for the type_self block
@@ -352,6 +361,13 @@ public class SimpleEmitter : SyntaxWalker
             {
                 MethodDeclarationSyntax method = (MethodDeclarationSyntax)members[i];
                 if (!method.IsStatic) _hasInstanceMembers = true;
+                // Track method name for bare-call dispatch
+                if (_methodCount < 128)
+                {
+                    _methodNames[_methodCount] = method.Name;
+                    _isMethodStatic[_methodCount] = method.IsStatic;
+                    _methodCount++;
+                }
             }
             else if (kind == 8878) // ConstructorDeclaration
             {
@@ -1489,6 +1505,15 @@ public class SimpleEmitter : SyntaxWalker
             }
         }
 
+        // Integer division: int / int → // in Luau (floor division)
+        if (op == "/")
+        {
+            if (IsIntegerExpression(bin.Left) && IsIntegerExpression(bin.Right))
+            {
+                return left + " // " + right;
+            }
+        }
+
         // Bitwise operators
         if (op == "&") return "bit32.band(" + left + ", " + right + ")";
         if (op == "|") return "bit32.bor(" + left + ", " + right + ")";
@@ -1552,6 +1577,61 @@ public class SimpleEmitter : SyntaxWalker
                 if (fieldType != null) return IsStringType(fieldType);
             }
         }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the C# type is an integer type (not float/double).
+    /// </summary>
+    private bool IsIntegerType(string typeName)
+    {
+        if (typeName == null) return false;
+        if (typeName == "int") return true;
+        if (typeName == "long") return true;
+        if (typeName == "short") return true;
+        if (typeName == "byte") return true;
+        if (typeName == "sbyte") return true;
+        if (typeName == "ushort") return true;
+        if (typeName == "uint") return true;
+        if (typeName == "ulong") return true;
+        if (typeName == "char") return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the expression is known to be integer-typed.
+    /// Checks: integer literals, known int-typed variables/fields.
+    /// </summary>
+    private bool IsIntegerExpression(ExpressionSyntax expr)
+    {
+        // Integer literal
+        if (expr.Kind == 8750) return true; // NumericLiteral (assume integer unless has '.')
+
+        // Identifier: check variable/field types
+        if (expr.Kind == 8616) // IdentifierName
+        {
+            IdentifierNameSyntax id = (IdentifierNameSyntax)expr;
+            string name = id.Identifier.Text;
+            string varType = GetVariableType(name);
+            if (varType != null) return IsIntegerType(varType);
+            if (!_isStaticContext)
+            {
+                string fieldType = GetFieldType(name);
+                if (fieldType != null) return IsIntegerType(fieldType);
+            }
+        }
+
+        // Binary expression: result of integer arithmetic is integer
+        if (expr.Kind >= 8668 && expr.Kind <= 8688)
+        {
+            BinaryExpressionSyntax bin = (BinaryExpressionSyntax)expr;
+            string op = bin.OperatorToken.Text;
+            if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%")
+            {
+                return IsIntegerExpression(bin.Left) && IsIntegerExpression(bin.Right);
+            }
+        }
+
         return false;
     }
 
@@ -1689,6 +1769,30 @@ public class SimpleEmitter : SyntaxWalker
     /// Returns true if the given identifier name is a known variable (parameter or local),
     /// meaning method calls on it should use colon syntax.
     /// </summary>
+    /// <summary>
+    /// Returns true if the given name is a known instance method of the current class.
+    /// </summary>
+    private bool IsInstanceMethod(string name)
+    {
+        for (int i = 0; i < _methodCount; i++)
+        {
+            if (_methodNames[i] == name && !_isMethodStatic[i]) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the given name is a known static method of the current class.
+    /// </summary>
+    private bool IsStaticMethod(string name)
+    {
+        for (int i = 0; i < _methodCount; i++)
+        {
+            if (_methodNames[i] == name && _isMethodStatic[i]) return true;
+        }
+        return false;
+    }
+
     private bool IsKnownVariable(string name)
     {
         for (int i = 0; i < _paramCount; i++)
@@ -1835,7 +1939,13 @@ public class SimpleEmitter : SyntaxWalker
             }
             if (methodName == "IndexOf")
             {
-                return "(string.find(" + obj + ", " + args + ", 1, true) or 0) - 1";
+                // If the argument is a char literal (emitted as number), wrap with string.char()
+                string findArg = args;
+                if (inv.Arguments.Length == 1 && inv.Arguments[0].Kind == 8752) // CharacterLiteral
+                {
+                    findArg = "string.char(" + args + ")";
+                }
+                return "(string.find(" + obj + ", " + findArg + ", 1, true) or 0) - 1";
             }
             if (methodName == "StartsWith")
             {
@@ -1883,6 +1993,29 @@ public class SimpleEmitter : SyntaxWalker
         }
 
         // Direct call: callee(args)
+        // Check for bare instance/static method calls in current class
+        if (inv.Expression.Kind == 8616) // IdentifierName
+        {
+            IdentifierNameSyntax calleeId = (IdentifierNameSyntax)inv.Expression;
+            string methodName = calleeId.Identifier.Text;
+
+            // Bare instance method: ClassName.Method(self, args)
+            if (!_isStaticContext && _currentClassName.Length > 0 && IsInstanceMethod(methodName))
+            {
+                if (args.Length > 0)
+                {
+                    return _currentClassName + "." + methodName + "(self, " + args + ")";
+                }
+                return _currentClassName + "." + methodName + "(self)";
+            }
+
+            // Bare static method: ClassName.Method(args)
+            if (_currentClassName.Length > 0 && IsStaticMethod(methodName))
+            {
+                return _currentClassName + "." + methodName + "(" + args + ")";
+            }
+        }
+
         string callee = EmitExpression(inv.Expression);
         return callee + "(" + args + ")";
     }
