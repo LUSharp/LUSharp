@@ -179,6 +179,129 @@ public class SyntaxWalker
         }
     }
 
+    public virtual void VisitForStatement(ForStatementSyntax node)
+    {
+        if (node.Declaration != null)
+        {
+            _depth++;
+            Visit(node.Declaration);
+            _depth--;
+        }
+        if (node.Condition != null)
+        {
+            _depth++;
+            Visit(node.Condition);
+            _depth--;
+        }
+        for (int i = 0; i < node.Incrementors.Length; i++)
+        {
+            _depth++;
+            Visit(node.Incrementors[i]);
+            _depth--;
+        }
+        _depth++;
+        Visit(node.Body);
+        _depth--;
+    }
+
+    public virtual void VisitForEachStatement(ForEachStatementSyntax node)
+    {
+        _depth++;
+        Visit(node.Expression);
+        _depth--;
+        _depth++;
+        Visit(node.Body);
+        _depth--;
+    }
+
+    public virtual void VisitDoStatement(DoStatementSyntax node)
+    {
+        _depth++;
+        Visit(node.Body);
+        _depth--;
+        _depth++;
+        Visit(node.Condition);
+        _depth--;
+    }
+
+    public virtual void VisitBreakStatement(BreakStatementSyntax node)
+    {
+        DefaultVisit(node);
+    }
+
+    public virtual void VisitContinueStatement(ContinueStatementSyntax node)
+    {
+        DefaultVisit(node);
+    }
+
+    public virtual void VisitSwitchStatement(SwitchStatementSyntax node)
+    {
+        _depth++;
+        Visit(node.Expression);
+        _depth--;
+        for (int i = 0; i < node.Sections.Length; i++)
+        {
+            _depth++;
+            Visit(node.Sections[i]);
+            _depth--;
+        }
+    }
+
+    public virtual void VisitSwitchSection(SwitchSectionSyntax node)
+    {
+        for (int i = 0; i < node.Labels.Length; i++)
+        {
+            if (node.Labels[i] != null)
+            {
+                _depth++;
+                Visit(node.Labels[i]);
+                _depth--;
+            }
+        }
+        for (int i = 0; i < node.Statements.Length; i++)
+        {
+            _depth++;
+            Visit(node.Statements[i]);
+            _depth--;
+        }
+    }
+
+    public virtual void VisitTryStatement(TryStatementSyntax node)
+    {
+        _depth++;
+        Visit(node.Block);
+        _depth--;
+        for (int i = 0; i < node.Catches.Length; i++)
+        {
+            _depth++;
+            Visit(node.Catches[i]);
+            _depth--;
+        }
+        if (node.FinallyBlock != null)
+        {
+            _depth++;
+            Visit(node.FinallyBlock);
+            _depth--;
+        }
+    }
+
+    public virtual void VisitCatchClause(CatchClauseSyntax node)
+    {
+        _depth++;
+        Visit(node.Block);
+        _depth--;
+    }
+
+    public virtual void VisitThrowStatement(ThrowStatementSyntax node)
+    {
+        if (node.Expression != null)
+        {
+            _depth++;
+            Visit(node.Expression);
+            _depth--;
+        }
+    }
+
     // === Expression visitors ===
 
     public virtual void VisitLiteralExpression(LiteralExpressionSyntax node) { }
@@ -268,6 +391,36 @@ public class SyntaxWalker
     {
         _depth++;
         Visit(node.Expression);
+        _depth--;
+    }
+
+    public virtual void VisitElementAccess(ElementAccessExpressionSyntax node)
+    {
+        _depth++;
+        Visit(node.Expression);
+        _depth--;
+        _depth++;
+        Visit(node.Index);
+        _depth--;
+    }
+
+    public virtual void VisitPostfixUnary(PostfixUnaryExpressionSyntax node)
+    {
+        _depth++;
+        Visit(node.Operand);
+        _depth--;
+    }
+
+    public virtual void VisitConditionalExpression(ConditionalExpressionSyntax node)
+    {
+        _depth++;
+        Visit(node.Condition);
+        _depth--;
+        _depth++;
+        Visit(node.WhenTrue);
+        _depth--;
+        _depth++;
+        Visit(node.WhenFalse);
         _depth--;
     }
 }
@@ -393,6 +546,85 @@ public class TreePrinter : SyntaxWalker
         base.VisitLocalDeclaration(node);
     }
 
+    public override void VisitForStatement(ForStatementSyntax node)
+    {
+        PrintNode("ForStatement");
+        base.VisitForStatement(node);
+    }
+
+    public override void VisitForEachStatement(ForEachStatementSyntax node)
+    {
+        PrintNode("ForEachStatement: " + node.TypeName + " " + node.Identifier);
+        base.VisitForEachStatement(node);
+    }
+
+    public override void VisitDoStatement(DoStatementSyntax node)
+    {
+        PrintNode("DoStatement");
+        base.VisitDoStatement(node);
+    }
+
+    public override void VisitBreakStatement(BreakStatementSyntax node)
+    {
+        PrintNode("BreakStatement");
+        base.VisitBreakStatement(node);
+    }
+
+    public override void VisitContinueStatement(ContinueStatementSyntax node)
+    {
+        PrintNode("ContinueStatement");
+        base.VisitContinueStatement(node);
+    }
+
+    public override void VisitSwitchStatement(SwitchStatementSyntax node)
+    {
+        PrintNode("SwitchStatement");
+        base.VisitSwitchStatement(node);
+    }
+
+    public override void VisitSwitchSection(SwitchSectionSyntax node)
+    {
+        int caseCount = 0;
+        bool hasDefault = false;
+        for (int i = 0; i < node.Labels.Length; i++)
+        {
+            if (node.Labels[i] == null) hasDefault = true;
+            else caseCount++;
+        }
+        string desc = caseCount + " case(s)";
+        if (hasDefault) desc = desc + " +default";
+        PrintNode("SwitchSection: " + desc);
+        base.VisitSwitchSection(node);
+    }
+
+    public override void VisitTryStatement(TryStatementSyntax node)
+    {
+        string desc = "TryStatement";
+        if (node.Catches.Length > 0) desc = desc + " (" + node.Catches.Length + " catch)";
+        if (node.FinallyBlock != null) desc = desc + " +finally";
+        PrintNode(desc);
+        base.VisitTryStatement(node);
+    }
+
+    public override void VisitCatchClause(CatchClauseSyntax node)
+    {
+        string desc = "CatchClause";
+        if (node.ExceptionTypeName != null)
+        {
+            desc = desc + ": " + node.ExceptionTypeName;
+            if (node.Identifier != null) desc = desc + " " + node.Identifier;
+        }
+        PrintNode(desc);
+        base.VisitCatchClause(node);
+    }
+
+    public override void VisitThrowStatement(ThrowStatementSyntax node)
+    {
+        string rethrow = node.Expression == null ? " (re-throw)" : "";
+        PrintNode("ThrowStatement" + rethrow);
+        base.VisitThrowStatement(node);
+    }
+
     public override void VisitLiteralExpression(LiteralExpressionSyntax node)
     {
         PrintNode("Literal: " + node.Token.Text);
@@ -455,5 +687,24 @@ public class TreePrinter : SyntaxWalker
     {
         PrintNode("Cast: " + node.TypeName);
         base.VisitCastExpression(node);
+    }
+
+    public override void VisitElementAccess(ElementAccessExpressionSyntax node)
+    {
+        PrintNode("ElementAccess");
+        base.VisitElementAccess(node);
+    }
+
+    public override void VisitPostfixUnary(PostfixUnaryExpressionSyntax node)
+    {
+        string opText = node.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken ? "++" : "--";
+        PrintNode("PostfixUnary: " + opText);
+        base.VisitPostfixUnary(node);
+    }
+
+    public override void VisitConditionalExpression(ConditionalExpressionSyntax node)
+    {
+        PrintNode("ConditionalExpression");
+        base.VisitConditionalExpression(node);
     }
 }

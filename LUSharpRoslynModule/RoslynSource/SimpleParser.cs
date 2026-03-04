@@ -629,6 +629,38 @@ public class SimpleParser
         if (kind == SyntaxKind.WhileKeyword)
             return ParseWhileStatement();
 
+        if (kind == SyntaxKind.ForKeyword)
+            return ParseForStatement();
+
+        if (kind == SyntaxKind.ForEachKeyword)
+            return ParseForEachStatement();
+
+        if (kind == SyntaxKind.DoKeyword)
+            return ParseDoStatement();
+
+        if (kind == SyntaxKind.BreakKeyword)
+        {
+            Advance();
+            Expect(SyntaxKind.SemicolonToken);
+            return new BreakStatementSyntax();
+        }
+
+        if (kind == SyntaxKind.ContinueKeyword)
+        {
+            Advance();
+            Expect(SyntaxKind.SemicolonToken);
+            return new ContinueStatementSyntax();
+        }
+
+        if (kind == SyntaxKind.SwitchKeyword)
+            return ParseSwitchStatement();
+
+        if (kind == SyntaxKind.TryKeyword)
+            return ParseTryStatement();
+
+        if (kind == SyntaxKind.ThrowKeyword)
+            return ParseThrowStatement();
+
         if (kind == SyntaxKind.OpenBraceToken)
             return ParseBlock();
 
@@ -726,6 +758,276 @@ public class SimpleParser
         return new WhileStatementSyntax(condition, body);
     }
 
+    private ForStatementSyntax ParseForStatement()
+    {
+        Advance(); // skip 'for'
+        Expect(SyntaxKind.OpenParenToken);
+
+        // Parse initializer (declaration or expression statement, or empty)
+        StatementSyntax declaration = null;
+        if (!IsAtEnd() && Current().Kind != SyntaxKind.SemicolonToken)
+        {
+            // Try to detect local declaration: type name pattern
+            SyntaxKind initKind = Current().Kind;
+            if (IsTypeStart(initKind) && _position + 1 < _tokens.Length)
+            {
+                SyntaxKind next = _tokens[_position + 1].Kind;
+                if (next == SyntaxKind.IdentifierToken)
+                {
+                    declaration = ParseLocalDeclarationNoSemicolon();
+                }
+                else
+                {
+                    // Expression initializer
+                    var expr = ParseExpression();
+                    declaration = new ExpressionStatementSyntax(expr);
+                }
+            }
+            else if (initKind == SyntaxKind.IdentifierToken && Current().Text == "var" && _position + 1 < _tokens.Length
+                && _tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
+            {
+                declaration = ParseLocalDeclarationNoSemicolon();
+            }
+            else
+            {
+                var expr = ParseExpression();
+                declaration = new ExpressionStatementSyntax(expr);
+            }
+        }
+        Expect(SyntaxKind.SemicolonToken);
+
+        // Parse condition (or empty)
+        ExpressionSyntax condition = null;
+        if (!IsAtEnd() && Current().Kind != SyntaxKind.SemicolonToken)
+        {
+            condition = ParseExpression();
+        }
+        Expect(SyntaxKind.SemicolonToken);
+
+        // Parse incrementors (comma-separated expressions)
+        var incrementors = new ExpressionSyntax[16];
+        int incCount = 0;
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+        {
+            if (incCount > 0)
+                Expect(SyntaxKind.CommaToken);
+            if (incCount < 16)
+            {
+                incrementors[incCount] = ParseExpression();
+                incCount++;
+            }
+        }
+        Expect(SyntaxKind.CloseParenToken);
+
+        var incResult = new ExpressionSyntax[incCount];
+        for (int i = 0; i < incCount; i++)
+            incResult[i] = incrementors[i];
+
+        var body = ParseStatementOrBlock();
+        return new ForStatementSyntax(declaration, condition, incResult, body);
+    }
+
+    private LocalDeclarationStatementSyntax ParseLocalDeclarationNoSemicolon()
+    {
+        string typeName = ParseTypeName();
+        string varName = Current().Text;
+        Advance();
+
+        ExpressionSyntax initializer = null;
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+        {
+            Advance();
+            initializer = ParseExpression();
+        }
+
+        return new LocalDeclarationStatementSyntax(typeName, varName, initializer);
+    }
+
+    private ForEachStatementSyntax ParseForEachStatement()
+    {
+        Advance(); // skip 'foreach'
+        Expect(SyntaxKind.OpenParenToken);
+
+        string typeName = ParseTypeName();
+        string identifier = Current().Text;
+        Advance();
+
+        // Expect 'in' keyword
+        Expect(SyntaxKind.InKeyword);
+
+        var expression = ParseExpression();
+        Expect(SyntaxKind.CloseParenToken);
+
+        var body = ParseStatementOrBlock();
+        return new ForEachStatementSyntax(typeName, identifier, expression, body);
+    }
+
+    private DoStatementSyntax ParseDoStatement()
+    {
+        Advance(); // skip 'do'
+        var body = ParseStatementOrBlock();
+
+        Expect(SyntaxKind.WhileKeyword);
+        Expect(SyntaxKind.OpenParenToken);
+        var condition = ParseExpression();
+        Expect(SyntaxKind.CloseParenToken);
+        Expect(SyntaxKind.SemicolonToken);
+
+        return new DoStatementSyntax(body, condition);
+    }
+
+    private SwitchStatementSyntax ParseSwitchStatement()
+    {
+        Advance(); // skip 'switch'
+        Expect(SyntaxKind.OpenParenToken);
+        var expression = ParseExpression();
+        Expect(SyntaxKind.CloseParenToken);
+
+        Expect(SyntaxKind.OpenBraceToken);
+
+        var sections = new SwitchSectionSyntax[64];
+        int sectionCount = 0;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+        {
+            // Parse labels for this section
+            var labels = new ExpressionSyntax[16];
+            int labelCount = 0;
+
+            while (!IsAtEnd() && (Current().Kind == SyntaxKind.CaseKeyword || Current().Kind == SyntaxKind.DefaultKeyword))
+            {
+                if (Current().Kind == SyntaxKind.CaseKeyword)
+                {
+                    Advance(); // skip 'case'
+                    if (labelCount < 16)
+                    {
+                        labels[labelCount] = ParseExpression();
+                        labelCount++;
+                    }
+                    Expect(SyntaxKind.ColonToken);
+                }
+                else // DefaultKeyword
+                {
+                    Advance(); // skip 'default'
+                    if (labelCount < 16)
+                    {
+                        labels[labelCount] = null; // null = default label
+                        labelCount++;
+                    }
+                    Expect(SyntaxKind.ColonToken);
+                }
+            }
+
+            // Parse statements until next case/default/closing brace
+            var statements = new StatementSyntax[128];
+            int stmtCount = 0;
+
+            while (!IsAtEnd()
+                && Current().Kind != SyntaxKind.CaseKeyword
+                && Current().Kind != SyntaxKind.DefaultKeyword
+                && Current().Kind != SyntaxKind.CloseBraceToken)
+            {
+                var stmt = ParseStatement();
+                if (stmt != null && stmtCount < 128)
+                {
+                    statements[stmtCount] = stmt;
+                    stmtCount++;
+                }
+            }
+
+            var labelResult = new ExpressionSyntax[labelCount];
+            for (int i = 0; i < labelCount; i++)
+                labelResult[i] = labels[i];
+
+            var stmtResult = new StatementSyntax[stmtCount];
+            for (int i = 0; i < stmtCount; i++)
+                stmtResult[i] = statements[i];
+
+            if (sectionCount < 64)
+            {
+                sections[sectionCount] = new SwitchSectionSyntax(labelResult, stmtResult);
+                sectionCount++;
+            }
+        }
+
+        Expect(SyntaxKind.CloseBraceToken);
+
+        var sectionResult = new SwitchSectionSyntax[sectionCount];
+        for (int i = 0; i < sectionCount; i++)
+            sectionResult[i] = sections[i];
+
+        return new SwitchStatementSyntax(expression, sectionResult);
+    }
+
+    private TryStatementSyntax ParseTryStatement()
+    {
+        Advance(); // skip 'try'
+        var block = ParseBlock();
+
+        var catches = new CatchClauseSyntax[8];
+        int catchCount = 0;
+
+        while (!IsAtEnd() && Current().Kind == SyntaxKind.CatchKeyword)
+        {
+            Advance(); // skip 'catch'
+
+            string exceptionTypeName = null;
+            string identifier = null;
+
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenParenToken)
+            {
+                Advance(); // skip (
+                exceptionTypeName = ParseTypeName();
+
+                // Optional identifier
+                if (!IsAtEnd() && Current().Kind == SyntaxKind.IdentifierToken)
+                {
+                    identifier = Current().Text;
+                    Advance();
+                }
+
+                Expect(SyntaxKind.CloseParenToken);
+            }
+
+            var catchBlock = ParseBlock();
+
+            if (catchCount < 8)
+            {
+                catches[catchCount] = new CatchClauseSyntax(exceptionTypeName, identifier, catchBlock);
+                catchCount++;
+            }
+        }
+
+        BlockSyntax finallyBlock = null;
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.FinallyKeyword)
+        {
+            Advance(); // skip 'finally'
+            finallyBlock = ParseBlock();
+        }
+
+        var catchResult = new CatchClauseSyntax[catchCount];
+        for (int i = 0; i < catchCount; i++)
+            catchResult[i] = catches[i];
+
+        return new TryStatementSyntax(block, catchResult, finallyBlock);
+    }
+
+    private ThrowStatementSyntax ParseThrowStatement()
+    {
+        Advance(); // skip 'throw'
+
+        // throw; (re-throw) or throw expr;
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.SemicolonToken)
+        {
+            Advance();
+            return new ThrowStatementSyntax(null);
+        }
+
+        var expr = ParseExpression();
+        Expect(SyntaxKind.SemicolonToken);
+        return new ThrowStatementSyntax(expr);
+    }
+
     private StatementSyntax ParseStatementOrBlock()
     {
         if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
@@ -761,11 +1063,39 @@ public class SimpleParser
     {
         var left = ParseConditionalOr();
 
-        if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+        if (!IsAtEnd())
         {
-            var op = MakeSyntaxToken(Advance());
-            var right = ParseAssignment();
-            return new AssignmentExpressionSyntax(8714, left, op, right);
+            SyntaxKind kind = Current().Kind;
+
+            if (kind == SyntaxKind.EqualsToken
+                || kind == SyntaxKind.PlusEqualsToken
+                || kind == SyntaxKind.MinusEqualsToken
+                || kind == SyntaxKind.AsteriskEqualsToken
+                || kind == SyntaxKind.SlashEqualsToken
+                || kind == SyntaxKind.PercentEqualsToken)
+            {
+                var op = MakeSyntaxToken(Advance());
+                var right = ParseAssignment();
+
+                int exprKind = kind == SyntaxKind.EqualsToken ? (int)SyntaxKind.SimpleAssignmentExpression
+                    : kind == SyntaxKind.PlusEqualsToken ? (int)SyntaxKind.AddAssignmentExpression
+                    : kind == SyntaxKind.MinusEqualsToken ? (int)SyntaxKind.SubtractAssignmentExpression
+                    : kind == SyntaxKind.AsteriskEqualsToken ? (int)SyntaxKind.MultiplyAssignmentExpression
+                    : kind == SyntaxKind.SlashEqualsToken ? (int)SyntaxKind.DivideAssignmentExpression
+                    : (int)SyntaxKind.ModuloAssignmentExpression;
+
+                return new AssignmentExpressionSyntax(exprKind, left, op, right);
+            }
+
+            // Ternary conditional: expr ? trueExpr : falseExpr
+            if (kind == SyntaxKind.QuestionToken)
+            {
+                Advance(); // skip ?
+                var whenTrue = ParseExpression();
+                Expect(SyntaxKind.ColonToken);
+                var whenFalse = ParseExpression();
+                return new ConditionalExpressionSyntax(left, whenTrue, whenFalse);
+            }
         }
 
         return left;
@@ -897,6 +1227,17 @@ public class SimpleParser
                 int exprKind = kind == SyntaxKind.MinusToken ? 8730 : 8731;
                 return new PrefixUnaryExpressionSyntax(exprKind, op, operand);
             }
+
+            // Prefix ++/--
+            if (kind == SyntaxKind.PlusPlusToken || kind == SyntaxKind.MinusMinusToken)
+            {
+                var op = MakeSyntaxToken(Advance());
+                var operand = ParseUnary();
+                int exprKind = kind == SyntaxKind.PlusPlusToken
+                    ? (int)SyntaxKind.PreIncrementExpression
+                    : (int)SyntaxKind.PreDecrementExpression;
+                return new PrefixUnaryExpressionSyntax(exprKind, op, operand);
+            }
         }
 
         return ParsePrimary();
@@ -906,7 +1247,7 @@ public class SimpleParser
     {
         var expr = ParseAtom();
 
-        // Handle postfix: member access, invocation
+        // Handle postfix: member access, invocation, element access, postfix ++/--
         while (!IsAtEnd())
         {
             if (Current().Kind == SyntaxKind.DotToken)
@@ -938,6 +1279,22 @@ public class SimpleParser
                     argResult[i] = args[i];
 
                 expr = new InvocationExpressionSyntax(expr, argResult);
+            }
+            else if (Current().Kind == SyntaxKind.OpenBracketToken)
+            {
+                Advance(); // skip [
+                var index = ParseExpression();
+                Expect(SyntaxKind.CloseBracketToken);
+                expr = new ElementAccessExpressionSyntax(expr, index);
+            }
+            else if (Current().Kind == SyntaxKind.PlusPlusToken || Current().Kind == SyntaxKind.MinusMinusToken)
+            {
+                var opKind = Current().Kind;
+                Advance();
+                int exprKind = opKind == SyntaxKind.PlusPlusToken
+                    ? (int)SyntaxKind.PostIncrementExpression
+                    : (int)SyntaxKind.PostDecrementExpression;
+                expr = new PostfixUnaryExpressionSyntax(exprKind, expr, opKind);
             }
             else break;
         }
@@ -998,9 +1355,15 @@ public class SimpleParser
             return ParseObjectCreation();
         }
 
-        // Parenthesized expression or cast
+        // Parenthesized lambda or parenthesized expression or cast
         if (kind == SyntaxKind.OpenParenToken)
         {
+            // Check for parenthesized lambda: (...) =>
+            if (IsParenthesizedLambda())
+            {
+                return ParseParenthesizedLambda();
+            }
+
             // Look ahead to detect cast: (Type)expr
             int saved = _position;
             Advance(); // skip (
@@ -1032,6 +1395,13 @@ public class SimpleParser
             var inner = ParseExpression();
             Expect(SyntaxKind.CloseParenToken);
             return new ParenthesizedExpressionSyntax(inner);
+        }
+
+        // Simple lambda: identifier => body
+        if (kind == SyntaxKind.IdentifierToken && _position + 1 < _tokens.Length
+            && _tokens[_position + 1].Kind == SyntaxKind.EqualsGreaterThanToken)
+        {
+            return ParseSimpleLambda();
         }
 
         // Identifier
@@ -1103,7 +1473,127 @@ public class SimpleParser
             || kind == SyntaxKind.ExclamationToken;
     }
 
-    // TODO: Lambda parsing — detecting `(params) => body` vs parenthesized expressions
-    // is complex. The emitter already handles lambdas from the Roslyn AST, so this
-    // simplified parser defers full lambda parsing to a future pass.
+    // === Lambda Parsing ===
+
+    /// <summary>
+    /// Lookahead to detect parenthesized lambda: scan for matching ) then =>.
+    /// Handles: () =>, (x) =>, (x, y) =>, (int x) =>, (int x, string y) => etc.
+    /// </summary>
+    private bool IsParenthesizedLambda()
+    {
+        if (Current().Kind != SyntaxKind.OpenParenToken)
+            return false;
+
+        int saved = _position;
+        int depth = 0;
+
+        // Scan for matching close paren
+        for (int i = _position; i < _tokens.Length; i++)
+        {
+            SyntaxKind k = _tokens[i].Kind;
+            if (k == SyntaxKind.OpenParenToken) depth++;
+            else if (k == SyntaxKind.CloseParenToken)
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    // Check if next token after ) is =>
+                    if (i + 1 < _tokens.Length && _tokens[i + 1].Kind == SyntaxKind.EqualsGreaterThanToken)
+                        return true;
+                    return false;
+                }
+            }
+            // If we hit a semicolon or brace before closing paren, it's not a lambda
+            else if (k == SyntaxKind.SemicolonToken || k == SyntaxKind.OpenBraceToken)
+                return false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Parse simple lambda: identifier => body
+    /// </summary>
+    private LambdaExpressionSyntax ParseSimpleLambda()
+    {
+        string paramName = Current().Text;
+        Advance(); // skip identifier
+        Advance(); // skip =>
+
+        var paramNames = new string[] { paramName };
+
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
+        {
+            var block = ParseBlock();
+            return new LambdaExpressionSyntax(paramNames, null, block);
+        }
+        else
+        {
+            var body = ParseExpression();
+            return new LambdaExpressionSyntax(paramNames, body, null);
+        }
+    }
+
+    /// <summary>
+    /// Parse parenthesized lambda: (params) => body
+    /// Handles typed and untyped parameter lists.
+    /// </summary>
+    private LambdaExpressionSyntax ParseParenthesizedLambda()
+    {
+        Advance(); // skip (
+
+        var paramNames = new string[16];
+        int paramCount = 0;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+        {
+            if (paramCount > 0)
+                Expect(SyntaxKind.CommaToken);
+
+            // Check if this is a typed parameter (type name) or untyped (just name)
+            // Heuristic: if the token after the current identifier is also an identifier
+            // or close paren/comma, the current one could be a type. Check if next is
+            // an identifier (typed param) — e.g., "int x" vs just "x"
+            if (IsTypeStart(Current().Kind) && _position + 1 < _tokens.Length
+                && _tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
+            {
+                // Typed parameter: skip the type, take the name
+                ParseTypeName();
+                if (paramCount < 16)
+                {
+                    paramNames[paramCount] = Current().Text;
+                    paramCount++;
+                }
+                Advance();
+            }
+            else
+            {
+                // Untyped parameter: just a name
+                if (paramCount < 16)
+                {
+                    paramNames[paramCount] = Current().Text;
+                    paramCount++;
+                }
+                Advance();
+            }
+        }
+
+        Expect(SyntaxKind.CloseParenToken);
+        Advance(); // skip =>
+
+        var paramResult = new string[paramCount];
+        for (int i = 0; i < paramCount; i++)
+            paramResult[i] = paramNames[i];
+
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
+        {
+            var block = ParseBlock();
+            return new LambdaExpressionSyntax(paramResult, null, block);
+        }
+        else
+        {
+            var body = ParseExpression();
+            return new LambdaExpressionSyntax(paramResult, body, null);
+        }
+    }
 }
