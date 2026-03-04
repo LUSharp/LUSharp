@@ -1,0 +1,54 @@
+=== Parser Test 1: Class ===
+Input: class Foo { int x = 5; void Bar() { return; } }
+--- Accept Output ---
+class Foo {
+  int x = 5;
+  void Bar() {
+  return;
+}
+}
+--- Tree Walk ---
+CompilationUnit(1 members)
+  Class(Foo, 2 members)
+    Field(x)
+    Method(Bar)
+=== Parser Test 2: Enum ===
+Input: enum Color { Red, Green = 1, Blue }
+--- Accept Output ---
+enum Color {
+  Red,
+  Green = 1,
+  Blue
+}
+--- Tree Walk ---
+CompilationUnit(1 members)
+  Enum(Color, 3 members)
+    Red
+    Green = 1
+    Blue
+=== Parser Test 3: Struct ===
+Input: struct Point { int X { get; set; } int Y { get; set; } }
+--- Accept Output ---
+struct Point {
+  int X { get; set; }
+  int Y { get; set; }
+}
+--- Tree Walk ---
+CompilationUnit(1 members)
+  Struct(Point, 2 members)
+    Property(X)
+    Property(Y)
+=== Parser Test 4: Constructor ===
+Input: class MyClass { int _value; MyClass(int v) { _value = v; } }
+--- Accept Output ---
+class MyClass {
+  int _value;
+  MyClass(int v) {
+  _value = v;
+}
+}
+--- Tree Walk ---
+CompilationUnit(1 members)
+  Class(MyClass, 2 members)
+    Field(_value)
+    Constructor(MyClass)

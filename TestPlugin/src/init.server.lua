@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.3.0"
+local PLUGIN_VERSION = "0.4.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -294,38 +294,54 @@ local function runParserTest()
 		return
 	end
 
-	local input = "class Foo { int x = 5; void Bar() { return; } }"
+	-- Helper: parse input and print Accept + tree walk
+	local function parseAndPrint(label: string, input: string)
+		print("=== " .. label .. " ===")
+		print("Input: " .. input)
 
-	print("=== Parser Test ===")
-	print("Input: " .. input)
+		local parser = SimpleParser.new(input)
+		local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
 
-	local parser = SimpleParser.new(input)
-	local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+		-- Print Accept() output (reconstructed source)
+		print("--- Accept Output ---")
+		local acceptOutput = compilationUnit:Accept()
+		-- Strip trailing newline if present
+		if string.sub(acceptOutput, #acceptOutput, #acceptOutput) == "\n" then
+			acceptOutput = string.sub(acceptOutput, 1, #acceptOutput - 1)
+		end
+		for line in string.gmatch(acceptOutput, "[^\n]*") do
+			print(line)
+		end
 
-	-- Print Accept() output (reconstructed source)
-	print("=== Accept Output ===")
-	local acceptOutput = compilationUnit:Accept()
-	-- Print line by line (Accept adds trailing newline per member)
-	-- Strip trailing newline if present
-	if string.sub(acceptOutput, #acceptOutput, #acceptOutput) == "\n" then
-		acceptOutput = string.sub(acceptOutput, 1, #acceptOutput - 1)
-	end
-	for line in string.gmatch(acceptOutput, "[^\n]*") do
-		print(line)
-	end
-
-	-- Print tree walk using ToDisplayString()
-	print("=== Tree Walk ===")
-	print(compilationUnit:ToDisplayString())
-	for _, member in compilationUnit.Members do
-		print("  " .. member:ToDisplayString())
-		-- If it's a class, walk its members too
-		if member.Members then
-			for _, classMember in member.Members do
-				print("    " .. classMember:ToDisplayString())
+		-- Print tree walk using ToDisplayString()
+		print("--- Tree Walk ---")
+		print(compilationUnit:ToDisplayString())
+		for _, member in compilationUnit.Members do
+			print("  " .. member:ToDisplayString())
+			-- Walk child members if present (class, struct, enum all have Members)
+			if member.Members then
+				for _, childMember in member.Members do
+					print("    " .. childMember:ToDisplayString())
+				end
 			end
 		end
 	end
+
+	-- Test 1: Basic class (existing test)
+	parseAndPrint("Parser Test 1: Class",
+		"class Foo { int x = 5; void Bar() { return; } }")
+
+	-- Test 2: Enum declaration
+	parseAndPrint("Parser Test 2: Enum",
+		"enum Color { Red, Green = 1, Blue }")
+
+	-- Test 3: Struct with properties
+	parseAndPrint("Parser Test 3: Struct",
+		"struct Point { int X { get; set; } int Y { get; set; } }")
+
+	-- Test 4: Class with constructor
+	parseAndPrint("Parser Test 4: Constructor",
+		"class MyClass { int _value; MyClass(int v) { _value = v; } }")
 
 	warn("[LUSharp-Test] Parser test completed")
 end

@@ -151,6 +151,216 @@ function ClassDeclarationSyntax.ToDisplayString(self: ClassDeclarationSyntax): s
 	return "Class(" .. self.Name .. ", " .. #self.Members .. " members)"
 end
 
+type EnumMemberSyntax_self = {
+	Name: string;
+	Value: ExpressionSyntax;
+}
+
+local EnumMemberSyntax = {}
+EnumMemberSyntax.__index = EnumMemberSyntax
+export type EnumMemberSyntax = typeof(setmetatable({} :: EnumMemberSyntax_self, EnumMemberSyntax))
+
+function EnumMemberSyntax.new(name: string, value: ExpressionSyntax): EnumMemberSyntax
+	local self = setmetatable({
+		Name = "",
+		Value = nil :: any,
+	} :: EnumMemberSyntax_self, EnumMemberSyntax)
+	self.Name = name
+	self.Value = value
+	return self
+end
+
+function EnumMemberSyntax.ToDisplayString(self: EnumMemberSyntax): string
+	if self.Value == nil then
+		return self.Name
+	end
+	return self.Name .. " = " .. self.Value:Accept()
+end
+
+type EnumDeclarationSyntax_self = {
+	Name: string;
+	Members: { EnumMemberSyntax };
+}
+
+local EnumDeclarationSyntax = setmetatable({}, {__index = MemberDeclarationSyntax})
+EnumDeclarationSyntax.__index = EnumDeclarationSyntax
+export type EnumDeclarationSyntax = typeof(setmetatable({} :: EnumDeclarationSyntax_self, EnumDeclarationSyntax))
+
+function EnumDeclarationSyntax.new(name: string, members: { EnumMemberSyntax }): EnumDeclarationSyntax
+	local self = setmetatable(MemberDeclarationSyntax.new(8856) :: any, EnumDeclarationSyntax)
+	self.Name = ""
+	self.Members = {}
+	self.Name = name
+	self.Members = members
+	return self
+end
+
+function EnumDeclarationSyntax.Accept(self: EnumDeclarationSyntax): string
+	local result = "enum " .. self.Name .. " {\n"
+	local i = 0
+	while i < #self.Members do
+		if i > 0 then
+			result = result .. ",\n"
+		end
+		result = result .. "  " .. self.Members[i + 1]:ToDisplayString()
+		i += 1
+	end
+	result = result .. "\n}"
+	return result
+end
+
+function EnumDeclarationSyntax.ToDisplayString(self: EnumDeclarationSyntax): string
+	return "Enum(" .. self.Name .. ", " .. #self.Members .. " members)"
+end
+
+type StructDeclarationSyntax_self = {
+	Name: string;
+	Members: { MemberDeclarationSyntax };
+}
+
+local StructDeclarationSyntax = setmetatable({}, {__index = MemberDeclarationSyntax})
+StructDeclarationSyntax.__index = StructDeclarationSyntax
+export type StructDeclarationSyntax = typeof(setmetatable({} :: StructDeclarationSyntax_self, StructDeclarationSyntax))
+
+function StructDeclarationSyntax.new(name: string, members: { MemberDeclarationSyntax }): StructDeclarationSyntax
+	local self = setmetatable(MemberDeclarationSyntax.new(8857) :: any, StructDeclarationSyntax)
+	self.Name = ""
+	self.Members = {}
+	self.Name = name
+	self.Members = members
+	return self
+end
+
+function StructDeclarationSyntax.Accept(self: StructDeclarationSyntax): string
+	local result = "struct " .. self.Name .. " {\n"
+	local i = 0
+	while i < #self.Members do
+		result = result .. "  " .. self.Members[i + 1]:Accept() .. "\n"
+		i += 1
+	end
+	result = result .. "}"
+	return result
+end
+
+function StructDeclarationSyntax.ToDisplayString(self: StructDeclarationSyntax): string
+	return "Struct(" .. self.Name .. ", " .. #self.Members .. " members)"
+end
+
+type PropertyDeclarationSyntax_self = {
+	TypeName: string;
+	Name: string;
+	HasGetter: boolean;
+	HasSetter: boolean;
+	ExpressionBody: ExpressionSyntax;
+	IsStatic: boolean;
+}
+
+local PropertyDeclarationSyntax = setmetatable({}, {__index = MemberDeclarationSyntax})
+PropertyDeclarationSyntax.__index = PropertyDeclarationSyntax
+export type PropertyDeclarationSyntax = typeof(setmetatable({} :: PropertyDeclarationSyntax_self, PropertyDeclarationSyntax))
+
+function PropertyDeclarationSyntax.new(typeName: string, name: string, hasGetter: boolean, hasSetter: boolean, expressionBody: ExpressionSyntax, isStatic: boolean): PropertyDeclarationSyntax
+	local self = setmetatable(MemberDeclarationSyntax.new(8892) :: any, PropertyDeclarationSyntax)
+	self.TypeName = ""
+	self.Name = ""
+	self.HasGetter = false
+	self.HasSetter = false
+	self.ExpressionBody = nil :: any
+	self.IsStatic = false
+	self.TypeName = typeName
+	self.Name = name
+	self.HasGetter = hasGetter
+	self.HasSetter = hasSetter
+	self.ExpressionBody = expressionBody
+	self.IsStatic = isStatic
+	return self
+end
+
+function PropertyDeclarationSyntax.Accept(self: PropertyDeclarationSyntax): string
+	local mods = ""
+	if self.IsStatic then
+		mods = "static "
+	end
+	local result = mods .. self.TypeName .. " " .. self.Name
+	if self.ExpressionBody ~= nil then
+		result = result .. " => " .. self.ExpressionBody:Accept() .. ";"
+	else
+		result = result .. " { "
+		if self.HasGetter then
+			result = result .. "get; "
+		end
+		if self.HasSetter then
+			result = result .. "set; "
+		end
+		result = result .. "}"
+	end
+	return result
+end
+
+function PropertyDeclarationSyntax.ToDisplayString(self: PropertyDeclarationSyntax): string
+	return "Property(" .. self.Name .. ")"
+end
+
+type ConstructorDeclarationSyntax_self = {
+	Name: string;
+	Parameters: { ParameterSyntax };
+	Body: BlockSyntax;
+	BaseOrThisKeyword: string;
+	InitializerArguments: { ExpressionSyntax };
+}
+
+local ConstructorDeclarationSyntax = setmetatable({}, {__index = MemberDeclarationSyntax})
+ConstructorDeclarationSyntax.__index = ConstructorDeclarationSyntax
+export type ConstructorDeclarationSyntax = typeof(setmetatable({} :: ConstructorDeclarationSyntax_self, ConstructorDeclarationSyntax))
+
+function ConstructorDeclarationSyntax.new(name: string, parameters: { ParameterSyntax }, body: BlockSyntax, baseOrThisKeyword: string, initializerArguments: { ExpressionSyntax }): ConstructorDeclarationSyntax
+	local self = setmetatable(MemberDeclarationSyntax.new(8878) :: any, ConstructorDeclarationSyntax)
+	self.Name = ""
+	self.Parameters = {}
+	self.Body = nil :: any
+	self.BaseOrThisKeyword = ""
+	self.InitializerArguments = {}
+	self.Name = name
+	self.Parameters = parameters
+	self.Body = body
+	self.BaseOrThisKeyword = baseOrThisKeyword
+	self.InitializerArguments = initializerArguments
+	return self
+end
+
+function ConstructorDeclarationSyntax.Accept(self: ConstructorDeclarationSyntax): string
+	local parms = ""
+	local i = 0
+	while i < #self.Parameters do
+		if i > 0 then
+			parms = parms .. ", "
+		end
+		parms = parms .. self.Parameters[i + 1]:ToDisplayString()
+		i += 1
+	end
+	local result = self.Name .. "(" .. parms .. ")"
+	if self.BaseOrThisKeyword ~= nil then
+		result = result .. " : " .. self.BaseOrThisKeyword .. "("
+		local i = 0
+		while i < #self.InitializerArguments do
+			if i > 0 then
+				result = result .. ", "
+			end
+			result = result .. self.InitializerArguments[i + 1]:Accept()
+			i += 1
+		end
+		result = result .. ")"
+	end
+	if self.Body ~= nil then
+		result = result .. " " .. BlockSyntax.Accept(self.Body)
+	end
+	return result
+end
+
+function ConstructorDeclarationSyntax.ToDisplayString(self: ConstructorDeclarationSyntax): string
+	return "Constructor(" .. self.Name .. ")"
+end
+
 type CompilationUnitSyntax_self = {
 	Members: { MemberDeclarationSyntax };
 }
@@ -180,4 +390,4 @@ function CompilationUnitSyntax.ToDisplayString(self: CompilationUnitSyntax): str
 	return "CompilationUnit(" .. #self.Members .. " members)"
 end
 
-return { ParameterSyntax = ParameterSyntax, MethodDeclarationSyntax = MethodDeclarationSyntax, FieldDeclarationSyntax = FieldDeclarationSyntax, ClassDeclarationSyntax = ClassDeclarationSyntax, CompilationUnitSyntax = CompilationUnitSyntax }
+return { ParameterSyntax = ParameterSyntax, MethodDeclarationSyntax = MethodDeclarationSyntax, FieldDeclarationSyntax = FieldDeclarationSyntax, ClassDeclarationSyntax = ClassDeclarationSyntax, EnumMemberSyntax = EnumMemberSyntax, EnumDeclarationSyntax = EnumDeclarationSyntax, StructDeclarationSyntax = StructDeclarationSyntax, PropertyDeclarationSyntax = PropertyDeclarationSyntax, ConstructorDeclarationSyntax = ConstructorDeclarationSyntax, CompilationUnitSyntax = CompilationUnitSyntax }

@@ -219,4 +219,115 @@ function AssignmentExpressionSyntax.ToDisplayString(self: AssignmentExpressionSy
 	return "Assignment(" .. self.Left:ToDisplayString() .. " " .. self.OperatorToken.Text .. " " .. self.Right:ToDisplayString() .. ")"
 end
 
-return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax }
+type ObjectCreationExpressionSyntax_self = {
+	TypeName: string;
+	Arguments: { ExpressionSyntax };
+}
+
+local ObjectCreationExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+ObjectCreationExpressionSyntax.__index = ObjectCreationExpressionSyntax
+export type ObjectCreationExpressionSyntax = typeof(setmetatable({} :: ObjectCreationExpressionSyntax_self, ObjectCreationExpressionSyntax))
+
+function ObjectCreationExpressionSyntax.new(typeName: string, arguments: { ExpressionSyntax }): ObjectCreationExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(8649) :: any, ObjectCreationExpressionSyntax)
+	self.TypeName = ""
+	self.Arguments = {}
+	self.TypeName = typeName
+	self.Arguments = arguments
+	return self
+end
+
+function ObjectCreationExpressionSyntax.Accept(self: ObjectCreationExpressionSyntax): string
+	local args = ""
+	local i = 0
+	while i < #self.Arguments do
+		if i > 0 then
+			args += ", "
+		end
+		args += self.Arguments[i + 1]:Accept()
+		i += 1
+	end
+	return "new " .. self.TypeName .. "(" .. args .. ")"
+end
+
+function ObjectCreationExpressionSyntax.ToDisplayString(self: ObjectCreationExpressionSyntax): string
+	return "New(" .. self.TypeName .. ")"
+end
+
+type LambdaExpressionSyntax_self = {
+	ParameterNames: { string };
+	ExpressionBody: ExpressionSyntax;
+	BlockBody: StatementSyntax;
+}
+
+local LambdaExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+LambdaExpressionSyntax.__index = LambdaExpressionSyntax
+export type LambdaExpressionSyntax = typeof(setmetatable({} :: LambdaExpressionSyntax_self, LambdaExpressionSyntax))
+
+function LambdaExpressionSyntax.new(parameterNames: { string }, expressionBody: ExpressionSyntax, blockBody: StatementSyntax): LambdaExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(8643) :: any, LambdaExpressionSyntax)
+	self.ParameterNames = {}
+	self.ExpressionBody = nil :: any
+	self.BlockBody = nil :: any
+	self.ParameterNames = parameterNames
+	self.ExpressionBody = expressionBody
+	self.BlockBody = blockBody
+	return self
+end
+
+function LambdaExpressionSyntax.Accept(self: LambdaExpressionSyntax): string
+	local parms = ""
+	if #self.ParameterNames == 1 then
+		parms = self.ParameterNames[0 + 1]
+	else
+		parms = "("
+		local i = 0
+		while i < #self.ParameterNames do
+			if i > 0 then
+				parms += ", "
+			end
+			parms += self.ParameterNames[i + 1]
+			i += 1
+		end
+		parms += ")"
+	end
+	if self.ExpressionBody ~= nil then
+		return parms .. " => " .. self.ExpressionBody:Accept()
+	end
+	if self.BlockBody ~= nil then
+		return parms .. " => " .. self.BlockBody:Accept()
+	end
+	return parms .. " => {}"
+end
+
+function LambdaExpressionSyntax.ToDisplayString(self: LambdaExpressionSyntax): string
+	return "Lambda(" .. #self.ParameterNames .. " params)"
+end
+
+type CastExpressionSyntax_self = {
+	TypeName: string;
+	Expression: ExpressionSyntax;
+}
+
+local CastExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+CastExpressionSyntax.__index = CastExpressionSyntax
+export type CastExpressionSyntax = typeof(setmetatable({} :: CastExpressionSyntax_self, CastExpressionSyntax))
+
+function CastExpressionSyntax.new(typeName: string, expression: ExpressionSyntax): CastExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(8640) :: any, CastExpressionSyntax)
+	self.TypeName = ""
+	self.Expression = nil :: any
+	self.TypeName = typeName
+	self.Expression = expression
+	return self
+end
+
+function CastExpressionSyntax.Accept(self: CastExpressionSyntax): string
+	return "(" .. self.TypeName .. ")" .. self.Expression:Accept()
+end
+
+function CastExpressionSyntax.ToDisplayString(self: CastExpressionSyntax): string
+	return "Cast(" .. self.TypeName .. ")"
+end
+
+return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax }
