@@ -15,6 +15,7 @@ public class SimpleEmitter : SyntaxWalker
     private string _output;
     private int _indent;
     private string _currentClassName;
+    private string _baseClassName;
     private bool _isStaticContext;
 
     // Collected instance fields for the current class (name, luauType, defaultExpr)
@@ -41,6 +42,7 @@ public class SimpleEmitter : SyntaxWalker
         _output = "";
         _indent = 0;
         _currentClassName = "";
+        _baseClassName = null;
         _isStaticContext = false;
         _fieldNames = new string[64];
         _fieldTypes = new string[64];
@@ -253,18 +255,20 @@ public class SimpleEmitter : SyntaxWalker
 
     public override void VisitClassDeclaration(ClassDeclarationSyntax node)
     {
-        EmitClassOrStruct(node.Name, node.Members, false);
+        EmitClassOrStruct(node.Name, node.BaseTypeName, node.Members, false);
     }
 
     public override void VisitStructDeclaration(StructDeclarationSyntax node)
     {
-        EmitClassOrStruct(node.Name, node.Members, true);
+        EmitClassOrStruct(node.Name, node.BaseTypeName, node.Members, true);
     }
 
-    private void EmitClassOrStruct(string name, MemberDeclarationSyntax[] members, bool isStruct)
+    private void EmitClassOrStruct(string name, string baseTypeName, MemberDeclarationSyntax[] members, bool isStruct)
     {
         string savedClassName = _currentClassName;
+        string savedBaseClassName = _baseClassName;
         _currentClassName = name;
+        _baseClassName = baseTypeName;
 
         // Reset field collectors for this type
         _fieldCount = 0;
@@ -357,7 +361,14 @@ public class SimpleEmitter : SyntaxWalker
         }
 
         // Emit the table and __index
-        AppendLine("local " + name + " = {}");
+        if (baseTypeName != null)
+        {
+            AppendLine("local " + name + " = setmetatable({}, {__index = " + baseTypeName + "})");
+        }
+        else
+        {
+            AppendLine("local " + name + " = {}");
+        }
         if (!isAllStatic)
         {
             AppendLine(name + ".__index = " + name);
@@ -426,6 +437,7 @@ public class SimpleEmitter : SyntaxWalker
         }
 
         _currentClassName = savedClassName;
+        _baseClassName = savedBaseClassName;
     }
 
     private void EmitDefaultConstructor(string className)
@@ -433,7 +445,19 @@ public class SimpleEmitter : SyntaxWalker
         AppendLine("function " + className + ".new(): " + className);
         Indent();
 
-        if (_fieldCount > 0)
+        if (_baseClassName != null)
+        {
+            // Inheritance: call parent constructor, re-set metatable to child
+            AppendLine("local self = setmetatable(" + _baseClassName + ".new() :: any, " + className + ")");
+            // Set child-specific field defaults
+            for (int i = 0; i < _fieldCount; i++)
+            {
+                string val = _fieldDefaults[i];
+                if (val == null) val = DefaultForType(_fieldTypes[i]);
+                AppendLine("self." + _fieldNames[i] + " = " + val);
+            }
+        }
+        else if (_fieldCount > 0)
         {
             AppendLine("local self = setmetatable({");
             Indent();
@@ -468,9 +492,44 @@ public class SimpleEmitter : SyntaxWalker
         AppendLine("function " + className + ".new(" + parms + "): " + className);
         Indent();
 
-        // Emit setmetatable with field defaults
-        if (_fieldCount > 0)
+        if (_baseClassName != null && ctor.BaseOrThisKeyword == "base")
         {
+            // Inheritance with explicit base(args): call parent constructor
+            string baseArgs = "";
+            if (ctor.InitializerArguments != null)
+            {
+                for (int i = 0; i < ctor.InitializerArguments.Length; i++)
+                {
+                    if (i > 0) baseArgs = baseArgs + ", ";
+                    baseArgs = baseArgs + EmitExpression(ctor.InitializerArguments[i]);
+                }
+            }
+            AppendLine("local self = setmetatable(" + _baseClassName + ".new(" + baseArgs + ") :: any, " + className + ")");
+
+            // Set child-specific field defaults
+            for (int i = 0; i < _fieldCount; i++)
+            {
+                string val = _fieldDefaults[i];
+                if (val == null) val = DefaultForType(_fieldTypes[i]);
+                AppendLine("self." + _fieldNames[i] + " = " + val);
+            }
+        }
+        else if (_baseClassName != null)
+        {
+            // Inheritance without explicit base call: call parameterless parent constructor
+            AppendLine("local self = setmetatable(" + _baseClassName + ".new() :: any, " + className + ")");
+
+            // Set child-specific field defaults
+            for (int i = 0; i < _fieldCount; i++)
+            {
+                string val = _fieldDefaults[i];
+                if (val == null) val = DefaultForType(_fieldTypes[i]);
+                AppendLine("self." + _fieldNames[i] + " = " + val);
+            }
+        }
+        else if (_fieldCount > 0)
+        {
+            // No inheritance: standard setmetatable with field table
             AppendLine("local self = setmetatable({");
             Indent();
             for (int i = 0; i < _fieldCount; i++)
@@ -1415,9 +1474,13 @@ public class SimpleEmitter : SyntaxWalker
             return "self." + memberName;
         }
 
-        // base.X → CurrentClass.X (simplified; no base-class tracking in SimpleEmitter)
+        // base.X → BaseClass.X (for field access via metatable chain, use self.X)
         if (obj == "base")
         {
+            if (_baseClassName != null)
+            {
+                return _baseClassName + "." + memberName;
+            }
             return _currentClassName + "." + memberName;
         }
 
@@ -1553,6 +1616,16 @@ public class SimpleEmitter : SyntaxWalker
             if (methodName == "Replace")
             {
                 return "string.gsub(" + obj + ", " + args + ")";
+            }
+
+            // base.Method(args) → BaseClass.Method(self, args)
+            if (obj == "base" && _baseClassName != null)
+            {
+                if (args.Length > 0)
+                {
+                    return _baseClassName + "." + methodName + "(self, " + args + ")";
+                }
+                return _baseClassName + "." + methodName + "(self)";
             }
 
             return obj + "." + methodName + "(" + args + ")";

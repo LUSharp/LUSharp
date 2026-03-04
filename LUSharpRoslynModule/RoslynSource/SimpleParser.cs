@@ -291,10 +291,17 @@ public class SimpleParser
             }
         }
 
-        // Skip base class/interface list
+        // Parse base class/interface list — capture first base type name
+        string baseTypeName = null;
         if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
         {
-            Advance();
+            Advance(); // skip ':'
+            // First identifier after ':' is the base type
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.IdentifierToken)
+            {
+                baseTypeName = Current().Text;
+            }
+            // Skip remaining base list tokens until '{'
             while (!IsAtEnd() && Current().Kind != SyntaxKind.OpenBraceToken)
                 Advance();
         }
@@ -325,7 +332,7 @@ public class SimpleParser
         for (int i = 0; i < count; i++)
             result[i] = members[i];
 
-        return new ClassDeclarationSyntax(name, result);
+        return new ClassDeclarationSyntax(name, baseTypeName, result);
     }
 
     private EnumDeclarationSyntax ParseEnumDeclaration()
@@ -399,10 +406,15 @@ public class SimpleParser
             }
         }
 
-        // Skip base/interface list
+        // Parse base/interface list — capture first base type name
+        string baseTypeName = null;
         if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
         {
-            Advance();
+            Advance(); // skip ':'
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.IdentifierToken)
+            {
+                baseTypeName = Current().Text;
+            }
             while (!IsAtEnd() && Current().Kind != SyntaxKind.OpenBraceToken)
                 Advance();
         }
@@ -433,7 +445,7 @@ public class SimpleParser
         for (int i = 0; i < count; i++)
             result[i] = members[i];
 
-        return new StructDeclarationSyntax(name, result);
+        return new StructDeclarationSyntax(name, baseTypeName, result);
     }
 
     private PropertyDeclarationSyntax ParsePropertyDeclaration(string typeName, string name, bool isStatic)
@@ -1590,6 +1602,13 @@ public class SimpleParser
             && _tokens[_position + 1].Kind == SyntaxKind.EqualsGreaterThanToken)
         {
             return ParseSimpleLambda();
+        }
+
+        // this / base keywords — treat as identifiers in expression position
+        if (kind == SyntaxKind.ThisKeyword || kind == SyntaxKind.BaseKeyword)
+        {
+            var token = MakeSyntaxToken(Advance());
+            return new IdentifierNameSyntax(token);
         }
 
         // Identifier

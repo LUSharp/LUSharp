@@ -9,6 +9,7 @@ type SimpleEmitter_self = {
 	_output: string;
 	_indent: number;
 	_currentClassName: string;
+	_baseClassName: string;
 	_isStaticContext: boolean;
 	_fieldNames: { string };
 	_fieldTypes: { string };
@@ -32,6 +33,7 @@ function SimpleEmitter.new(): SimpleEmitter
 	self._output = ""
 	self._indent = 0
 	self._currentClassName = ""
+	self._baseClassName = ""
 	self._isStaticContext = false
 	self._fieldNames = {}
 	self._fieldTypes = {}
@@ -47,6 +49,7 @@ function SimpleEmitter.new(): SimpleEmitter
 	self._output = ""
 	self._indent = 0
 	self._currentClassName = ""
+	self._baseClassName = nil
 	self._isStaticContext = false
 	self._fieldNames = table.create(64)
 	self._fieldTypes = table.create(64)
@@ -246,16 +249,18 @@ function SimpleEmitter.DefaultForType(self: SimpleEmitter, csharpType: string): 
 end
 
 function SimpleEmitter.VisitClassDeclaration(self: SimpleEmitter, node: ClassDeclarationSyntax): ()
-	SimpleEmitter.EmitClassOrStruct(self, node.Name, node.Members, false)
+	SimpleEmitter.EmitClassOrStruct(self, node.Name, node.BaseTypeName, node.Members, false)
 end
 
 function SimpleEmitter.VisitStructDeclaration(self: SimpleEmitter, node: StructDeclarationSyntax): ()
-	SimpleEmitter.EmitClassOrStruct(self, node.Name, node.Members, true)
+	SimpleEmitter.EmitClassOrStruct(self, node.Name, node.BaseTypeName, node.Members, true)
 end
 
-function SimpleEmitter.EmitClassOrStruct(self: SimpleEmitter, name: string, members: { MemberDeclarationSyntax }, isStruct: boolean): ()
+function SimpleEmitter.EmitClassOrStruct(self: SimpleEmitter, name: string, baseTypeName: string, members: { MemberDeclarationSyntax }, isStruct: boolean): ()
 	local savedClassName = self._currentClassName
+	local savedBaseClassName = self._baseClassName
 	self._currentClassName = name
+	self._baseClassName = baseTypeName
 	self._fieldCount = 0
 	self._staticFieldCount = 0
 	self._hasInstanceMembers = false
@@ -321,7 +326,11 @@ function SimpleEmitter.EmitClassOrStruct(self: SimpleEmitter, name: string, memb
 		SimpleEmitter.AppendLine(self, "}")
 		SimpleEmitter.AppendLine(self, "")
 	end
-	SimpleEmitter.AppendLine(self, "local " .. name .. " = {}")
+	if baseTypeName ~= nil then
+		SimpleEmitter.AppendLine(self, "local " .. name .. " = setmetatable({}, {__index = " .. baseTypeName .. "})")
+	else
+		SimpleEmitter.AppendLine(self, "local " .. name .. " = {}")
+	end
 	if not isAllStatic then
 		SimpleEmitter.AppendLine(self, name .. ".__index = " .. name)
 		SimpleEmitter.AppendLine(self, "export type " .. name .. " = typeof(setmetatable({} :: " .. name .. "_self, " .. name .. "))")
@@ -376,12 +385,24 @@ function SimpleEmitter.EmitClassOrStruct(self: SimpleEmitter, name: string, memb
 		i += 1
 	end
 	self._currentClassName = savedClassName
+	self._baseClassName = savedBaseClassName
 end
 
 function SimpleEmitter.EmitDefaultConstructor(self: SimpleEmitter, className: string): ()
 	SimpleEmitter.AppendLine(self, "function " .. className .. ".new(): " .. className)
 	SimpleEmitter.Indent(self)
-	if self._fieldCount > 0 then
+	if self._baseClassName ~= nil then
+		SimpleEmitter.AppendLine(self, "local self = setmetatable(" .. self._baseClassName .. ".new() :: any, " .. className .. ")")
+		local i = 0
+		while i < self._fieldCount do
+			local val = self._fieldDefaults[i + 1]
+			if val == nil then
+				val = SimpleEmitter.DefaultForType(self, self._fieldTypes[i + 1])
+			end
+			SimpleEmitter.AppendLine(self, "self." .. self._fieldNames[i + 1] .. " = " .. val)
+			i += 1
+		end
+	elseif self._fieldCount > 0 then
 		SimpleEmitter.AppendLine(self, "local self = setmetatable({")
 		SimpleEmitter.Indent(self)
 		local i = 0
@@ -415,7 +436,40 @@ function SimpleEmitter.EmitConstructor(self: SimpleEmitter, className: string, c
 	end
 	SimpleEmitter.AppendLine(self, "function " .. className .. ".new(" .. parms .. "): " .. className)
 	SimpleEmitter.Indent(self)
-	if self._fieldCount > 0 then
+	if self._baseClassName ~= nil and ctor.BaseOrThisKeyword == "base" then
+		local baseArgs = ""
+		if ctor.InitializerArguments ~= nil then
+			local i = 0
+			while i < #ctor.InitializerArguments do
+				if i > 0 then
+					baseArgs = baseArgs .. ", "
+				end
+				baseArgs = baseArgs + SimpleEmitter.EmitExpression(self, ctor.InitializerArguments[i + 1])
+				i += 1
+			end
+		end
+		SimpleEmitter.AppendLine(self, "local self = setmetatable(" .. self._baseClassName .. ".new(" .. baseArgs .. ") :: any, " .. className .. ")")
+		local i = 0
+		while i < self._fieldCount do
+			local val = self._fieldDefaults[i + 1]
+			if val == nil then
+				val = SimpleEmitter.DefaultForType(self, self._fieldTypes[i + 1])
+			end
+			SimpleEmitter.AppendLine(self, "self." .. self._fieldNames[i + 1] .. " = " .. val)
+			i += 1
+		end
+	elseif self._baseClassName ~= nil then
+		SimpleEmitter.AppendLine(self, "local self = setmetatable(" .. self._baseClassName .. ".new() :: any, " .. className .. ")")
+		local i = 0
+		while i < self._fieldCount do
+			local val = self._fieldDefaults[i + 1]
+			if val == nil then
+				val = SimpleEmitter.DefaultForType(self, self._fieldTypes[i + 1])
+			end
+			SimpleEmitter.AppendLine(self, "self." .. self._fieldNames[i + 1] .. " = " .. val)
+			i += 1
+		end
+	elseif self._fieldCount > 0 then
 		SimpleEmitter.AppendLine(self, "local self = setmetatable({")
 		SimpleEmitter.Indent(self)
 		local i = 0
@@ -1145,6 +1199,9 @@ function SimpleEmitter.EmitMemberAccess(self: SimpleEmitter, expr: ExpressionSyn
 		return "self." .. memberName
 	end
 	if obj == "base" then
+		if self._baseClassName ~= nil then
+			return self._baseClassName .. "." .. memberName
+		end
 		return self._currentClassName .. "." .. memberName
 	end
 	return obj .. "." .. memberName
@@ -1265,6 +1322,12 @@ function SimpleEmitter.EmitInvocation(self: SimpleEmitter, expr: ExpressionSynta
 		end
 		if methodName == "Replace" then
 			return "string.gsub(" .. obj .. ", " .. args .. ")"
+		end
+		if obj == "base" and self._baseClassName ~= nil then
+			if #args > 0 then
+				return self._baseClassName .. "." .. methodName .. "(self, " .. args .. ")"
+			end
+			return self._baseClassName .. "." .. methodName .. "(self)"
 		end
 		return obj .. "." .. methodName .. "(" .. args .. ")"
 	end

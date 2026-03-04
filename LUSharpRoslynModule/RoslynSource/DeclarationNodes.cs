@@ -96,17 +96,24 @@ public class FieldDeclarationSyntax : MemberDeclarationSyntax
 public class ClassDeclarationSyntax : MemberDeclarationSyntax
 {
     public string Name { get; }
+    public string BaseTypeName { get; }
     public MemberDeclarationSyntax[] Members { get; }
 
-    public ClassDeclarationSyntax(string name, MemberDeclarationSyntax[] members) : base(8855)
+    public ClassDeclarationSyntax(string name, string baseTypeName, MemberDeclarationSyntax[] members) : base(8855)
     {
         Name = name;
+        BaseTypeName = baseTypeName;
         Members = members;
     }
 
     public override string Accept()
     {
-        string result = "class " + Name + " {\n";
+        string result = "class " + Name;
+        if (BaseTypeName != null)
+        {
+            result = result + " : " + BaseTypeName;
+        }
+        result = result + " {\n";
         for (int i = 0; i < Members.Length; i++)
         {
             result = result + "  " + Members[i].Accept() + "\n";
@@ -182,17 +189,24 @@ public class EnumDeclarationSyntax : MemberDeclarationSyntax
 public class StructDeclarationSyntax : MemberDeclarationSyntax
 {
     public string Name { get; }
+    public string BaseTypeName { get; }
     public MemberDeclarationSyntax[] Members { get; }
 
-    public StructDeclarationSyntax(string name, MemberDeclarationSyntax[] members) : base(8857)
+    public StructDeclarationSyntax(string name, string baseTypeName, MemberDeclarationSyntax[] members) : base(8857)
     {
         Name = name;
+        BaseTypeName = baseTypeName;
         Members = members;
     }
 
     public override string Accept()
     {
-        string result = "struct " + Name + " {\n";
+        string result = "struct " + Name;
+        if (BaseTypeName != null)
+        {
+            result = result + " : " + BaseTypeName;
+        }
+        result = result + " {\n";
         for (int i = 0; i < Members.Length; i++)
         {
             result = result + "  " + Members[i].Accept() + "\n";

@@ -305,8 +305,12 @@ function SimpleParser.ParseClassDeclaration(self: SimpleParser): ClassDeclaratio
 			SimpleParser.Advance(self)
 		end
 	end
+	local baseTypeName = nil
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.ColonToken then
 		SimpleParser.Advance(self)
+		if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.IdentifierToken then
+			baseTypeName = SimpleParser.Current(self).Text
+		end
 		while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.OpenBraceToken do
 			SimpleParser.Advance(self)
 		end
@@ -331,7 +335,7 @@ function SimpleParser.ParseClassDeclaration(self: SimpleParser): ClassDeclaratio
 		result[i + 1] = members[i + 1]
 		i += 1
 	end
-	return ClassDeclarationSyntax.new(name, result)
+	return ClassDeclarationSyntax.new(name, baseTypeName, result)
 end
 
 function SimpleParser.ParseEnumDeclaration(self: SimpleParser): EnumDeclarationSyntax
@@ -390,8 +394,12 @@ function SimpleParser.ParseStructDeclaration(self: SimpleParser): StructDeclarat
 			SimpleParser.Advance(self)
 		end
 	end
+	local baseTypeName = nil
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.ColonToken then
 		SimpleParser.Advance(self)
+		if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.IdentifierToken then
+			baseTypeName = SimpleParser.Current(self).Text
+		end
 		while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.OpenBraceToken do
 			SimpleParser.Advance(self)
 		end
@@ -416,7 +424,7 @@ function SimpleParser.ParseStructDeclaration(self: SimpleParser): StructDeclarat
 		result[i + 1] = members[i + 1]
 		i += 1
 	end
-	return StructDeclarationSyntax.new(name, result)
+	return StructDeclarationSyntax.new(name, baseTypeName, result)
 end
 
 function SimpleParser.ParsePropertyDeclaration(self: SimpleParser, typeName: string, name: string, isStatic: boolean): PropertyDeclarationSyntax
@@ -1252,6 +1260,10 @@ function SimpleParser.ParseAtom(self: SimpleParser): ExpressionSyntax
 	end
 	if kind == SyntaxKind.IdentifierToken and self._position + 1 < #self._tokens and self._tokens[self._position + 1 + 1].Kind == SyntaxKind.EqualsGreaterThanToken then
 		return SimpleParser.ParseSimpleLambda(self)
+	end
+	if kind == SyntaxKind.ThisKeyword or kind == SyntaxKind.BaseKeyword then
+		local token = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+		return IdentifierNameSyntax.new(token)
 	end
 	if kind == SyntaxKind.IdentifierToken then
 		local token = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))

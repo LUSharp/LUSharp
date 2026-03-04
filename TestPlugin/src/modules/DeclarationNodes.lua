@@ -128,6 +128,7 @@ end
 
 type ClassDeclarationSyntax_self = {
 	Name: string;
+	BaseTypeName: string;
 	Members: { MemberDeclarationSyntax };
 }
 
@@ -135,17 +136,23 @@ local ClassDeclarationSyntax = setmetatable({}, {__index = MemberDeclarationSynt
 ClassDeclarationSyntax.__index = ClassDeclarationSyntax
 export type ClassDeclarationSyntax = typeof(setmetatable({} :: ClassDeclarationSyntax_self, ClassDeclarationSyntax))
 
-function ClassDeclarationSyntax.new(name: string, members: { MemberDeclarationSyntax }): ClassDeclarationSyntax
+function ClassDeclarationSyntax.new(name: string, baseTypeName: string, members: { MemberDeclarationSyntax }): ClassDeclarationSyntax
 	local self = setmetatable(MemberDeclarationSyntax.new(8855) :: any, ClassDeclarationSyntax)
 	self.Name = ""
+	self.BaseTypeName = ""
 	self.Members = {}
 	self.Name = name
+	self.BaseTypeName = baseTypeName
 	self.Members = members
 	return self
 end
 
 function ClassDeclarationSyntax.Accept(self: ClassDeclarationSyntax): string
-	local result = "class " .. self.Name .. " {\n"
+	local result = "class " .. self.Name
+	if self.BaseTypeName ~= nil then
+		result = result .. " : " .. self.BaseTypeName
+	end
+	result = result .. " {\n"
 	local i = 0
 	while i < #self.Members do
 		result = result .. "  " .. self.Members[i + 1]:Accept() .. "\n"
@@ -231,6 +238,7 @@ end
 
 type StructDeclarationSyntax_self = {
 	Name: string;
+	BaseTypeName: string;
 	Members: { MemberDeclarationSyntax };
 }
 
@@ -238,17 +246,23 @@ local StructDeclarationSyntax = setmetatable({}, {__index = MemberDeclarationSyn
 StructDeclarationSyntax.__index = StructDeclarationSyntax
 export type StructDeclarationSyntax = typeof(setmetatable({} :: StructDeclarationSyntax_self, StructDeclarationSyntax))
 
-function StructDeclarationSyntax.new(name: string, members: { MemberDeclarationSyntax }): StructDeclarationSyntax
+function StructDeclarationSyntax.new(name: string, baseTypeName: string, members: { MemberDeclarationSyntax }): StructDeclarationSyntax
 	local self = setmetatable(MemberDeclarationSyntax.new(8857) :: any, StructDeclarationSyntax)
 	self.Name = ""
+	self.BaseTypeName = ""
 	self.Members = {}
 	self.Name = name
+	self.BaseTypeName = baseTypeName
 	self.Members = members
 	return self
 end
 
 function StructDeclarationSyntax.Accept(self: StructDeclarationSyntax): string
-	local result = "struct " .. self.Name .. " {\n"
+	local result = "struct " .. self.Name
+	if self.BaseTypeName ~= nil then
+		result = result .. " : " .. self.BaseTypeName
+	end
+	result = result .. " {\n"
 	local i = 0
 	while i < #self.Members do
 		result = result .. "  " .. self.Members[i + 1]:Accept() .. "\n"
