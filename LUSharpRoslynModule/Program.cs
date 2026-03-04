@@ -15,7 +15,7 @@ internal class Program
             Console.WriteLine("  generate                  Generate RoslynSource/ files via reflection");
             Console.WriteLine("  transpile <file.cs>       Transpile a single C# file to Luau");
             Console.WriteLine("  transpile-all             Transpile all files in RoslynSource/");
-            Console.WriteLine("  reference <command>       Run reference test harness");
+            Console.WriteLine("  reference <command>       Run reference test harness (self-emit, transpiler, ...)");
             return 1;
         }
 
@@ -274,6 +274,9 @@ internal class Program
                 break;
             case "self-emit":
                 Reference.SelfEmitReference.PrintAll();
+                break;
+            case "transpiler":
+                Reference.TranspilerReference.PrintAll();
                 break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
