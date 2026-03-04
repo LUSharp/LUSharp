@@ -130,6 +130,16 @@ internal class Program
         var fileName = Path.GetFileName(filePath);
 
         var transpiler = new RoslynToLuau();
+
+        // Pre-scan all source files for type-to-module mapping and overload resolution
+        var roslynSourceDir = Path.Combine(projectDir, "RoslynSource");
+        if (Directory.Exists(roslynSourceDir))
+        {
+            var allFiles = Directory.GetFiles(roslynSourceDir, "*.cs")
+                .Select(f => (File.ReadAllText(f), Path.GetFileName(f)));
+            transpiler.PreScan(allFiles);
+        }
+
         var result = transpiler.Transpile(sourceCode, fileName);
 
         if (!result.Success)

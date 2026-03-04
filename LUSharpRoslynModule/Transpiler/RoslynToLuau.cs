@@ -37,8 +37,9 @@ public class RoslynToLuau
             ScanOverloads(root.Members);
 
             // Build type-to-module mapping: each type defined in this file maps to the module name
+            // This includes nested types (e.g., SimpleTokenizer.TokenInfo → SimpleTokenizer module)
             var moduleName = Path.GetFileNameWithoutExtension(fileName);
-            var typeNames = CollectTypeNames(root.Members);
+            var typeNames = CollectAllTypeNames(root.Members);
             foreach (var typeName in typeNames)
             {
                 _typeToModuleMap[typeName] = moduleName;
@@ -239,6 +240,7 @@ public class RoslynToLuau
     /// <summary>
     /// Collect all type names defined in a set of members (classes, structs, enums).
     /// Used to exclude same-file types from require() statements.
+    /// Does NOT recurse into nested types (only top-level within the namespace).
     /// </summary>
     private HashSet<string> CollectTypeNames(SyntaxList<MemberDeclarationSyntax> members)
     {
@@ -258,6 +260,41 @@ public class RoslynToLuau
                     break;
                 case StructDeclarationSyntax structDecl:
                     names.Add(structDecl.Identifier.Text);
+                    break;
+                case EnumDeclarationSyntax enumDecl:
+                    names.Add(enumDecl.Identifier.Text);
+                    break;
+            }
+        }
+        return names;
+    }
+
+    /// <summary>
+    /// Collect ALL type names including nested types (recursing into class/struct members).
+    /// Used for the type-to-module map during PreScan, so nested types like TokenInfo
+    /// inside SimpleTokenizer correctly map to the SimpleTokenizer module.
+    /// </summary>
+    private HashSet<string> CollectAllTypeNames(SyntaxList<MemberDeclarationSyntax> members)
+    {
+        var names = new HashSet<string>();
+        foreach (var member in members)
+        {
+            switch (member)
+            {
+                case NamespaceDeclarationSyntax ns:
+                    names.UnionWith(CollectAllTypeNames(ns.Members));
+                    break;
+                case FileScopedNamespaceDeclarationSyntax ns:
+                    names.UnionWith(CollectAllTypeNames(ns.Members));
+                    break;
+                case ClassDeclarationSyntax classDecl:
+                    names.Add(classDecl.Identifier.Text);
+                    // Recurse into nested types
+                    names.UnionWith(CollectAllTypeNames(classDecl.Members));
+                    break;
+                case StructDeclarationSyntax structDecl:
+                    names.Add(structDecl.Identifier.Text);
+                    names.UnionWith(CollectAllTypeNames(structDecl.Members));
                     break;
                 case EnumDeclarationSyntax enumDecl:
                     names.Add(enumDecl.Identifier.Text);

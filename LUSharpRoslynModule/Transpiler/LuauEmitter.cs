@@ -54,6 +54,13 @@ public class LuauEmitter
     private HashSet<string> _currentMethodLocals = new();
 
     /// <summary>
+    /// Map of parameter/local names to their raw C# type strings.
+    /// Used to determine whether .Length should emit as # (for array/collection types)
+    /// or stay as .Length (for struct/class types with a Length property).
+    /// </summary>
+    private Dictionary<string, string> _currentMethodParamTypes = new();
+
+    /// <summary>
     /// When true, all + binary expressions should emit as .. (string concatenation).
     /// Set by the top-level string concat detection in EmitBinary, so inner + nodes
     /// in the same chain also use .. instead of +.
@@ -698,6 +705,7 @@ public class LuauEmitter
         var paramParts = new List<string>();
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
 
         foreach (var param in parameters)
         {
@@ -705,6 +713,7 @@ public class LuauEmitter
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
             _currentMethodParams.Add(paramName);
+            _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
         var paramStr = string.Join(", ", paramParts);
@@ -774,6 +783,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
     /// <summary>
@@ -945,6 +955,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
 
         // Build parameter list: self first, then declared params
         var paramParts = new List<string>();
@@ -955,6 +966,7 @@ public class LuauEmitter
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
             _currentMethodParams.Add(paramName);
+            _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
         var paramStr = string.Join(", ", paramParts);
@@ -980,6 +992,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
     /// <summary>
@@ -994,6 +1007,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
 
         // Build parameter list with types
         var paramParts = new List<string>();
@@ -1003,6 +1017,7 @@ public class LuauEmitter
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
             _currentMethodParams.Add(paramName);
+            _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
         var paramStr = string.Join(", ", paramParts);
@@ -1028,6 +1043,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -1637,6 +1653,7 @@ public class LuauEmitter
             ThrowExpressionSyntax throwExpr => EmitThrowExpression(throwExpr),
             ObjectCreationExpressionSyntax objCreate => EmitObjectCreation(objCreate),
             ImplicitObjectCreationExpressionSyntax implicitCreate => EmitImplicitObjectCreation(implicitCreate),
+            ArrayCreationExpressionSyntax arrayCreate => EmitArrayCreation(arrayCreate),
             ThisExpressionSyntax => "self",
             BaseExpressionSyntax => _baseClassName ?? "--[[TODO: base without parent]] nil",
             ElementAccessExpressionSyntax elementAccess => EmitElementAccess(elementAccess),
@@ -2169,6 +2186,34 @@ public class LuauEmitter
     }
 
     /// <summary>
+    /// Handle `new Type[size]` array creation → `table.create(size)` or `{}`.
+    /// Also handles `new Type[] { items }` → `{ items }`.
+    /// </summary>
+    private string EmitArrayCreation(ArrayCreationExpressionSyntax arrayCreate)
+    {
+        // If there's an initializer with elements: new int[] { 1, 2, 3 } → { 1, 2, 3 }
+        if (arrayCreate.Initializer != null && arrayCreate.Initializer.Expressions.Count > 0)
+        {
+            var elements = arrayCreate.Initializer.Expressions.Select(e => EmitExpression(e));
+            return $"{{ {string.Join(", ", elements)} }}";
+        }
+
+        // new Type[size] → table.create(size)
+        if (arrayCreate.Type.RankSpecifiers.Count > 0)
+        {
+            var rankSpec = arrayCreate.Type.RankSpecifiers[0];
+            if (rankSpec.Sizes.Count > 0 && rankSpec.Sizes[0] is not OmittedArraySizeExpressionSyntax)
+            {
+                var size = EmitExpression(rankSpec.Sizes[0]);
+                return $"table.create({size})";
+            }
+        }
+
+        // Fallback: empty table
+        return "{}";
+    }
+
+    /// <summary>
     /// Handle element access: arr[index], str[index], dict[key]
     /// For strings: str[index] → string.byte(str, index + 1) (0→1 indexing, char as number)
     /// For arrays/lists: arr[index] → arr[index + 1] (0→1 indexing)
@@ -2633,6 +2678,22 @@ public class LuauEmitter
             {
                 foreach (var arg in genArgs)
                     TrackTypeReferences(arg.Trim());
+            }
+            return;
+        }
+
+        // Handle dot-qualified nested types (e.g., "SimpleTokenizer.TokenInfo")
+        // Only track the leaf type name — it will be resolved to its parent module by InsertRequires
+        if (typeStr.Contains('.'))
+        {
+            var parts = typeStr.Split('.');
+            var leafType = parts[parts.Length - 1];
+            if (TypeMapper.MapType(leafType) == null
+                && leafType != _currentClassName
+                && !_nestedTypeNames.Contains(leafType)
+                && IsLikelyEnumOrExternalType(leafType))
+            {
+                ReferencedModules.Add(leafType);
             }
             return;
         }
