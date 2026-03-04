@@ -302,6 +302,91 @@ public class LambdaExpressionSyntax : ExpressionSyntax
     }
 }
 
+public class ElementAccessExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public ExpressionSyntax Index { get; }
+
+    public ElementAccessExpressionSyntax(ExpressionSyntax expression, ExpressionSyntax index) : base((int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.ElementAccessExpression)
+    {
+        Expression = expression;
+        Index = index;
+    }
+
+    public override string Accept()
+    {
+        return Expression.Accept() + "[" + Index.Accept() + "]";
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitElementAccess(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "ElementAccess(" + Expression.ToDisplayString() + "[" + Index.ToDisplayString() + "])";
+    }
+}
+
+public class PostfixUnaryExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Operand { get; }
+    public Microsoft.CodeAnalysis.CSharp.SyntaxKind OperatorKind { get; }
+
+    public PostfixUnaryExpressionSyntax(int kind, ExpressionSyntax operand, Microsoft.CodeAnalysis.CSharp.SyntaxKind operatorKind) : base(kind)
+    {
+        Operand = operand;
+        OperatorKind = operatorKind;
+    }
+
+    public override string Accept()
+    {
+        string opText = OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken ? "++" : "--";
+        return Operand.Accept() + opText;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitPostfixUnary(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        string opText = OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken ? "++" : "--";
+        return "PostfixUnary(" + Operand.ToDisplayString() + opText + ")";
+    }
+}
+
+public class ConditionalExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Condition { get; }
+    public ExpressionSyntax WhenTrue { get; }
+    public ExpressionSyntax WhenFalse { get; }
+
+    public ConditionalExpressionSyntax(ExpressionSyntax condition, ExpressionSyntax whenTrue, ExpressionSyntax whenFalse) : base((int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.ConditionalExpression)
+    {
+        Condition = condition;
+        WhenTrue = whenTrue;
+        WhenFalse = whenFalse;
+    }
+
+    public override string Accept()
+    {
+        return Condition.Accept() + " ? " + WhenTrue.Accept() + " : " + WhenFalse.Accept();
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitConditionalExpression(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "Conditional(" + Condition.ToDisplayString() + " ? " + WhenTrue.ToDisplayString() + " : " + WhenFalse.ToDisplayString() + ")";
+    }
+}
+
 public class CastExpressionSyntax : ExpressionSyntax
 {
     public string TypeName { get; }
