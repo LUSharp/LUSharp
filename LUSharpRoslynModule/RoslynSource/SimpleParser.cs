@@ -143,6 +143,12 @@ public class SimpleParser
 
     private MemberDeclarationSyntax ParseMemberDeclaration()
     {
+        // Skip attribute lists: [Flags], [Obsolete("msg")], etc.
+        while (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBracketToken)
+        {
+            SkipAttributeList();
+        }
+
         // Collect modifiers
         bool isPublic = false;
         bool isPrivate = false;
@@ -164,6 +170,28 @@ public class SimpleParser
             else if (kind == SyntaxKind.OverrideKeyword) { isOverride = true; Advance(); }
             else if (kind == SyntaxKind.ReadOnlyKeyword) { Advance(); }
             else if (kind == SyntaxKind.SealedKeyword) { Advance(); }
+            else if (kind == SyntaxKind.NewKeyword)
+            {
+                // 'new' as modifier (method hiding) — only if next token is NOT '(' or a type
+                // Disambiguate from 'new Type()' expression
+                if (_position + 1 < _tokens.Length)
+                {
+                    var next = _tokens[_position + 1].Kind;
+                    if (next == SyntaxKind.OpenParenToken || next == SyntaxKind.IdentifierToken
+                        || IsTypeStart(next))
+                    {
+                        // Could be 'new Type(...)' — don't treat as modifier
+                        break;
+                    }
+                }
+                Advance();
+            }
+            else if (kind == SyntaxKind.ConstKeyword) { Advance(); }
+            else if (kind == SyntaxKind.VolatileKeyword) { Advance(); }
+            else if (kind == SyntaxKind.ExternKeyword) { Advance(); }
+            else if (kind == SyntaxKind.AsyncKeyword) { Advance(); }
+            else if (kind == SyntaxKind.UnsafeKeyword) { Advance(); }
+            else if (kind == SyntaxKind.PartialKeyword) { Advance(); }
             else break;
         }
 
@@ -246,6 +274,22 @@ public class SimpleParser
         Advance(); // skip 'class'
         string name = Current().Text;
         Advance();
+
+        // Skip generic type parameters: class Foo<T, U>
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.LessThanToken)
+        {
+            int depth = 0;
+            while (!IsAtEnd())
+            {
+                if (Current().Kind == SyntaxKind.LessThanToken) depth++;
+                else if (Current().Kind == SyntaxKind.GreaterThanToken)
+                {
+                    depth--;
+                    if (depth == 0) { Advance(); break; }
+                }
+                Advance();
+            }
+        }
 
         // Skip base class/interface list
         if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
@@ -339,6 +383,22 @@ public class SimpleParser
         string name = Current().Text;
         Advance();
 
+        // Skip generic type parameters: struct Foo<T>
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.LessThanToken)
+        {
+            int depth = 0;
+            while (!IsAtEnd())
+            {
+                if (Current().Kind == SyntaxKind.LessThanToken) depth++;
+                else if (Current().Kind == SyntaxKind.GreaterThanToken)
+                {
+                    depth--;
+                    if (depth == 0) { Advance(); break; }
+                }
+                Advance();
+            }
+        }
+
         // Skip base/interface list
         if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
         {
@@ -422,9 +482,19 @@ public class SimpleParser
             if (paramCount > 0)
                 Expect(SyntaxKind.CommaToken);
 
+            // Skip parameter modifiers: params, ref, out, in, this
+            SkipParameterModifiers();
+
             string paramType = ParseTypeName();
             string paramName = Current().Text;
             Advance();
+
+            // Skip default value: = expr
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+            {
+                Advance(); // skip =
+                ParseExpression(); // consume default value
+            }
 
             if (paramCount < 16)
             {
@@ -510,6 +580,36 @@ public class SimpleParser
         }
     }
 
+    private void SkipAttributeList()
+    {
+        if (Current().Kind != SyntaxKind.OpenBracketToken) return;
+        int depth = 1;
+        Advance(); // skip [
+        while (!IsAtEnd() && depth > 0)
+        {
+            if (Current().Kind == SyntaxKind.OpenBracketToken) depth++;
+            else if (Current().Kind == SyntaxKind.CloseBracketToken) depth--;
+            Advance();
+        }
+    }
+
+    private void SkipParameterModifiers()
+    {
+        while (!IsAtEnd())
+        {
+            SyntaxKind kind = Current().Kind;
+            if (kind == SyntaxKind.ParamsKeyword
+                || kind == SyntaxKind.RefKeyword
+                || kind == SyntaxKind.OutKeyword
+                || kind == SyntaxKind.InKeyword
+                || kind == SyntaxKind.ThisKeyword)
+            {
+                Advance();
+            }
+            else break;
+        }
+    }
+
     private MethodDeclarationSyntax ParseMethodDeclaration(string returnType, string name, bool isStatic)
     {
         Advance(); // skip (
@@ -522,9 +622,19 @@ public class SimpleParser
             if (paramCount > 0)
                 Expect(SyntaxKind.CommaToken);
 
+            // Skip parameter modifiers: params, ref, out, in, this
+            SkipParameterModifiers();
+
             string paramType = ParseTypeName();
             string paramName = Current().Text;
             Advance();
+
+            // Skip default value: = expr
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+            {
+                Advance(); // skip =
+                ParseExpression(); // consume default value
+            }
 
             if (paramCount < 16)
             {
@@ -551,9 +661,18 @@ public class SimpleParser
         {
             body = ParseBlock();
         }
+        else if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsGreaterThanToken)
+        {
+            // Expression-bodied method: => expr;
+            Advance(); // skip =>
+            var expr = ParseExpression();
+            Expect(SyntaxKind.SemicolonToken);
+            var returnStmt = new ReturnStatementSyntax(expr);
+            body = new BlockSyntax(new StatementSyntax[] { returnStmt });
+        }
         else if (!IsAtEnd() && Current().Kind == SyntaxKind.SemicolonToken)
         {
-            // Abstract method or expression-bodied without body
+            // Abstract method without body
             Advance();
         }
 
@@ -566,6 +685,23 @@ public class SimpleParser
 
         string name = Current().Text;
         Advance();
+
+        // Handle generic type parameters: List<int>, Dictionary<string, int>
+        // We strip the generic args but preserve the base type name
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.LessThanToken)
+        {
+            int depth = 0;
+            while (!IsAtEnd())
+            {
+                if (Current().Kind == SyntaxKind.LessThanToken) depth++;
+                else if (Current().Kind == SyntaxKind.GreaterThanToken)
+                {
+                    depth--;
+                    if (depth == 0) { Advance(); break; }
+                }
+                Advance();
+            }
+        }
 
         // Handle array types: int[]
         if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBracketToken)
@@ -1447,15 +1583,41 @@ public class SimpleParser
             Expect(SyntaxKind.CloseParenToken);
         }
 
-        // Skip object initializer if present: { ... }
+        // Parse object initializer if present: { Field = value, ... }
+        AssignmentExpressionSyntax[] initializers = null;
         if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
-            SkipBlock();
+        {
+            Advance(); // skip {
+            var inits = new AssignmentExpressionSyntax[32];
+            int initCount = 0;
+
+            while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+            {
+                if (initCount > 0 && Current().Kind == SyntaxKind.CommaToken)
+                    Advance(); // skip comma
+                if (Current().Kind == SyntaxKind.CloseBraceToken)
+                    break;
+
+                var expr = ParseExpression();
+                if (expr is AssignmentExpressionSyntax assign && initCount < 32)
+                {
+                    inits[initCount] = assign;
+                    initCount++;
+                }
+            }
+
+            Expect(SyntaxKind.CloseBraceToken);
+
+            initializers = new AssignmentExpressionSyntax[initCount];
+            for (int i = 0; i < initCount; i++)
+                initializers[i] = inits[i];
+        }
 
         var result = new ExpressionSyntax[argCount];
         for (int i = 0; i < argCount; i++)
             result[i] = args[i];
 
-        return new ObjectCreationExpressionSyntax(typeName, result);
+        return new ObjectCreationExpressionSyntax(typeName, result, initializers);
     }
 
     private bool IsExpressionStart(SyntaxKind kind)

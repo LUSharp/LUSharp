@@ -224,11 +224,13 @@ public class ObjectCreationExpressionSyntax : ExpressionSyntax
 {
     public string TypeName { get; }
     public ExpressionSyntax[] Arguments { get; }
+    public AssignmentExpressionSyntax[] Initializers { get; }
 
-    public ObjectCreationExpressionSyntax(string typeName, ExpressionSyntax[] arguments) : base(8649)
+    public ObjectCreationExpressionSyntax(string typeName, ExpressionSyntax[] arguments, AssignmentExpressionSyntax[] initializers = null) : base(8649)
     {
         TypeName = typeName;
         Arguments = arguments;
+        Initializers = initializers ?? new AssignmentExpressionSyntax[0];
     }
 
     public override string Accept()
@@ -239,7 +241,18 @@ public class ObjectCreationExpressionSyntax : ExpressionSyntax
             if (i > 0) args += ", ";
             args += Arguments[i].Accept();
         }
-        return "new " + TypeName + "(" + args + ")";
+        string result = "new " + TypeName + "(" + args + ")";
+        if (Initializers.Length > 0)
+        {
+            result += " { ";
+            for (int i = 0; i < Initializers.Length; i++)
+            {
+                if (i > 0) result += ", ";
+                result += Initializers[i].Accept();
+            }
+            result += " }";
+        }
+        return result;
     }
 
     public override void AcceptWalker(SyntaxWalker walker)
