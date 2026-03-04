@@ -12,6 +12,7 @@ public class SimpleParser
     private SimpleTokenizer _tokenizer;
     private SimpleTokenizer.TokenInfo[] _tokens;
     private int _position;
+    private string _currentClassName;
 
     public SimpleParser(string text)
     {
@@ -174,9 +175,28 @@ public class SimpleParser
             return ParseClassDeclaration();
         }
 
-        // Must be a method or field: type followed by name
+        // Check for enum declaration
+        if (Current().Kind == SyntaxKind.EnumKeyword)
+        {
+            return ParseEnumDeclaration();
+        }
+
+        // Check for struct declaration
+        if (Current().Kind == SyntaxKind.StructKeyword)
+        {
+            return ParseStructDeclaration();
+        }
+
+        // Must be a method, field, property, or constructor: type followed by name
         string typeName = ParseTypeName();
         if (typeName == null || IsAtEnd()) return null;
+
+        // Constructor detection: if the parsed "type name" matches the current class name
+        // and the next token is '(', this is a constructor (no return type, just ClassName(...))
+        if (typeName == _currentClassName && Current().Kind == SyntaxKind.OpenParenToken)
+        {
+            return ParseConstructorDeclaration(typeName);
+        }
 
         string name = Current().Text;
         Advance();
@@ -185,6 +205,28 @@ public class SimpleParser
         if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenParenToken)
         {
             return ParseMethodDeclaration(typeName, name, isStatic);
+        }
+
+        // Property detection: { get or { set pattern
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
+        {
+            int saved = _position;
+            Advance(); // skip {
+            if (!IsAtEnd() && (Current().Text == "get" || Current().Text == "set"))
+            {
+                _position = saved; // restore
+                return ParsePropertyDeclaration(typeName, name, isStatic);
+            }
+            _position = saved; // restore — it's a method body or block
+        }
+
+        // Expression-bodied property: => expr;
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsGreaterThanToken)
+        {
+            Advance(); // skip =>
+            var exprBody = ParseExpression();
+            Expect(SyntaxKind.SemicolonToken);
+            return new PropertyDeclarationSyntax(typeName, name, true, false, exprBody, isStatic);
         }
 
         // Field: has = or ; after name
@@ -215,6 +257,9 @@ public class SimpleParser
 
         Expect(SyntaxKind.OpenBraceToken);
 
+        string previousClassName = _currentClassName;
+        _currentClassName = name;
+
         var members = new MemberDeclarationSyntax[64];
         int count = 0;
 
@@ -228,6 +273,8 @@ public class SimpleParser
             }
         }
 
+        _currentClassName = previousClassName;
+
         Expect(SyntaxKind.CloseBraceToken);
 
         var result = new MemberDeclarationSyntax[count];
@@ -235,6 +282,232 @@ public class SimpleParser
             result[i] = members[i];
 
         return new ClassDeclarationSyntax(name, result);
+    }
+
+    private EnumDeclarationSyntax ParseEnumDeclaration()
+    {
+        Advance(); // skip 'enum'
+        string name = Current().Text;
+        Advance();
+
+        // Skip base type if present
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
+        {
+            Advance();
+            ParseTypeName(); // skip base type
+        }
+
+        Expect(SyntaxKind.OpenBraceToken);
+
+        var members = new EnumMemberSyntax[256];
+        int count = 0;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+        {
+            string memberName = Current().Text;
+            Advance();
+
+            ExpressionSyntax value = null;
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+            {
+                Advance();
+                value = ParseExpression();
+            }
+
+            if (count < 256)
+            {
+                members[count] = new EnumMemberSyntax(memberName, value);
+                count++;
+            }
+
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.CommaToken)
+                Advance();
+        }
+
+        Expect(SyntaxKind.CloseBraceToken);
+
+        var result = new EnumMemberSyntax[count];
+        for (int i = 0; i < count; i++)
+            result[i] = members[i];
+
+        return new EnumDeclarationSyntax(name, result);
+    }
+
+    private StructDeclarationSyntax ParseStructDeclaration()
+    {
+        Advance(); // skip 'struct'
+        string name = Current().Text;
+        Advance();
+
+        // Skip base/interface list
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
+        {
+            Advance();
+            while (!IsAtEnd() && Current().Kind != SyntaxKind.OpenBraceToken)
+                Advance();
+        }
+
+        Expect(SyntaxKind.OpenBraceToken);
+
+        string previousClassName = _currentClassName;
+        _currentClassName = name;
+
+        var members = new MemberDeclarationSyntax[64];
+        int count = 0;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+        {
+            var member = ParseMemberDeclaration();
+            if (member != null && count < 64)
+            {
+                members[count] = member;
+                count++;
+            }
+        }
+
+        _currentClassName = previousClassName;
+
+        Expect(SyntaxKind.CloseBraceToken);
+
+        var result = new MemberDeclarationSyntax[count];
+        for (int i = 0; i < count; i++)
+            result[i] = members[i];
+
+        return new StructDeclarationSyntax(name, result);
+    }
+
+    private PropertyDeclarationSyntax ParsePropertyDeclaration(string typeName, string name, bool isStatic)
+    {
+        Expect(SyntaxKind.OpenBraceToken);
+
+        bool hasGetter = false;
+        bool hasSetter = false;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
+        {
+            if (Current().Text == "get")
+            {
+                hasGetter = true;
+                Advance();
+                if (!IsAtEnd() && Current().Kind == SyntaxKind.SemicolonToken) Advance();
+                else if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken) SkipBlock();
+            }
+            else if (Current().Text == "set")
+            {
+                hasSetter = true;
+                Advance();
+                if (!IsAtEnd() && Current().Kind == SyntaxKind.SemicolonToken) Advance();
+                else if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken) SkipBlock();
+            }
+            else
+            {
+                Advance(); // skip unknown accessor modifiers
+            }
+        }
+
+        Expect(SyntaxKind.CloseBraceToken);
+
+        return new PropertyDeclarationSyntax(typeName, name, hasGetter, hasSetter, null, isStatic);
+    }
+
+    private ConstructorDeclarationSyntax ParseConstructorDeclaration(string name)
+    {
+        Advance(); // skip (
+
+        var parameters = new ParameterSyntax[16];
+        int paramCount = 0;
+
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+        {
+            if (paramCount > 0)
+                Expect(SyntaxKind.CommaToken);
+
+            string paramType = ParseTypeName();
+            string paramName = Current().Text;
+            Advance();
+
+            if (paramCount < 16)
+            {
+                parameters[paramCount] = new ParameterSyntax(paramType, paramName);
+                paramCount++;
+            }
+        }
+
+        Expect(SyntaxKind.CloseParenToken);
+
+        var paramResult = new ParameterSyntax[paramCount];
+        for (int i = 0; i < paramCount; i++)
+            paramResult[i] = parameters[i];
+
+        // Parse constructor initializer (: base(...) or : this(...))
+        string baseOrThisKeyword = null;
+        var initializerArgs = new ExpressionSyntax[0];
+
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.ColonToken)
+        {
+            Advance(); // skip :
+            if (!IsAtEnd() && (Current().Kind == SyntaxKind.BaseKeyword || Current().Kind == SyntaxKind.ThisKeyword))
+            {
+                baseOrThisKeyword = Current().Text;
+                Advance();
+
+                Expect(SyntaxKind.OpenParenToken);
+
+                var args = new ExpressionSyntax[16];
+                int argCount = 0;
+
+                while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+                {
+                    if (argCount > 0)
+                        Expect(SyntaxKind.CommaToken);
+                    if (argCount < 16)
+                    {
+                        args[argCount] = ParseExpression();
+                        argCount++;
+                    }
+                }
+
+                Expect(SyntaxKind.CloseParenToken);
+
+                initializerArgs = new ExpressionSyntax[argCount];
+                for (int i = 0; i < argCount; i++)
+                    initializerArgs[i] = args[i];
+            }
+            else
+            {
+                // Unknown initializer — skip to body
+                while (!IsAtEnd() && Current().Kind != SyntaxKind.OpenBraceToken && Current().Kind != SyntaxKind.SemicolonToken)
+                    Advance();
+            }
+        }
+
+        BlockSyntax body = null;
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
+        {
+            body = ParseBlock();
+        }
+        else if (!IsAtEnd() && Current().Kind == SyntaxKind.SemicolonToken)
+        {
+            Advance();
+        }
+
+        return new ConstructorDeclarationSyntax(name, paramResult, body, baseOrThisKeyword, initializerArgs);
+    }
+
+    private void SkipBlock()
+    {
+        int depth = 0;
+        if (Current().Kind == SyntaxKind.OpenBraceToken)
+        {
+            depth = 1;
+            Advance();
+        }
+        while (!IsAtEnd() && depth > 0)
+        {
+            if (Current().Kind == SyntaxKind.OpenBraceToken) depth++;
+            else if (Current().Kind == SyntaxKind.CloseBraceToken) depth--;
+            Advance();
+        }
     }
 
     private MethodDeclarationSyntax ParseMethodDeclaration(string returnType, string name, bool isStatic)
