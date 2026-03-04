@@ -1013,7 +1013,7 @@ public class SimpleEmitter : SyntaxWalker
                 if (inc.Kind == 8738 || inc.Kind == 8739) // PostfixUnary
                 {
                     PostfixUnaryExpressionSyntax post = (PostfixUnaryExpressionSyntax)inc;
-                    if (post.OperatorKind == (Microsoft.CodeAnalysis.CSharp.SyntaxKind)8440)
+                    if (post.OperatorKind == (Microsoft.CodeAnalysis.CSharp.SyntaxKind)8263)
                     {
                         incIsPlus = true;
                     }

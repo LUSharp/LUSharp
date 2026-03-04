@@ -837,7 +837,7 @@ function SimpleEmitter.EmitForStatement(self: SimpleEmitter, fs: ForStatementSyn
 			local incIsPlus = false
 			if inc.Kind == 8738 or inc.Kind == 8739 then
 				local post = inc
-				if post.OperatorKind == 8440 then
+				if post.OperatorKind == 8263 then
 					incIsPlus = true
 				end
 			elseif inc.Kind == 8734 then
