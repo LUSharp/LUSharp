@@ -75,6 +75,10 @@ function MethodDeclarationSyntax.Accept(self: MethodDeclarationSyntax): string
 	return mods .. self.ReturnType .. " " .. self.Name .. "(" .. parms .. ") " .. BlockSyntax.Accept(self.Body)
 end
 
+function MethodDeclarationSyntax.AcceptWalker(self: MethodDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitMethodDeclaration(self)
+end
+
 function MethodDeclarationSyntax.ToDisplayString(self: MethodDeclarationSyntax): string
 	return "Method(" .. self.Name .. ")"
 end
@@ -114,6 +118,10 @@ function FieldDeclarationSyntax.Accept(self: FieldDeclarationSyntax): string
 	return mods .. self.TypeName .. " " .. self.Name .. " = " .. self.Initializer:Accept() .. ";"
 end
 
+function FieldDeclarationSyntax.AcceptWalker(self: FieldDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitFieldDeclaration(self)
+end
+
 function FieldDeclarationSyntax.ToDisplayString(self: FieldDeclarationSyntax): string
 	return "Field(" .. self.Name .. ")"
 end
@@ -145,6 +153,10 @@ function ClassDeclarationSyntax.Accept(self: ClassDeclarationSyntax): string
 	end
 	result = result .. "}"
 	return result
+end
+
+function ClassDeclarationSyntax.AcceptWalker(self: ClassDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitClassDeclaration(self)
 end
 
 function ClassDeclarationSyntax.ToDisplayString(self: ClassDeclarationSyntax): string
@@ -209,6 +221,10 @@ function EnumDeclarationSyntax.Accept(self: EnumDeclarationSyntax): string
 	return result
 end
 
+function EnumDeclarationSyntax.AcceptWalker(self: EnumDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitEnumDeclaration(self)
+end
+
 function EnumDeclarationSyntax.ToDisplayString(self: EnumDeclarationSyntax): string
 	return "Enum(" .. self.Name .. ", " .. #self.Members .. " members)"
 end
@@ -240,6 +256,10 @@ function StructDeclarationSyntax.Accept(self: StructDeclarationSyntax): string
 	end
 	result = result .. "}"
 	return result
+end
+
+function StructDeclarationSyntax.AcceptWalker(self: StructDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitStructDeclaration(self)
 end
 
 function StructDeclarationSyntax.ToDisplayString(self: StructDeclarationSyntax): string
@@ -295,6 +315,10 @@ function PropertyDeclarationSyntax.Accept(self: PropertyDeclarationSyntax): stri
 		result = result .. "}"
 	end
 	return result
+end
+
+function PropertyDeclarationSyntax.AcceptWalker(self: PropertyDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitPropertyDeclaration(self)
 end
 
 function PropertyDeclarationSyntax.ToDisplayString(self: PropertyDeclarationSyntax): string
@@ -357,6 +381,10 @@ function ConstructorDeclarationSyntax.Accept(self: ConstructorDeclarationSyntax)
 	return result
 end
 
+function ConstructorDeclarationSyntax.AcceptWalker(self: ConstructorDeclarationSyntax, walker: SyntaxWalker): ()
+	walker:VisitConstructorDeclaration(self)
+end
+
 function ConstructorDeclarationSyntax.ToDisplayString(self: ConstructorDeclarationSyntax): string
 	return "Constructor(" .. self.Name .. ")"
 end
@@ -384,6 +412,10 @@ function CompilationUnitSyntax.Accept(self: CompilationUnitSyntax): string
 		i += 1
 	end
 	return result
+end
+
+function CompilationUnitSyntax.AcceptWalker(self: CompilationUnitSyntax, walker: SyntaxWalker): ()
+	walker:VisitCompilationUnit(self)
 end
 
 function CompilationUnitSyntax.ToDisplayString(self: CompilationUnitSyntax): string

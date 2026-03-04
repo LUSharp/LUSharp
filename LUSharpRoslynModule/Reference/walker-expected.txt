@@ -1,0 +1,61 @@
+=== Walker Test ===
+Input:
+class Calculator {
+    int _result;
+
+    Calculator(int initial) {
+        _result = initial;
+    }
+
+    int Add(int a, int b) {
+        return a + b;
+    }
+
+    void Reset() {
+        _result = 0;
+    }
+
+    static int Max(int a, int b) {
+        if (a > b) {
+            return a;
+        }
+        return b;
+    }
+}
+
+enum Operation { Add, Subtract = 1, Multiply }
+
+=== Tree Output ===
+CompilationUnit
+  ClassDeclaration: Calculator
+    FieldDeclaration: int _result
+    ConstructorDeclaration: Calculator
+      Block (1 statements)
+        ExpressionStatement
+          Assignment: =
+            Identifier: _result
+            Identifier: initial
+    MethodDeclaration: int Add
+      Block (1 statements)
+        ReturnStatement
+          BinaryExpression: +
+            Identifier: a
+            Identifier: b
+    MethodDeclaration: void Reset
+      Block (1 statements)
+        ExpressionStatement
+          Assignment: =
+            Identifier: _result
+            Literal: 0
+    MethodDeclaration: static int Max
+      Block (2 statements)
+        IfStatement
+          BinaryExpression: >
+            Identifier: a
+            Identifier: b
+          Block (1 statements)
+            ReturnStatement
+              Identifier: a
+        ReturnStatement
+          Identifier: b
+  EnumDeclaration: Operation (3 members)

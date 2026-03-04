@@ -20,6 +20,10 @@ function BlockSyntax.new(statements: { StatementSyntax }): BlockSyntax
 	return self
 end
 
+function BlockSyntax.AcceptWalker(self: BlockSyntax, walker: SyntaxWalker): ()
+	walker:VisitBlock(self)
+end
+
 function BlockSyntax.Accept(self: BlockSyntax): string
 	local result = "{\n"
 	local i = 0
@@ -46,6 +50,10 @@ function ReturnStatementSyntax.new(expression: ExpressionSyntax): ReturnStatemen
 	return self
 end
 
+function ReturnStatementSyntax.AcceptWalker(self: ReturnStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitReturnStatement(self)
+end
+
 function ReturnStatementSyntax.Accept(self: ReturnStatementSyntax): string
 	if self.Expression == nil then
 		return "return;"
@@ -66,6 +74,10 @@ function ExpressionStatementSyntax.new(expression: ExpressionSyntax): Expression
 	self.Expression = nil :: any
 	self.Expression = expression
 	return self
+end
+
+function ExpressionStatementSyntax.AcceptWalker(self: ExpressionStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitExpressionStatement(self)
 end
 
 function ExpressionStatementSyntax.Accept(self: ExpressionStatementSyntax): string
@@ -91,6 +103,10 @@ function LocalDeclarationStatementSyntax.new(typeName: string, variableName: str
 	self.VariableName = variableName
 	self.Initializer = initializer
 	return self
+end
+
+function LocalDeclarationStatementSyntax.AcceptWalker(self: LocalDeclarationStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitLocalDeclaration(self)
 end
 
 function LocalDeclarationStatementSyntax.Accept(self: LocalDeclarationStatementSyntax): string
@@ -121,6 +137,10 @@ function IfStatementSyntax.new(condition: ExpressionSyntax, thenBody: StatementS
 	return self
 end
 
+function IfStatementSyntax.AcceptWalker(self: IfStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitIfStatement(self)
+end
+
 function IfStatementSyntax.Accept(self: IfStatementSyntax): string
 	local result = "if (" .. self.Condition:Accept() .. ") " .. self.ThenBody:Accept()
 	if self.ElseBody ~= nil then
@@ -145,6 +165,10 @@ function WhileStatementSyntax.new(condition: ExpressionSyntax, body: StatementSy
 	self.Condition = condition
 	self.Body = body
 	return self
+end
+
+function WhileStatementSyntax.AcceptWalker(self: WhileStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitWhileStatement(self)
 end
 
 function WhileStatementSyntax.Accept(self: WhileStatementSyntax): string

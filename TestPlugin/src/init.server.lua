@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.4.0"
+local PLUGIN_VERSION = "0.5.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -346,10 +346,97 @@ local function runParserTest()
 	warn("[LUSharp-Test] Parser test completed")
 end
 
+local function runWalkerTest()
+	local syntaxWalkerModule = modules:FindFirstChild("SyntaxWalker")
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+
+	if not syntaxWalkerModule or not simpleParserModule then
+		warn("[LUSharp-Test] Walker modules not found, skipping")
+		return
+	end
+
+	local ok1, swResult = pcall(require, syntaxWalkerModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SyntaxWalker failed to load: " .. tostring(swResult))
+		return
+	end
+
+	local ok2, spResult = pcall(require, simpleParserModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local TreePrinter = swResult.TreePrinter
+	local SimpleParser = spResult.SimpleParser
+
+	if not TreePrinter or not SimpleParser then
+		warn("[LUSharp-Test] FAIL: TreePrinter or SimpleParser table not found")
+		return
+	end
+
+	-- Test input matching WalkerReference.cs
+	local input = "class Calculator {\n"
+		.. "    int _result;\n"
+		.. "\n"
+		.. "    Calculator(int initial) {\n"
+		.. "        _result = initial;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    int Add(int a, int b) {\n"
+		.. "        return a + b;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    void Reset() {\n"
+		.. "        _result = 0;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    static int Max(int a, int b) {\n"
+		.. "        if (a > b) {\n"
+		.. "            return a;\n"
+		.. "        }\n"
+		.. "        return b;\n"
+		.. "    }\n"
+		.. "}\n"
+		.. "\n"
+		.. "enum Operation { Add, Subtract = 1, Multiply }"
+
+	print("=== Walker Test ===")
+	print("Input:")
+	-- Print input line by line
+	for line in string.gmatch(input, "[^\n]+") do
+		print(line)
+	end
+	-- Print the blank line between class and enum
+	print("")
+	print("")
+
+	-- Parse and walk
+	local parser = SimpleParser.new(input)
+	local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+	local printer = TreePrinter.new()
+	printer:Visit(compilationUnit)
+
+	local output = TreePrinter.GetOutput(printer)
+
+	print("=== Tree Output ===")
+	-- Print tree output, strip trailing newline
+	if string.sub(output, #output, #output) == "\n" then
+		output = string.sub(output, 1, #output - 1)
+	end
+	for line in string.gmatch(output, "[^\n]*") do
+		print(line)
+	end
+
+	warn("[LUSharp-Test] Walker test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
 runSyntaxFactsTest()
 runTokenizerTest()
 runParserTest()
+runWalkerTest()
 warn("[LUSharp-Test] All tests finished")

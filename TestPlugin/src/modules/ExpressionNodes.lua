@@ -24,6 +24,10 @@ function LiteralExpressionSyntax.Accept(self: LiteralExpressionSyntax): string
 	return self.Token.Text
 end
 
+function LiteralExpressionSyntax.AcceptWalker(self: LiteralExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitLiteralExpression(self)
+end
+
 function LiteralExpressionSyntax.ToDisplayString(self: LiteralExpressionSyntax): string
 	return "Literal(" .. self.Token.Text .. ")"
 end
@@ -45,6 +49,10 @@ end
 
 function IdentifierNameSyntax.Accept(self: IdentifierNameSyntax): string
 	return self.Identifier.Text
+end
+
+function IdentifierNameSyntax.AcceptWalker(self: IdentifierNameSyntax, walker: SyntaxWalker): ()
+	walker:VisitIdentifierName(self)
 end
 
 function IdentifierNameSyntax.ToDisplayString(self: IdentifierNameSyntax): string
@@ -76,6 +84,10 @@ function BinaryExpressionSyntax.Accept(self: BinaryExpressionSyntax): string
 	return self.Left:Accept() .. " " .. self.OperatorToken.Text .. " " .. self.Right:Accept()
 end
 
+function BinaryExpressionSyntax.AcceptWalker(self: BinaryExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitBinaryExpression(self)
+end
+
 function BinaryExpressionSyntax.ToDisplayString(self: BinaryExpressionSyntax): string
 	return "Binary(" .. self.Left:ToDisplayString() .. " " .. self.OperatorToken.Text .. " " .. self.Right:ToDisplayString() .. ")"
 end
@@ -97,6 +109,10 @@ end
 
 function ParenthesizedExpressionSyntax.Accept(self: ParenthesizedExpressionSyntax): string
 	return "(" .. self.Expression:Accept() .. ")"
+end
+
+function ParenthesizedExpressionSyntax.AcceptWalker(self: ParenthesizedExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitParenthesizedExpression(self)
 end
 
 function ParenthesizedExpressionSyntax.ToDisplayString(self: ParenthesizedExpressionSyntax): string
@@ -123,6 +139,10 @@ end
 
 function PrefixUnaryExpressionSyntax.Accept(self: PrefixUnaryExpressionSyntax): string
 	return self.OperatorToken.Text .. self.Operand:Accept()
+end
+
+function PrefixUnaryExpressionSyntax.AcceptWalker(self: PrefixUnaryExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitPrefixUnaryExpression(self)
 end
 
 function PrefixUnaryExpressionSyntax.ToDisplayString(self: PrefixUnaryExpressionSyntax): string
@@ -160,6 +180,10 @@ function InvocationExpressionSyntax.Accept(self: InvocationExpressionSyntax): st
 	return self.Expression:Accept() .. "(" .. args .. ")"
 end
 
+function InvocationExpressionSyntax.AcceptWalker(self: InvocationExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitInvocationExpression(self)
+end
+
 function InvocationExpressionSyntax.ToDisplayString(self: InvocationExpressionSyntax): string
 	return "Invocation(" .. self.Expression:ToDisplayString() .. ")"
 end
@@ -184,6 +208,10 @@ end
 
 function MemberAccessExpressionSyntax.Accept(self: MemberAccessExpressionSyntax): string
 	return self.Expression:Accept() .. "." .. self.Name.Text
+end
+
+function MemberAccessExpressionSyntax.AcceptWalker(self: MemberAccessExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitMemberAccessExpression(self)
 end
 
 function MemberAccessExpressionSyntax.ToDisplayString(self: MemberAccessExpressionSyntax): string
@@ -213,6 +241,10 @@ end
 
 function AssignmentExpressionSyntax.Accept(self: AssignmentExpressionSyntax): string
 	return self.Left:Accept() .. " " .. self.OperatorToken.Text .. " " .. self.Right:Accept()
+end
+
+function AssignmentExpressionSyntax.AcceptWalker(self: AssignmentExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitAssignmentExpression(self)
 end
 
 function AssignmentExpressionSyntax.ToDisplayString(self: AssignmentExpressionSyntax): string
@@ -248,6 +280,10 @@ function ObjectCreationExpressionSyntax.Accept(self: ObjectCreationExpressionSyn
 		i += 1
 	end
 	return "new " .. self.TypeName .. "(" .. args .. ")"
+end
+
+function ObjectCreationExpressionSyntax.AcceptWalker(self: ObjectCreationExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitObjectCreationExpression(self)
 end
 
 function ObjectCreationExpressionSyntax.ToDisplayString(self: ObjectCreationExpressionSyntax): string
@@ -300,6 +336,10 @@ function LambdaExpressionSyntax.Accept(self: LambdaExpressionSyntax): string
 	return parms .. " => {}"
 end
 
+function LambdaExpressionSyntax.AcceptWalker(self: LambdaExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitLambdaExpression(self)
+end
+
 function LambdaExpressionSyntax.ToDisplayString(self: LambdaExpressionSyntax): string
 	return "Lambda(" .. #self.ParameterNames .. " params)"
 end
@@ -324,6 +364,10 @@ end
 
 function CastExpressionSyntax.Accept(self: CastExpressionSyntax): string
 	return "(" .. self.TypeName .. ")" .. self.Expression:Accept()
+end
+
+function CastExpressionSyntax.AcceptWalker(self: CastExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitCastExpression(self)
 end
 
 function CastExpressionSyntax.ToDisplayString(self: CastExpressionSyntax): string

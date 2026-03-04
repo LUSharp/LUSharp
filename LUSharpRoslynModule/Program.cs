@@ -257,6 +257,9 @@ internal class Program
             case "parser-extended":
                 Reference.ExtendedParserReference.PrintAll();
                 break;
+            case "walker":
+                Reference.WalkerReference.PrintAll();
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;

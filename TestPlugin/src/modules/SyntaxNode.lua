@@ -24,6 +24,10 @@ end
 
 -- abstract: SyntaxNode.Accept
 
+function SyntaxNode.AcceptWalker(self: SyntaxNode, walker: SyntaxWalker): ()
+	walker:DefaultVisit(self)
+end
+
 function SyntaxNode.ToDisplayString(self: SyntaxNode): string
 	return "SyntaxNode(" .. self.Kind .. ")"
 end
