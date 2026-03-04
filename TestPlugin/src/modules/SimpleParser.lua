@@ -28,6 +28,8 @@ local ObjectCreationExpressionSyntax = _ExpressionNodes.ObjectCreationExpression
 local ParenthesizedExpressionSyntax = _ExpressionNodes.ParenthesizedExpressionSyntax
 local PostfixUnaryExpressionSyntax = _ExpressionNodes.PostfixUnaryExpressionSyntax
 local PrefixUnaryExpressionSyntax = _ExpressionNodes.PrefixUnaryExpressionSyntax
+local SwitchExpressionArmSyntax = _ExpressionNodes.SwitchExpressionArmSyntax
+local SwitchExpressionSyntax = _ExpressionNodes.SwitchExpressionSyntax
 local _SimpleTokenizer = require(script.Parent.SimpleTokenizer)
 local SimpleTokenizer = _SimpleTokenizer.SimpleTokenizer
 local TokenInfo = _SimpleTokenizer.TokenInfo
@@ -612,6 +614,11 @@ function SimpleParser.ParseTypeName(self: SimpleParser): string
 	end
 	local name = SimpleParser.Current(self).Text
 	SimpleParser.Advance(self)
+	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.DotToken and self._position + 1 < #self._tokens and self._tokens[self._position + 1 + 1].Kind == SyntaxKind.IdentifierToken do
+		SimpleParser.Advance(self)
+		name = name .. "." .. SimpleParser.Current(self).Text
+		SimpleParser.Advance(self)
+	end
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.LessThanToken then
 		local depth = 0
 		while not SimpleParser.IsAtEnd(self) do
@@ -1150,6 +1157,8 @@ function SimpleParser.ParsePrimary(self: SimpleParser): ExpressionSyntax
 			SimpleParser.Advance(self)
 			local exprKind = if opKind == SyntaxKind.PlusPlusToken then SyntaxKind.PostIncrementExpression else SyntaxKind.PostDecrementExpression
 			expr = PostfixUnaryExpressionSyntax.new(exprKind, expr, opKind)
+		elseif SimpleParser.Current(self).Kind == SyntaxKind.SwitchKeyword then
+			expr = SimpleParser.ParseSwitchExpression(self, expr)
 		else
 			break
 		end
@@ -1229,6 +1238,42 @@ function SimpleParser.ParseAtom(self: SimpleParser): ExpressionSyntax
 	end
 	local unknown = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 	return LiteralExpressionSyntax.new(8753, unknown)
+end
+
+function SimpleParser.ParseSwitchExpression(self: SimpleParser, governing: ExpressionSyntax): SwitchExpressionSyntax
+	SimpleParser.Advance(self)
+	SimpleParser.Expect(self, SyntaxKind.OpenBraceToken)
+	local arms = table.create(64)
+	local armCount = 0
+	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
+		if armCount > 0 and SimpleParser.Current(self).Kind == SyntaxKind.CommaToken then
+			SimpleParser.Advance(self)
+		end
+		if SimpleParser.Current(self).Kind == SyntaxKind.CloseBraceToken then
+			break
+		end
+		local pattern = nil
+		if SimpleParser.Current(self).Text == "_" then
+			SimpleParser.Advance(self)
+			pattern = nil
+		else
+			pattern = SimpleParser.ParseExpression(self)
+		end
+		SimpleParser.Expect(self, SyntaxKind.EqualsGreaterThanToken)
+		local value = SimpleParser.ParseExpression(self)
+		if armCount < 64 then
+			arms[armCount + 1] = SwitchExpressionArmSyntax.new(pattern, value)
+			armCount += 1
+		end
+	end
+	SimpleParser.Expect(self, SyntaxKind.CloseBraceToken)
+	local result = table.create(armCount)
+	local i = 0
+	while i < armCount do
+		result[i + 1] = arms[i + 1]
+		i += 1
+	end
+	return SwitchExpressionSyntax.new(governing, result)
 end
 
 function SimpleParser.ParseObjectCreation(self: SimpleParser): ObjectCreationExpressionSyntax

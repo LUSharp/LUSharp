@@ -388,6 +388,30 @@ function SyntaxWalker.VisitConditionalExpression(self: SyntaxWalker, node: Condi
 	self._depth -= 1
 end
 
+function SyntaxWalker.VisitSwitchExpression(self: SyntaxWalker, node: SwitchExpressionSyntax): ()
+	self._depth += 1
+	SyntaxWalker.Visit(self, node.GoverningExpression)
+	self._depth -= 1
+	local i = 0
+	while i < #node.Arms do
+		self._depth += 1
+		node.Arms[i + 1]:AcceptWalker(self)
+		self._depth -= 1
+		i += 1
+	end
+end
+
+function SyntaxWalker.VisitSwitchExpressionArm(self: SyntaxWalker, node: SwitchExpressionArmSyntax): ()
+	if node.Pattern ~= nil then
+		self._depth += 1
+		SyntaxWalker.Visit(self, node.Pattern)
+		self._depth -= 1
+	end
+	self._depth += 1
+	SyntaxWalker.Visit(self, node.Expression)
+	self._depth -= 1
+end
+
 type TreePrinter_self = {
 	_output: string;
 }
@@ -655,6 +679,17 @@ end
 function TreePrinter.VisitConditionalExpression(self: TreePrinter, node: ConditionalExpressionSyntax): ()
 	TreePrinter.PrintNode(self, "ConditionalExpression")
 	SyntaxWalker.VisitConditionalExpression(self, node)
+end
+
+function TreePrinter.VisitSwitchExpression(self: TreePrinter, node: SwitchExpressionSyntax): ()
+	TreePrinter.PrintNode(self, "SwitchExpression (" .. #node.Arms .. " arms)")
+	SyntaxWalker.VisitSwitchExpression(self, node)
+end
+
+function TreePrinter.VisitSwitchExpressionArm(self: TreePrinter, node: SwitchExpressionArmSyntax): ()
+	local label = if node.Pattern ~= nil then "case" else "default"
+	TreePrinter.PrintNode(self, "SwitchArm: " .. label)
+	SyntaxWalker.VisitSwitchExpressionArm(self, node)
 end
 
 return { SyntaxWalker = SyntaxWalker, TreePrinter = TreePrinter }

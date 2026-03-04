@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.6.0"
+local PLUGIN_VERSION = "0.7.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -526,6 +526,230 @@ local function runExpandedParserTest()
 	warn("[LUSharp-Test] Expanded parser test completed")
 end
 
+local function runSelfParseTest()
+	local syntaxWalkerModule = modules:FindFirstChild("SyntaxWalker")
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+
+	if not syntaxWalkerModule or not simpleParserModule then
+		warn("[LUSharp-Test] Self-parse modules not found, skipping")
+		return
+	end
+
+	local ok1, swResult = pcall(require, syntaxWalkerModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SyntaxWalker failed to load: " .. tostring(swResult))
+		return
+	end
+
+	local ok2, spResult = pcall(require, simpleParserModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local TreePrinter = swResult.TreePrinter
+	local SimpleParser = spResult.SimpleParser
+
+	if not TreePrinter or not SimpleParser then
+		warn("[LUSharp-Test] FAIL: TreePrinter or SimpleParser table not found")
+		return
+	end
+
+	-- Self-parse test: parse the actual SyntaxToken.cs source
+	-- This proves the transpiled Luau parser can parse its own defining C# source
+	local syntaxTokenSource = "namespace RoslynLuau;\n"
+		.. "\n"
+		.. "public struct SyntaxToken\n"
+		.. "{\n"
+		.. "    public int Kind { get; }\n"
+		.. "    public string Text { get; }\n"
+		.. "    public int Start { get; }\n"
+		.. "    public int Length { get; }\n"
+		.. "\n"
+		.. "    public SyntaxToken(int kind, string text, int start, int length)\n"
+		.. "    {\n"
+		.. "        Kind = kind;\n"
+		.. "        Text = text;\n"
+		.. "        Start = start;\n"
+		.. "        Length = length;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public bool IsMissing()\n"
+		.. "    {\n"
+		.. "        return Kind == 0;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public override string ToString()\n"
+		.. "    {\n"
+		.. "        return Text;\n"
+		.. "    }\n"
+		.. "}"
+
+	print("=== Self-Parse: SyntaxToken.cs ===")
+
+	local parser = SimpleParser.new(syntaxTokenSource)
+	local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+	local printer = TreePrinter.new()
+	printer:Visit(compilationUnit)
+
+	local output = TreePrinter.GetOutput(printer)
+
+	print("=== Tree Output ===")
+	-- Print tree output, strip trailing newline
+	if string.sub(output, #output, #output) == "\n" then
+		output = string.sub(output, 1, #output - 1)
+	end
+	for line in string.gmatch(output, "[^\n]*") do
+		print(line)
+	end
+
+	-- Count tree lines
+	local lineCount = 0
+	for _ in string.gmatch(output, "[^\n]+") do
+		lineCount += 1
+	end
+	print("")
+	print("Total tree lines: " .. lineCount)
+
+	-- Self-parse test 2: SlidingTextWindow.cs (simplified — no unicode escapes)
+	local slidingWindowSource = "namespace Microsoft.CodeAnalysis.CSharp.Syntax.InternalSyntax;\n"
+		.. "\n"
+		.. "public struct SlidingTextWindow\n"
+		.. "{\n"
+		.. "    public const char InvalidCharacter = '\\0';\n"
+		.. "\n"
+		.. "    private readonly string _text;\n"
+		.. "    private readonly int _textEnd;\n"
+		.. "    public int Position;\n"
+		.. "    public int LexemeStartPosition;\n"
+		.. "\n"
+		.. "    public int Width => Position - LexemeStartPosition;\n"
+		.. "\n"
+		.. "    public SlidingTextWindow(string text)\n"
+		.. "    {\n"
+		.. "        _text = text;\n"
+		.. "        _textEnd = text.Length;\n"
+		.. "        Position = 0;\n"
+		.. "        LexemeStartPosition = 0;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public void Start()\n"
+		.. "    {\n"
+		.. "        LexemeStartPosition = Position;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public bool IsReallyAtEnd()\n"
+		.. "    {\n"
+		.. "        return Position >= _textEnd;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public char PeekChar()\n"
+		.. "    {\n"
+		.. "        if (Position >= _textEnd)\n"
+		.. "            return InvalidCharacter;\n"
+		.. "        return _text[Position];\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public char PeekChar(int delta)\n"
+		.. "    {\n"
+		.. "        int pos = Position + delta;\n"
+		.. "        if (pos < 0 || pos >= _textEnd)\n"
+		.. "            return InvalidCharacter;\n"
+		.. "        return _text[pos];\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public char NextChar()\n"
+		.. "    {\n"
+		.. "        if (Position >= _textEnd)\n"
+		.. "            return InvalidCharacter;\n"
+		.. "        char c = _text[Position];\n"
+		.. "        Position++;\n"
+		.. "        return c;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public void AdvanceChar()\n"
+		.. "    {\n"
+		.. "        Position++;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public void AdvanceChar(int n)\n"
+		.. "    {\n"
+		.. "        Position += n;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public bool TryAdvance(char c)\n"
+		.. "    {\n"
+		.. "        if (PeekChar() == c)\n"
+		.. "        {\n"
+		.. "            AdvanceChar();\n"
+		.. "            return true;\n"
+		.. "        }\n"
+		.. "        return false;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public void Reset(int position)\n"
+		.. "    {\n"
+		.. "        Position = position;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public string GetText(bool intern)\n"
+		.. "    {\n"
+		.. "        int length = Position - LexemeStartPosition;\n"
+		.. "        if (length == 0)\n"
+		.. "            return string.Empty;\n"
+		.. "        return _text.Substring(LexemeStartPosition, length);\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public int GetNewLineWidth()\n"
+		.. "    {\n"
+		.. "        char c = PeekChar();\n"
+		.. "        if (c == '\\r')\n"
+		.. "        {\n"
+		.. "            if (PeekChar(1) == '\\n')\n"
+		.. "                return 2;\n"
+		.. "            return 1;\n"
+		.. "        }\n"
+		.. "        if (c == '\\n')\n"
+		.. "            return 1;\n"
+		.. "        return 0;\n"
+		.. "    }\n"
+		.. "\n"
+		.. "    public void AdvancePastNewLine()\n"
+		.. "    {\n"
+		.. "        AdvanceChar(GetNewLineWidth());\n"
+		.. "    }\n"
+		.. "}"
+
+	print("")
+	print("=== Self-Parse: SlidingTextWindow.cs (simplified) ===")
+
+	local parser2 = SimpleParser.new(slidingWindowSource)
+	local compilationUnit2 = SimpleParser.ParseCompilationUnit(parser2)
+
+	local printer2 = TreePrinter.new()
+	printer2:Visit(compilationUnit2)
+
+	local output2 = TreePrinter.GetOutput(printer2)
+
+	print("=== Tree Output ===")
+	if string.sub(output2, #output2, #output2) == "\n" then
+		output2 = string.sub(output2, 1, #output2 - 1)
+	end
+	for line in string.gmatch(output2, "[^\n]*") do
+		print(line)
+	end
+
+	local lineCount2 = 0
+	for _ in string.gmatch(output2, "[^\n]+") do
+		lineCount2 += 1
+	end
+	print("")
+	print("Total tree lines: " .. lineCount2)
+
+	warn("[LUSharp-Test] Self-parse test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
@@ -534,4 +758,5 @@ runTokenizerTest()
 runParserTest()
 runWalkerTest()
 runExpandedParserTest()
+runSelfParseTest()
 warn("[LUSharp-Test] All tests finished")

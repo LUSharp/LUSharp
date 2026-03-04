@@ -6,6 +6,7 @@ local _Microsoft = require(script.Parent.Microsoft)
 local Microsoft = _Microsoft.Microsoft
 local _SyntaxNode = require(script.Parent.SyntaxNode)
 local ExpressionSyntax = _SyntaxNode.ExpressionSyntax
+local SyntaxNode = _SyntaxNode.SyntaxNode
 
 type LiteralExpressionSyntax_self = {
 	Token: SyntaxToken;
@@ -457,6 +458,76 @@ function ConditionalExpressionSyntax.ToDisplayString(self: ConditionalExpression
 	return "Conditional(" .. self.Condition:ToDisplayString() .. " ? " .. self.WhenTrue:ToDisplayString() .. " : " .. self.WhenFalse:ToDisplayString() .. ")"
 end
 
+type SwitchExpressionArmSyntax_self = {
+	Pattern: ExpressionSyntax;
+	Expression: ExpressionSyntax;
+}
+
+local SwitchExpressionArmSyntax = setmetatable({}, {__index = SyntaxNode})
+SwitchExpressionArmSyntax.__index = SwitchExpressionArmSyntax
+export type SwitchExpressionArmSyntax = typeof(setmetatable({} :: SwitchExpressionArmSyntax_self, SwitchExpressionArmSyntax))
+
+function SwitchExpressionArmSyntax.new(pattern: ExpressionSyntax, expression: ExpressionSyntax): SwitchExpressionArmSyntax
+	local self = setmetatable(SyntaxNode.new(9025) :: any, SwitchExpressionArmSyntax)
+	self.Pattern = nil :: any
+	self.Expression = nil :: any
+	self.Pattern = pattern
+	self.Expression = expression
+	return self
+end
+
+function SwitchExpressionArmSyntax.Accept(self: SwitchExpressionArmSyntax): string
+	local pat = if self.Pattern ~= nil then self.Pattern:Accept() else "_"
+	return pat .. " => " .. self.Expression:Accept()
+end
+
+function SwitchExpressionArmSyntax.AcceptWalker(self: SwitchExpressionArmSyntax, walker: SyntaxWalker): ()
+	walker:VisitSwitchExpressionArm(self)
+end
+
+function SwitchExpressionArmSyntax.ToDisplayString(self: SwitchExpressionArmSyntax): string
+	return "SwitchArm"
+end
+
+type SwitchExpressionSyntax_self = {
+	GoverningExpression: ExpressionSyntax;
+	Arms: { SwitchExpressionArmSyntax };
+}
+
+local SwitchExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+SwitchExpressionSyntax.__index = SwitchExpressionSyntax
+export type SwitchExpressionSyntax = typeof(setmetatable({} :: SwitchExpressionSyntax_self, SwitchExpressionSyntax))
+
+function SwitchExpressionSyntax.new(governingExpression: ExpressionSyntax, arms: { SwitchExpressionArmSyntax }): SwitchExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(9023) :: any, SwitchExpressionSyntax)
+	self.GoverningExpression = nil :: any
+	self.Arms = {}
+	self.GoverningExpression = governingExpression
+	self.Arms = arms
+	return self
+end
+
+function SwitchExpressionSyntax.Accept(self: SwitchExpressionSyntax): string
+	local result = self.GoverningExpression:Accept() .. " switch { "
+	local i = 0
+	while i < #self.Arms do
+		if i > 0 then
+			result += ", "
+		end
+		result += self.Arms[i + 1]:Accept()
+		i += 1
+	end
+	return result .. " }"
+end
+
+function SwitchExpressionSyntax.AcceptWalker(self: SwitchExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitSwitchExpression(self)
+end
+
+function SwitchExpressionSyntax.ToDisplayString(self: SwitchExpressionSyntax): string
+	return "SwitchExpression(" .. #self.Arms .. " arms)"
+end
+
 type CastExpressionSyntax_self = {
 	TypeName: string;
 	Expression: ExpressionSyntax;
@@ -487,4 +558,4 @@ function CastExpressionSyntax.ToDisplayString(self: CastExpressionSyntax): strin
 	return "Cast(" .. self.TypeName .. ")"
 end
 
-return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, ElementAccessExpressionSyntax = ElementAccessExpressionSyntax, PostfixUnaryExpressionSyntax = PostfixUnaryExpressionSyntax, ConditionalExpressionSyntax = ConditionalExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax }
+return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, ElementAccessExpressionSyntax = ElementAccessExpressionSyntax, PostfixUnaryExpressionSyntax = PostfixUnaryExpressionSyntax, ConditionalExpressionSyntax = ConditionalExpressionSyntax, SwitchExpressionArmSyntax = SwitchExpressionArmSyntax, SwitchExpressionSyntax = SwitchExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax }

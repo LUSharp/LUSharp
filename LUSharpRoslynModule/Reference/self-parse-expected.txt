@@ -1,0 +1,364 @@
+=== Self-Parse: SyntaxToken.cs ===
+Input:
+namespace RoslynLuau;
+
+public struct SyntaxToken
+{
+    public int Kind { get; }
+    public string Text { get; }
+    public int Start { get; }
+    public int Length { get; }
+
+    public SyntaxToken(int kind, string text, int start, int length)
+    {
+        Kind = kind;
+        Text = text;
+        Start = start;
+        Length = length;
+    }
+
+    public bool IsMissing()
+    {
+        return Kind == 0;
+    }
+
+    public override string ToString()
+    {
+        return Text;
+    }
+}
+
+=== Tree Output ===
+CompilationUnit
+  StructDeclaration: SyntaxToken
+    PropertyDeclaration: int Kind {get}
+    PropertyDeclaration: string Text {get}
+    PropertyDeclaration: int Start {get}
+    PropertyDeclaration: int Length {get}
+    ConstructorDeclaration: SyntaxToken
+      Block (4 statements)
+        ExpressionStatement
+          Assignment: =
+            Identifier: Kind
+            Identifier: kind
+        ExpressionStatement
+          Assignment: =
+            Identifier: Text
+            Identifier: text
+        ExpressionStatement
+          Assignment: =
+            Identifier: Start
+            Identifier: start
+        ExpressionStatement
+          Assignment: =
+            Identifier: Length
+            Identifier: length
+    MethodDeclaration: bool IsMissing
+      Block (1 statements)
+        ReturnStatement
+          BinaryExpression: ==
+            Identifier: Kind
+            Literal: 0
+    MethodDeclaration: string ToString
+      Block (1 statements)
+        ReturnStatement
+          Identifier: Text
+
+Total tree lines: 34
+
+=== Self-Parse: SlidingTextWindow.cs (simplified) ===
+Input:
+namespace Microsoft.CodeAnalysis.CSharp.Syntax.InternalSyntax;
+
+public struct SlidingTextWindow
+{
+    public const char InvalidCharacter = '\0';
+
+    private readonly string _text;
+    private readonly int _textEnd;
+    public int Position;
+    public int LexemeStartPosition;
+
+    public int Width => Position - LexemeStartPosition;
+
+    public SlidingTextWindow(string text)
+    {
+        _text = text;
+        _textEnd = text.Length;
+        Position = 0;
+        LexemeStartPosition = 0;
+    }
+
+    public void Start()
+    {
+        LexemeStartPosition = Position;
+    }
+
+    public bool IsReallyAtEnd()
+    {
+        return Position >= _textEnd;
+    }
+
+    public char PeekChar()
+    {
+        if (Position >= _textEnd)
+            return InvalidCharacter;
+        return _text[Position];
+    }
+
+    public char PeekChar(int delta)
+    {
+        int pos = Position + delta;
+        if (pos < 0 || pos >= _textEnd)
+            return InvalidCharacter;
+        return _text[pos];
+    }
+
+    public char NextChar()
+    {
+        if (Position >= _textEnd)
+            return InvalidCharacter;
+        char c = _text[Position];
+        Position++;
+        return c;
+    }
+
+    public void AdvanceChar()
+    {
+        Position++;
+    }
+
+    public void AdvanceChar(int n)
+    {
+        Position += n;
+    }
+
+    public bool TryAdvance(char c)
+    {
+        if (PeekChar() == c)
+        {
+            AdvanceChar();
+            return true;
+        }
+        return false;
+    }
+
+    public void Reset(int position)
+    {
+        Position = position;
+    }
+
+    public string GetText(bool intern)
+    {
+        int length = Position - LexemeStartPosition;
+        if (length == 0)
+            return string.Empty;
+        return _text.Substring(LexemeStartPosition, length);
+    }
+
+    public int GetNewLineWidth()
+    {
+        char c = PeekChar();
+        if (c == '\r')
+        {
+            if (PeekChar(1) == '\n')
+                return 2;
+            return 1;
+        }
+        if (c == '\n')
+            return 1;
+        return 0;
+    }
+
+    public void AdvancePastNewLine()
+    {
+        AdvanceChar(GetNewLineWidth());
+    }
+}
+
+=== Tree Output ===
+CompilationUnit
+  StructDeclaration: SlidingTextWindow
+    FieldDeclaration: char InvalidCharacter
+      Literal: '\0'
+    FieldDeclaration: string _text
+    FieldDeclaration: int _textEnd
+    FieldDeclaration: int Position
+    FieldDeclaration: int LexemeStartPosition
+    PropertyDeclaration: int Width {get}
+      BinaryExpression: -
+        Identifier: Position
+        Identifier: LexemeStartPosition
+    ConstructorDeclaration: SlidingTextWindow
+      Block (4 statements)
+        ExpressionStatement
+          Assignment: =
+            Identifier: _text
+            Identifier: text
+        ExpressionStatement
+          Assignment: =
+            Identifier: _textEnd
+            MemberAccess: .Length
+              Identifier: text
+        ExpressionStatement
+          Assignment: =
+            Identifier: Position
+            Literal: 0
+        ExpressionStatement
+          Assignment: =
+            Identifier: LexemeStartPosition
+            Literal: 0
+    MethodDeclaration: void Start
+      Block (1 statements)
+        ExpressionStatement
+          Assignment: =
+            Identifier: LexemeStartPosition
+            Identifier: Position
+    MethodDeclaration: bool IsReallyAtEnd
+      Block (1 statements)
+        ReturnStatement
+          BinaryExpression: >=
+            Identifier: Position
+            Identifier: _textEnd
+    MethodDeclaration: char PeekChar
+      Block (2 statements)
+        IfStatement
+          BinaryExpression: >=
+            Identifier: Position
+            Identifier: _textEnd
+          ReturnStatement
+            Identifier: InvalidCharacter
+        ReturnStatement
+          ElementAccess
+            Identifier: _text
+            Identifier: Position
+    MethodDeclaration: char PeekChar
+      Block (3 statements)
+        LocalDeclaration: int pos
+          BinaryExpression: +
+            Identifier: Position
+            Identifier: delta
+        IfStatement
+          BinaryExpression: ||
+            BinaryExpression: <
+              Identifier: pos
+              Literal: 0
+            BinaryExpression: >=
+              Identifier: pos
+              Identifier: _textEnd
+          ReturnStatement
+            Identifier: InvalidCharacter
+        ReturnStatement
+          ElementAccess
+            Identifier: _text
+            Identifier: pos
+    MethodDeclaration: char NextChar
+      Block (4 statements)
+        IfStatement
+          BinaryExpression: >=
+            Identifier: Position
+            Identifier: _textEnd
+          ReturnStatement
+            Identifier: InvalidCharacter
+        LocalDeclaration: char c
+          ElementAccess
+            Identifier: _text
+            Identifier: Position
+        ExpressionStatement
+          PostfixUnary: ++
+            Identifier: Position
+        ReturnStatement
+          Identifier: c
+    MethodDeclaration: void AdvanceChar
+      Block (1 statements)
+        ExpressionStatement
+          PostfixUnary: ++
+            Identifier: Position
+    MethodDeclaration: void AdvanceChar
+      Block (1 statements)
+        ExpressionStatement
+          Assignment: +=
+            Identifier: Position
+            Identifier: n
+    MethodDeclaration: bool TryAdvance
+      Block (2 statements)
+        IfStatement
+          BinaryExpression: ==
+            InvocationExpression
+              Identifier: PeekChar
+            Identifier: c
+          Block (2 statements)
+            ExpressionStatement
+              InvocationExpression
+                Identifier: AdvanceChar
+            ReturnStatement
+              Literal: true
+        ReturnStatement
+          Literal: false
+    MethodDeclaration: void Reset
+      Block (1 statements)
+        ExpressionStatement
+          Assignment: =
+            Identifier: Position
+            Identifier: position
+    MethodDeclaration: string GetText
+      Block (3 statements)
+        LocalDeclaration: int length
+          BinaryExpression: -
+            Identifier: Position
+            Identifier: LexemeStartPosition
+        IfStatement
+          BinaryExpression: ==
+            Identifier: length
+            Literal: 0
+          ReturnStatement
+            MemberAccess: .Empty
+              Identifier: string
+        ReturnStatement
+          InvocationExpression
+            MemberAccess: .Substring
+              Identifier: _text
+            Identifier: LexemeStartPosition
+            Identifier: length
+    MethodDeclaration: int GetNewLineWidth
+      Block (4 statements)
+        LocalDeclaration: char c
+          InvocationExpression
+            Identifier: PeekChar
+        IfStatement
+          BinaryExpression: ==
+            Identifier: c
+            Literal: '\r'
+          Block (2 statements)
+            IfStatement
+              BinaryExpression: ==
+                InvocationExpression
+                  Identifier: PeekChar
+                  Literal: 1
+                Literal: '\n'
+              ReturnStatement
+                Literal: 2
+            ReturnStatement
+              Literal: 1
+        IfStatement
+          BinaryExpression: ==
+            Identifier: c
+            Literal: '\n'
+          ReturnStatement
+            Literal: 1
+        ReturnStatement
+          Literal: 0
+    MethodDeclaration: void AdvancePastNewLine
+      Block (1 statements)
+        ExpressionStatement
+          InvocationExpression
+            Identifier: AdvanceChar
+            InvocationExpression
+              Identifier: GetNewLineWidth
+
+Total tree lines: 178
+
+NOTE: Original SlidingTextWindow.cs uses Unicode escape sequences
+('\uffff', '\u0085', '\u2028', '\u2029') that the simplified tokenizer
+cannot handle. This test uses '\0' and removes those comparisons.
+The tokenizer only consumes one character after a backslash in char literals.

@@ -263,6 +263,9 @@ internal class Program
             case "expanded-parser":
                 Reference.ExpandedParserReference.PrintAll();
                 break;
+            case "self-parse":
+                Reference.SelfParseReference.PrintAll();
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;
