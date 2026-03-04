@@ -165,7 +165,24 @@ function SimpleTokenizer.ScanCharacterLiteral(self: SimpleTokenizer): TokenInfo
 	if SlidingTextWindow.PeekChar(self._window) == 92 then
 		SlidingTextWindow.AdvanceChar(self._window)
 		if not SlidingTextWindow.IsReallyAtEnd(self._window) then
-			SlidingTextWindow.AdvanceChar(self._window)
+			local esc = SlidingTextWindow.PeekChar(self._window)
+			if esc == 117 then
+				SlidingTextWindow.AdvanceChar(self._window)
+				local i = 0
+				while i < 4 and not SlidingTextWindow.IsReallyAtEnd(self._window) and SyntaxFacts.IsHexDigit(SlidingTextWindow.PeekChar(self._window)) do
+					SlidingTextWindow.AdvanceChar(self._window)
+					i += 1
+				end
+			elseif esc == 85 then
+				SlidingTextWindow.AdvanceChar(self._window)
+				local i = 0
+				while i < 8 and not SlidingTextWindow.IsReallyAtEnd(self._window) and SyntaxFacts.IsHexDigit(SlidingTextWindow.PeekChar(self._window)) do
+					SlidingTextWindow.AdvanceChar(self._window)
+					i += 1
+				end
+			else
+				SlidingTextWindow.AdvanceChar(self._window)
+			end
 		end
 	elseif not SlidingTextWindow.IsReallyAtEnd(self._window) then
 		SlidingTextWindow.AdvanceChar(self._window)
@@ -180,7 +197,7 @@ end
 function SimpleTokenizer.ScanPunctuation(self: SimpleTokenizer): TokenInfo
 	local start = self._window.Position
 	local ch = SlidingTextWindow.NextChar(self._window)
-	local kind = if ch == 123 then SyntaxKind.OpenBraceToken elseif ch == 125 then SyntaxKind.CloseBraceToken elseif ch == 40 then SyntaxKind.OpenParenToken elseif ch == 41 then SyntaxKind.CloseParenToken elseif ch == 91 then SyntaxKind.OpenBracketToken elseif ch == 93 then SyntaxKind.CloseBracketToken elseif ch == 59 then SyntaxKind.SemicolonToken elseif ch == 44 then SyntaxKind.CommaToken elseif ch == 46 then SyntaxKind.DotToken elseif ch == 58 then SyntaxKind.ColonToken elseif ch == 63 then SyntaxKind.QuestionToken elseif ch == 126 then SyntaxKind.TildeToken elseif ch == 43 then SimpleTokenizer.ScanPlusToken(self) elseif ch == 45 then SimpleTokenizer.ScanMinusToken(self) elseif ch == 42 then SyntaxKind.AsteriskToken elseif ch == 47 then SimpleTokenizer.ScanSlashToken(self) elseif ch == 37 then SyntaxKind.PercentToken elseif ch == 38 then SimpleTokenizer.ScanAmpersandToken(self) elseif ch == 124 then SimpleTokenizer.ScanBarToken(self) elseif ch == 94 then SyntaxKind.CaretToken elseif ch == 33 then SimpleTokenizer.ScanExclamationToken(self) elseif ch == 61 then SimpleTokenizer.ScanEqualsToken(self) elseif ch == 60 then SimpleTokenizer.ScanLessThanToken(self) elseif ch == 62 then SimpleTokenizer.ScanGreaterThanToken(self) else SyntaxKind.None
+	local kind = if ch == 123 then SyntaxKind.OpenBraceToken elseif ch == 125 then SyntaxKind.CloseBraceToken elseif ch == 40 then SyntaxKind.OpenParenToken elseif ch == 41 then SyntaxKind.CloseParenToken elseif ch == 91 then SyntaxKind.OpenBracketToken elseif ch == 93 then SyntaxKind.CloseBracketToken elseif ch == 59 then SyntaxKind.SemicolonToken elseif ch == 44 then SyntaxKind.CommaToken elseif ch == 46 then SyntaxKind.DotToken elseif ch == 58 then SyntaxKind.ColonToken elseif ch == 63 then SimpleTokenizer.ScanQuestionToken(self) elseif ch == 126 then SyntaxKind.TildeToken elseif ch == 43 then SimpleTokenizer.ScanPlusToken(self) elseif ch == 45 then SimpleTokenizer.ScanMinusToken(self) elseif ch == 42 then SyntaxKind.AsteriskToken elseif ch == 47 then SimpleTokenizer.ScanSlashToken(self) elseif ch == 37 then SyntaxKind.PercentToken elseif ch == 38 then SimpleTokenizer.ScanAmpersandToken(self) elseif ch == 124 then SimpleTokenizer.ScanBarToken(self) elseif ch == 94 then SyntaxKind.CaretToken elseif ch == 33 then SimpleTokenizer.ScanExclamationToken(self) elseif ch == 61 then SimpleTokenizer.ScanEqualsToken(self) elseif ch == 60 then SimpleTokenizer.ScanLessThanToken(self) elseif ch == 62 then SimpleTokenizer.ScanGreaterThanToken(self) else SyntaxKind.None
 	local text = SlidingTextWindow.GetText(self._window, false)
 	return TokenInfo.new(kind, text, start, #text)
 end
@@ -249,6 +266,14 @@ function SimpleTokenizer.ScanBarToken(self: SimpleTokenizer): number
 		return SyntaxKind.BarEqualsToken
 	end
 	return SyntaxKind.BarToken
+end
+
+function SimpleTokenizer.ScanQuestionToken(self: SimpleTokenizer): number
+	if SlidingTextWindow.PeekChar(self._window) == 63 then
+		SlidingTextWindow.AdvanceChar(self._window)
+		return SyntaxKind.QuestionQuestionToken
+	end
+	return SyntaxKind.QuestionToken
 end
 
 function SimpleTokenizer.ScanExclamationToken(self: SimpleTokenizer): number

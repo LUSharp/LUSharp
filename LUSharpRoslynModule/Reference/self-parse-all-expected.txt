@@ -1,0 +1,21 @@
+=== Full Self-Parse Validation ===
+Source directory: C:\Users\table\source\repos\LUSharp\LUSharpRoslynModule\RoslynSource
+Files to parse: 11
+
+Step 1: Compiling RoslynSource files into in-memory assembly...
+  OK: Assembly compiled successfully
+
+Step 2: Self-parsing each source file...
+  OK   SyntaxToken.cs                    34 tree lines
+  OK   SyntaxNode.cs                     39 tree lines
+  OK   ExpressionNodes.cs               967 tree lines
+  OK   StatementNodes.cs                788 tree lines
+  OK   DeclarationNodes.cs              785 tree lines
+  OK   SyntaxKind.cs                      2 tree lines
+  OK   SlidingTextWindow.cs             190 tree lines
+  OK   SimpleTokenizer.cs              1009 tree lines
+  OK   SimpleParser.cs                 5397 tree lines
+  OK   SyntaxWalker.cs                 1793 tree lines
+  OK   SyntaxFacts.cs                  2841 tree lines
+
+Self-parse: 11/11 files parsed successfully

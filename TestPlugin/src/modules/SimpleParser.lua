@@ -126,7 +126,7 @@ function SimpleParser.MakeSyntaxToken(self: SimpleParser, info: TokenInfo): Synt
 end
 
 function SimpleParser.ParseCompilationUnit(self: SimpleParser): CompilationUnitSyntax
-	local members = table.create(64)
+	local members = table.create(256)
 	local count = 0
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.UsingKeyword do
 		SimpleParser.SkipUsingDirective(self)
@@ -136,7 +136,7 @@ function SimpleParser.ParseCompilationUnit(self: SimpleParser): CompilationUnitS
 	end
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
 		local member = SimpleParser.ParseMemberDeclaration(self)
-		if member ~= nil and count < 64 then
+		if member ~= nil and count < 256 then
 			members[count + 1] = member
 			count += 1
 		end
@@ -314,11 +314,11 @@ function SimpleParser.ParseClassDeclaration(self: SimpleParser): ClassDeclaratio
 	SimpleParser.Expect(self, SyntaxKind.OpenBraceToken)
 	local previousClassName = self._currentClassName
 	self._currentClassName = name
-	local members = table.create(64)
+	local members = table.create(256)
 	local count = 0
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
 		local member = SimpleParser.ParseMemberDeclaration(self)
-		if member ~= nil and count < 64 then
+		if member ~= nil and count < 256 then
 			members[count + 1] = member
 			count += 1
 		end
@@ -399,11 +399,11 @@ function SimpleParser.ParseStructDeclaration(self: SimpleParser): StructDeclarat
 	SimpleParser.Expect(self, SyntaxKind.OpenBraceToken)
 	local previousClassName = self._currentClassName
 	self._currentClassName = name
-	local members = table.create(64)
+	local members = table.create(256)
 	local count = 0
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
 		local member = SimpleParser.ParseMemberDeclaration(self)
-		if member ~= nil and count < 64 then
+		if member ~= nil and count < 256 then
 			members[count + 1] = member
 			count += 1
 		end
@@ -1027,11 +1027,21 @@ function SimpleParser.ParseConditionalOr(self: SimpleParser): ExpressionSyntax
 end
 
 function SimpleParser.ParseConditionalAnd(self: SimpleParser): ExpressionSyntax
-	local left = SimpleParser.ParseEquality(self)
+	local left = SimpleParser.ParseNullCoalescing(self)
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.AmpersandAmpersandToken do
 		local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
-		local right = SimpleParser.ParseEquality(self)
+		local right = SimpleParser.ParseNullCoalescing(self)
 		left = BinaryExpressionSyntax.new(8676, left, op, right)
+	end
+	return left
+end
+
+function SimpleParser.ParseNullCoalescing(self: SimpleParser): ExpressionSyntax
+	local left = SimpleParser.ParseEquality(self)
+	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.QuestionQuestionToken do
+		local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+		local right = SimpleParser.ParseEquality(self)
+		left = BinaryExpressionSyntax.new(8688, left, op, right)
 	end
 	return left
 end
@@ -1061,6 +1071,21 @@ function SimpleParser.ParseRelational(self: SimpleParser): ExpressionSyntax
 			local right = SimpleParser.ParseAdditive(self)
 			local exprKind = if kind == SyntaxKind.LessThanToken then 8678 else if kind == SyntaxKind.GreaterThanToken then 8680 else if kind == SyntaxKind.LessThanEqualsToken then 8679 else 8681
 			left = BinaryExpressionSyntax.new(exprKind, left, op, right)
+		elseif kind == SyntaxKind.IsKeyword then
+			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+			local typeName = SimpleParser.ParseTypeName(self)
+			local typeIdent = SyntaxToken.new(SyntaxKind.IdentifierToken, typeName, 0, #typeName)
+			local right = IdentifierNameSyntax.new(typeIdent)
+			left = BinaryExpressionSyntax.new(8657, left, op, right)
+			if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.IdentifierToken then
+				SimpleParser.Advance(self)
+			end
+		elseif kind == SyntaxKind.AsKeyword then
+			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+			local typeName = SimpleParser.ParseTypeName(self)
+			local typeIdent = SyntaxToken.new(SyntaxKind.IdentifierToken, typeName, 0, #typeName)
+			local right = IdentifierNameSyntax.new(typeIdent)
+			left = BinaryExpressionSyntax.new(8658, left, op, right)
 		else
 			break
 		end

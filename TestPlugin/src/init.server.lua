@@ -2,7 +2,7 @@
 -- LUSharp TestPlugin — Validates transpiled Roslyn Luau modules
 -- Compare output with: dotnet run --project LUSharpRoslynModule -- reference <command>
 
-local PLUGIN_VERSION = "0.7.0"
+local PLUGIN_VERSION = "0.8.0"
 
 warn("[LUSharp-Test] TestPlugin v" .. PLUGIN_VERSION .. " loaded")
 
@@ -750,6 +750,154 @@ local function runSelfParseTest()
 	warn("[LUSharp-Test] Self-parse test completed")
 end
 
+local function runFullSelfParseTest()
+	local syntaxWalkerModule = modules:FindFirstChild("SyntaxWalker")
+	local simpleParserModule = modules:FindFirstChild("SimpleParser")
+
+	if not syntaxWalkerModule or not simpleParserModule then
+		warn("[LUSharp-Test] Full self-parse modules not found, skipping")
+		return
+	end
+
+	local ok1, swResult = pcall(require, syntaxWalkerModule)
+	if not ok1 then
+		warn("[LUSharp-Test] FAIL: SyntaxWalker failed to load: " .. tostring(swResult))
+		return
+	end
+
+	local ok2, spResult = pcall(require, simpleParserModule)
+	if not ok2 then
+		warn("[LUSharp-Test] FAIL: SimpleParser failed to load: " .. tostring(spResult))
+		return
+	end
+
+	local TreePrinter = swResult.TreePrinter
+	local SimpleParser = spResult.SimpleParser
+
+	if not TreePrinter or not SimpleParser then
+		warn("[LUSharp-Test] FAIL: TreePrinter or SimpleParser table not found")
+		return
+	end
+
+	print("=== Full Self-Parse Validation (Luau) ===")
+
+	-- Source files to parse (inline, since we can't read files from disk in Roblox)
+	-- These are the actual C# source files that define the parser
+	local sources: { { name: string, source: string } } = {}
+
+	table.insert(sources, {
+		name = "SyntaxToken.cs",
+		source = "namespace RoslynLuau;\n"
+			.. "\n"
+			.. "public struct SyntaxToken\n"
+			.. "{\n"
+			.. "    public int Kind { get; }\n"
+			.. "    public string Text { get; }\n"
+			.. "    public int Start { get; }\n"
+			.. "    public int Length { get; }\n"
+			.. "\n"
+			.. "    public SyntaxToken(int kind, string text, int start, int length)\n"
+			.. "    {\n"
+			.. "        Kind = kind;\n"
+			.. "        Text = text;\n"
+			.. "        Start = start;\n"
+			.. "        Length = length;\n"
+			.. "    }\n"
+			.. "\n"
+			.. "    public bool IsMissing()\n"
+			.. "    {\n"
+			.. "        return Kind == 0;\n"
+			.. "    }\n"
+			.. "\n"
+			.. "    public override string ToString()\n"
+			.. "    {\n"
+			.. "        return Text;\n"
+			.. "    }\n"
+			.. "}"
+	})
+
+	table.insert(sources, {
+		name = "SyntaxNode.cs",
+		source = "namespace RoslynLuau;\n"
+			.. "\n"
+			.. "public abstract class SyntaxNode\n"
+			.. "{\n"
+			.. "    public int Kind { get; }\n"
+			.. "    public int Start { get; set; }\n"
+			.. "    public int Length { get; set; }\n"
+			.. "\n"
+			.. "    protected SyntaxNode(int kind)\n"
+			.. "    {\n"
+			.. "        Kind = kind;\n"
+			.. "    }\n"
+			.. "\n"
+			.. "    public abstract string Accept();\n"
+			.. "\n"
+			.. "    public virtual void AcceptWalker(SyntaxWalker walker)\n"
+			.. "    {\n"
+			.. "        walker.DefaultVisit(this);\n"
+			.. "    }\n"
+			.. "\n"
+			.. "    public virtual string ToDisplayString()\n"
+			.. "    {\n"
+			.. '        return "SyntaxNode(" + Kind + ")";\n'
+			.. "    }\n"
+			.. "}\n"
+			.. "\n"
+			.. "public abstract class ExpressionSyntax : SyntaxNode\n"
+			.. "{\n"
+			.. "    protected ExpressionSyntax(int kind) : base(kind)\n"
+			.. "    {\n"
+			.. "    }\n"
+			.. "}\n"
+			.. "\n"
+			.. "public abstract class StatementSyntax : SyntaxNode\n"
+			.. "{\n"
+			.. "    protected StatementSyntax(int kind) : base(kind)\n"
+			.. "    {\n"
+			.. "    }\n"
+			.. "}\n"
+			.. "\n"
+			.. "public abstract class MemberDeclarationSyntax : SyntaxNode\n"
+			.. "{\n"
+			.. "    protected MemberDeclarationSyntax(int kind) : base(kind)\n"
+			.. "    {\n"
+			.. "    }\n"
+			.. "}"
+	})
+
+	local passed = 0
+	local total = #sources
+
+	for _, entry in sources do
+		local parseOk, parseErr = pcall(function()
+			local parser = SimpleParser.new(entry.source)
+			local compilationUnit = SimpleParser.ParseCompilationUnit(parser)
+
+			local printer = TreePrinter.new()
+			printer:Visit(compilationUnit)
+
+			local output = TreePrinter.GetOutput(printer)
+			local lineCount = 0
+			for _ in string.gmatch(output, "[^\n]+") do
+				lineCount += 1
+			end
+
+			print("  OK   " .. entry.name .. string.rep(" ", 30 - #entry.name) .. " " .. lineCount .. " tree lines")
+			passed += 1
+		end)
+
+		if not parseOk then
+			print("  FAIL " .. entry.name .. string.rep(" ", 30 - #entry.name) .. " " .. tostring(parseErr))
+		end
+	end
+
+	print("")
+	print("Self-parse: " .. passed .. "/" .. total .. " files parsed successfully")
+
+	warn("[LUSharp-Test] Full self-parse test completed")
+end
+
 -- Run all tests
 warn("[LUSharp-Test] Starting tests...")
 runSyntaxKindTest()
@@ -759,4 +907,5 @@ runParserTest()
 runWalkerTest()
 runExpandedParserTest()
 runSelfParseTest()
+runFullSelfParseTest()
 warn("[LUSharp-Test] All tests finished")

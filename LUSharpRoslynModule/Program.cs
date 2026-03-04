@@ -266,6 +266,9 @@ internal class Program
             case "self-parse":
                 Reference.SelfParseReference.PrintAll();
                 break;
+            case "self-parse-all":
+                Reference.FullSelfParseReference.PrintAll();
+                break;
             default:
                 Console.Error.WriteLine($"Unknown reference: {subcommand}");
                 return 1;

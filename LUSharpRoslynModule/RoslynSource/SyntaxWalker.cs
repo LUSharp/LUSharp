@@ -8,7 +8,7 @@ namespace RoslynLuau;
 /// </summary>
 public class SyntaxWalker
 {
-    private int _depth;
+    protected int _depth;
 
     public SyntaxWalker()
     {
