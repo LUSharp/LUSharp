@@ -3289,9 +3289,9 @@ public class LuauEmitter
                     _forceStringConcat = true;
                 }
             }
-            else
+            // Also try heuristic — catches cases where SemanticModel can't resolve external types
+            if (!isTopLevelStringConcat)
             {
-                // Fallback: old heuristic (when no SemanticModel)
                 if (IsStringConcatenation(binary) || IsStringConcatenationChain(binary))
                 {
                     isTopLevelStringConcat = true;
