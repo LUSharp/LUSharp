@@ -331,7 +331,7 @@ public class LuauEmitter
                             var firstParam = method.ParameterList.Parameters.FirstOrDefault();
                             var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
                             // Clean up the suffix for Luau identifier
-                            suffix = suffix.Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                            suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
                             emitName = $"{name}_{suffix}";
                         }
                     }
@@ -839,7 +839,7 @@ public class LuauEmitter
                 {
                     var firstParam = method.ParameterList.Parameters.FirstOrDefault();
                     var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
-                    suffix = suffix.Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
                     emitName = $"{name}_{suffix}";
                 }
             }
@@ -1436,7 +1436,7 @@ public class LuauEmitter
         var targetType = MapTypeNode(convDecl.Type);
         var direction = convDecl.ImplicitOrExplicitKeyword.IsKind(SyntaxKind.ImplicitKeyword)
             ? "from" : "to";
-        var methodName = $"__{direction}_{convDecl.Type.ToString().Replace(".", "_").Replace("<", "_").Replace(">", "_")}";
+        var methodName = $"__{direction}_{convDecl.Type.ToString().Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_")}";
 
         _isInstanceContext = false;
         _currentMethodParams = new HashSet<string>();

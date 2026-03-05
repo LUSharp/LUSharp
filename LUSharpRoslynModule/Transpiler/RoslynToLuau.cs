@@ -232,7 +232,7 @@ public class RoslynToLuau
                 {
                     var firstParam = method.ParameterList.Parameters.FirstOrDefault();
                     var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
-                    suffix = suffix.Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
                     emitName = $"{name}_{suffix}";
                 }
             }
