@@ -2933,10 +2933,15 @@ public class LuauEmitter
                 return $"string.sub({luauOwner}, {args[0]} + 1)";
             }
 
-            // string.Contains(s) → string.find(str, s, 1, true) ~= nil
+            // .Contains(x) — string vs collection
             if (memberName == "Contains" && args.Count == 1)
             {
-                return $"(string.find({luauOwner}, {args[0]}, 1, true) ~= nil)";
+                // Use semantic model to distinguish string.Contains from collection.Contains
+                bool isString = IsStringType(memberAccess.Expression);
+                if (isString)
+                    return $"(string.find({luauOwner}, {args[0]}, 1, true) ~= nil)";
+                else
+                    return $"(table.find({luauOwner}, {args[0]}) ~= nil)";
             }
 
             // string.StartsWith(s) → (string.sub(str, 1, #s) == s)
