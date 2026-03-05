@@ -500,11 +500,15 @@ public class RoslynToLuau
         if (typesToRequire.Count == 0) return;
 
         // Group types by their source module (using the type-to-module map)
+        // Only include types that are actually in the project (in _typeToModuleMap)
         var moduleToTypes = new Dictionary<string, List<string>>();
         foreach (var typeName in typesToRequire)
         {
-            // Look up which module file this type is defined in
-            var moduleName = _typeToModuleMap.GetValueOrDefault(typeName, typeName);
+            // Skip external .NET types not in the project
+            if (!_typeToModuleMap.ContainsKey(typeName))
+                continue;
+
+            var moduleName = _typeToModuleMap[typeName];
             if (!moduleToTypes.ContainsKey(moduleName))
                 moduleToTypes[moduleName] = new List<string>();
             moduleToTypes[moduleName].Add(typeName);
