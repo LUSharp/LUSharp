@@ -271,7 +271,7 @@ function ObjectCreationExpressionSyntax.new(typeName: string, arguments: { Expre
 	self.Initializers = {}
 	self.TypeName = typeName
 	self.Arguments = arguments
-	self.Initializers = if initializers ~= nil then initializers else table.create(0)
+	self.Initializers = (if initializers ~= nil then initializers else table.create(0))
 	return self
 end
 
@@ -280,23 +280,23 @@ function ObjectCreationExpressionSyntax.Accept(self: ObjectCreationExpressionSyn
 	local i = 0
 	while i < #self.Arguments do
 		if i > 0 then
-			args += ", "
+			args = args .. ", "
 		end
-		args += self.Arguments[i + 1]:Accept()
+		args = args .. self.Arguments[i + 1]:Accept()
 		i += 1
 	end
 	local result = "new " .. self.TypeName .. "(" .. args .. ")"
 	if #self.Initializers > 0 then
-		result += " { "
+		result = result .. " { "
 		local i = 0
 		while i < #self.Initializers do
 			if i > 0 then
-				result += ", "
+				result = result .. ", "
 			end
-			result += self.Initializers[i + 1]:Accept()
+			result = result .. self.Initializers[i + 1]:Accept()
 			i += 1
 		end
-		result += " }"
+		result = result .. " }"
 	end
 	return result
 end
@@ -339,12 +339,12 @@ function LambdaExpressionSyntax.Accept(self: LambdaExpressionSyntax): string
 		local i = 0
 		while i < #self.ParameterNames do
 			if i > 0 then
-				parms += ", "
+				parms = parms .. ", "
 			end
-			parms += self.ParameterNames[i + 1]
+			parms = parms .. self.ParameterNames[i + 1]
 			i += 1
 		end
-		parms += ")"
+		parms = parms .. ")"
 	end
 	if self.ExpressionBody ~= nil then
 		return parms .. " => " .. self.ExpressionBody:Accept()
@@ -412,7 +412,7 @@ function PostfixUnaryExpressionSyntax.new(kind: number, operand: ExpressionSynta
 end
 
 function PostfixUnaryExpressionSyntax.Accept(self: PostfixUnaryExpressionSyntax): string
-	local opText = if self.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--"
+	local opText = (if self.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--")
 	return self.Operand:Accept() .. opText
 end
 
@@ -421,7 +421,7 @@ function PostfixUnaryExpressionSyntax.AcceptWalker(self: PostfixUnaryExpressionS
 end
 
 function PostfixUnaryExpressionSyntax.ToDisplayString(self: PostfixUnaryExpressionSyntax): string
-	local opText = if self.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--"
+	local opText = (if self.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--")
 	return "PostfixUnary(" .. self.Operand:ToDisplayString() .. opText .. ")"
 end
 
@@ -477,7 +477,7 @@ function SwitchExpressionArmSyntax.new(pattern: ExpressionSyntax, expression: Ex
 end
 
 function SwitchExpressionArmSyntax.Accept(self: SwitchExpressionArmSyntax): string
-	local pat = if self.Pattern ~= nil then self.Pattern:Accept() else "_"
+	local pat = (if self.Pattern ~= nil then self.Pattern:Accept() else "_")
 	return pat .. " => " .. self.Expression:Accept()
 end
 
@@ -512,9 +512,9 @@ function SwitchExpressionSyntax.Accept(self: SwitchExpressionSyntax): string
 	local i = 0
 	while i < #self.Arms do
 		if i > 0 then
-			result += ", "
+			result = result .. ", "
 		end
-		result += self.Arms[i + 1]:Accept()
+		result = result .. self.Arms[i + 1]:Accept()
 		i += 1
 	end
 	return result .. " }"
@@ -591,4 +591,67 @@ function ArrayCreationExpressionSyntax.ToDisplayString(self: ArrayCreationExpres
 	return "NewArray(" .. self.TypeName .. ")"
 end
 
-return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, ElementAccessExpressionSyntax = ElementAccessExpressionSyntax, PostfixUnaryExpressionSyntax = PostfixUnaryExpressionSyntax, ConditionalExpressionSyntax = ConditionalExpressionSyntax, SwitchExpressionArmSyntax = SwitchExpressionArmSyntax, SwitchExpressionSyntax = SwitchExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax, ArrayCreationExpressionSyntax = ArrayCreationExpressionSyntax }
+type ConditionalAccessExpressionSyntax_self = {
+	Expression: ExpressionSyntax;
+	WhenNotNull: ExpressionSyntax;
+}
+
+local ConditionalAccessExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+ConditionalAccessExpressionSyntax.__index = ConditionalAccessExpressionSyntax
+export type ConditionalAccessExpressionSyntax = typeof(setmetatable({} :: ConditionalAccessExpressionSyntax_self, ConditionalAccessExpressionSyntax))
+
+function ConditionalAccessExpressionSyntax.new(expression: ExpressionSyntax, whenNotNull: ExpressionSyntax): ConditionalAccessExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(8691) :: any, ConditionalAccessExpressionSyntax)
+	self.Expression = nil :: any
+	self.WhenNotNull = nil :: any
+	self.Expression = expression
+	self.WhenNotNull = whenNotNull
+	return self
+end
+
+function ConditionalAccessExpressionSyntax.Accept(self: ConditionalAccessExpressionSyntax): string
+	return self.Expression:Accept() .. "?." .. self.WhenNotNull:Accept()
+end
+
+function ConditionalAccessExpressionSyntax.AcceptWalker(self: ConditionalAccessExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitConditionalAccessExpression(self)
+end
+
+function ConditionalAccessExpressionSyntax.ToDisplayString(self: ConditionalAccessExpressionSyntax): string
+	return "ConditionalAccess(" .. self.Expression:ToDisplayString() .. ", " .. self.WhenNotNull:ToDisplayString() .. ")"
+end
+
+type IsPatternExpressionSyntax_self = {
+	Expression: ExpressionSyntax;
+	TypeName: string;
+	Designation: string;
+}
+
+local IsPatternExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
+IsPatternExpressionSyntax.__index = IsPatternExpressionSyntax
+export type IsPatternExpressionSyntax = typeof(setmetatable({} :: IsPatternExpressionSyntax_self, IsPatternExpressionSyntax))
+
+function IsPatternExpressionSyntax.new(expression: ExpressionSyntax, typeName: string, designation: string): IsPatternExpressionSyntax
+	local self = setmetatable(ExpressionSyntax.new(8692) :: any, IsPatternExpressionSyntax)
+	self.Expression = nil :: any
+	self.TypeName = ""
+	self.Designation = ""
+	self.Expression = expression
+	self.TypeName = typeName
+	self.Designation = designation
+	return self
+end
+
+function IsPatternExpressionSyntax.Accept(self: IsPatternExpressionSyntax): string
+	return self.Expression:Accept() .. " is " .. self.TypeName .. " " .. self.Designation
+end
+
+function IsPatternExpressionSyntax.AcceptWalker(self: IsPatternExpressionSyntax, walker: SyntaxWalker): ()
+	walker:VisitIsPatternExpression(self)
+end
+
+function IsPatternExpressionSyntax.ToDisplayString(self: IsPatternExpressionSyntax): string
+	return "IsPattern(" .. self.Expression:ToDisplayString() .. ", " .. self.TypeName .. ", " .. self.Designation .. ")"
+end
+
+return { LiteralExpressionSyntax = LiteralExpressionSyntax, IdentifierNameSyntax = IdentifierNameSyntax, BinaryExpressionSyntax = BinaryExpressionSyntax, ParenthesizedExpressionSyntax = ParenthesizedExpressionSyntax, PrefixUnaryExpressionSyntax = PrefixUnaryExpressionSyntax, InvocationExpressionSyntax = InvocationExpressionSyntax, MemberAccessExpressionSyntax = MemberAccessExpressionSyntax, AssignmentExpressionSyntax = AssignmentExpressionSyntax, ObjectCreationExpressionSyntax = ObjectCreationExpressionSyntax, LambdaExpressionSyntax = LambdaExpressionSyntax, ElementAccessExpressionSyntax = ElementAccessExpressionSyntax, PostfixUnaryExpressionSyntax = PostfixUnaryExpressionSyntax, ConditionalExpressionSyntax = ConditionalExpressionSyntax, SwitchExpressionArmSyntax = SwitchExpressionArmSyntax, SwitchExpressionSyntax = SwitchExpressionSyntax, CastExpressionSyntax = CastExpressionSyntax, ArrayCreationExpressionSyntax = ArrayCreationExpressionSyntax, ConditionalAccessExpressionSyntax = ConditionalAccessExpressionSyntax, IsPatternExpressionSyntax = IsPatternExpressionSyntax }

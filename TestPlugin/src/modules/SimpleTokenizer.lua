@@ -81,6 +81,12 @@ function SimpleTokenizer.ScanToken(self: SimpleTokenizer): TokenInfo
 	if SyntaxFacts.IsDecDigit(ch) then
 		return SimpleTokenizer.ScanNumericLiteral(self)
 	end
+	if ch == 36 and not SlidingTextWindow.IsReallyAtEnd(self._window) then
+		local peekPos = self._window.Position + 1
+		if peekPos < self._window.TextLength and SlidingTextWindow.CharAt(self._window, peekPos) == 34 then
+			return SimpleTokenizer.ScanInterpolatedStringLiteral(self)
+		end
+	end
 	if ch == 34 then
 		return SimpleTokenizer.ScanStringLiteral(self)
 	end
@@ -135,6 +141,46 @@ function SimpleTokenizer.ScanNumericLiteral(self: SimpleTokenizer): TokenInfo
 	end
 	local text = SlidingTextWindow.GetText(self._window, false)
 	return TokenInfo.new(SyntaxKind.NumericLiteralToken, text, start, #text)
+end
+
+function SimpleTokenizer.ScanInterpolatedStringLiteral(self: SimpleTokenizer): TokenInfo
+	local start = self._window.Position
+	SlidingTextWindow.AdvanceChar(self._window)
+	SlidingTextWindow.AdvanceChar(self._window)
+	local braceDepth = 0
+	while not SlidingTextWindow.IsReallyAtEnd(self._window) do
+		local ch = SlidingTextWindow.PeekChar(self._window)
+		if ch == 123 and braceDepth == 0 then
+			local nextPos = self._window.Position + 1
+			if nextPos < self._window.TextLength and SlidingTextWindow.CharAt(self._window, nextPos) == 123 then
+				SlidingTextWindow.AdvanceChar(self._window)
+				SlidingTextWindow.AdvanceChar(self._window)
+				continue
+			end
+			braceDepth += 1
+			SlidingTextWindow.AdvanceChar(self._window)
+			continue
+		end
+		if ch == 125 and braceDepth > 0 then
+			braceDepth -= 1
+			SlidingTextWindow.AdvanceChar(self._window)
+			continue
+		end
+		if ch == 34 and braceDepth == 0 then
+			SlidingTextWindow.AdvanceChar(self._window)
+			break
+		end
+		if ch == 92 then
+			SlidingTextWindow.AdvanceChar(self._window)
+			if not SlidingTextWindow.IsReallyAtEnd(self._window) then
+				SlidingTextWindow.AdvanceChar(self._window)
+			end
+		else
+			SlidingTextWindow.AdvanceChar(self._window)
+		end
+	end
+	local text = SlidingTextWindow.GetText(self._window, false)
+	return TokenInfo.new(SyntaxKind.InterpolatedStringToken, text, start, #text)
 end
 
 function SimpleTokenizer.ScanStringLiteral(self: SimpleTokenizer): TokenInfo
@@ -271,7 +317,15 @@ end
 function SimpleTokenizer.ScanQuestionToken(self: SimpleTokenizer): number
 	if SlidingTextWindow.PeekChar(self._window) == 63 then
 		SlidingTextWindow.AdvanceChar(self._window)
+		if SlidingTextWindow.PeekChar(self._window) == 61 then
+			SlidingTextWindow.AdvanceChar(self._window)
+			return SyntaxKind.QuestionQuestionEqualsToken
+		end
 		return SyntaxKind.QuestionQuestionToken
+	end
+	if SlidingTextWindow.PeekChar(self._window) == 46 then
+		SlidingTextWindow.AdvanceChar(self._window)
+		return SyntaxKind.QuestionDotToken
 	end
 	return SyntaxKind.QuestionToken
 end

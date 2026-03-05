@@ -29,7 +29,7 @@ function SyntaxNode.AcceptWalker(self: SyntaxNode, walker: SyntaxWalker): ()
 end
 
 function SyntaxNode.ToDisplayString(self: SyntaxNode): string
-	return "SyntaxNode(" .. self.Kind .. ")"
+	return "SyntaxNode(" + self.Kind + ")"
 end
 
 local ExpressionSyntax = setmetatable({}, {__index = SyntaxNode})

@@ -277,6 +277,33 @@ function SyntaxWalker.VisitThrowStatement(self: SyntaxWalker, node: ThrowStateme
 	end
 end
 
+function SyntaxWalker.VisitLockStatement(self: SyntaxWalker, node: LockStatementSyntax): ()
+	self._depth += 1
+	SyntaxWalker.Visit(self, node.Expression)
+	SyntaxWalker.VisitBlock(self, node.Block)
+	self._depth -= 1
+end
+
+function SyntaxWalker.VisitUsingStatement(self: SyntaxWalker, node: UsingStatementSyntax): ()
+	self._depth += 1
+	if node.Declaration ~= nil then
+		SyntaxWalker.VisitLocalDeclaration(self, node.Declaration)
+	end
+	if node.Expression ~= nil then
+		SyntaxWalker.Visit(self, node.Expression)
+	end
+	SyntaxWalker.VisitBlock(self, node.Block)
+	self._depth -= 1
+end
+
+function SyntaxWalker.VisitTupleDeconstructionStatement(self: SyntaxWalker, node: TupleDeconstructionStatementSyntax): ()
+	self._depth += 1
+	if node.Initializer ~= nil then
+		SyntaxWalker.Visit(self, node.Initializer)
+	end
+	self._depth -= 1
+end
+
 function SyntaxWalker.VisitLiteralExpression(self: SyntaxWalker, node: LiteralExpressionSyntax): ()
 end
 
@@ -348,6 +375,19 @@ function SyntaxWalker.VisitArrayCreationExpression(self: SyntaxWalker, node: Arr
 		SyntaxWalker.Visit(self, node.SizeExpression)
 		self._depth -= 1
 	end
+end
+
+function SyntaxWalker.VisitConditionalAccessExpression(self: SyntaxWalker, node: ConditionalAccessExpressionSyntax): ()
+	self._depth += 1
+	SyntaxWalker.Visit(self, node.Expression)
+	SyntaxWalker.Visit(self, node.WhenNotNull)
+	self._depth -= 1
+end
+
+function SyntaxWalker.VisitIsPatternExpression(self: SyntaxWalker, node: IsPatternExpressionSyntax): ()
+	self._depth += 1
+	SyntaxWalker.Visit(self, node.Expression)
+	self._depth -= 1
 end
 
 function SyntaxWalker.VisitLambdaExpression(self: SyntaxWalker, node: LambdaExpressionSyntax): ()
@@ -615,9 +655,33 @@ function TreePrinter.VisitCatchClause(self: TreePrinter, node: CatchClauseSyntax
 end
 
 function TreePrinter.VisitThrowStatement(self: TreePrinter, node: ThrowStatementSyntax): ()
-	local rethrow = if node.Expression == nil then " (re-throw)" else ""
+	local rethrow = (if node.Expression == nil then " (re-throw)" else "")
 	TreePrinter.PrintNode(self, "ThrowStatement" .. rethrow)
 	SyntaxWalker.VisitThrowStatement(self, node)
+end
+
+function TreePrinter.VisitLockStatement(self: TreePrinter, node: LockStatementSyntax): ()
+	TreePrinter.PrintNode(self, "LockStatement")
+	SyntaxWalker.VisitLockStatement(self, node)
+end
+
+function TreePrinter.VisitUsingStatement(self: TreePrinter, node: UsingStatementSyntax): ()
+	TreePrinter.PrintNode(self, "UsingStatement")
+	SyntaxWalker.VisitUsingStatement(self, node)
+end
+
+function TreePrinter.VisitTupleDeconstructionStatement(self: TreePrinter, node: TupleDeconstructionStatementSyntax): ()
+	local names = ""
+	local i = 0
+	while i < #node.VariableNames do
+		if i > 0 then
+			names = names .. ", "
+		end
+		names = names .. node.VariableNames[i + 1]
+		i += 1
+	end
+	TreePrinter.PrintNode(self, "TupleDeconstruction: (" .. names .. ")")
+	SyntaxWalker.VisitTupleDeconstructionStatement(self, node)
 end
 
 function TreePrinter.VisitLiteralExpression(self: TreePrinter, node: LiteralExpressionSyntax): ()
@@ -668,6 +732,16 @@ function TreePrinter.VisitArrayCreationExpression(self: TreePrinter, node: Array
 	SyntaxWalker.VisitArrayCreationExpression(self, node)
 end
 
+function TreePrinter.VisitConditionalAccessExpression(self: TreePrinter, node: ConditionalAccessExpressionSyntax): ()
+	TreePrinter.PrintNode(self, "ConditionalAccess")
+	SyntaxWalker.VisitConditionalAccessExpression(self, node)
+end
+
+function TreePrinter.VisitIsPatternExpression(self: TreePrinter, node: IsPatternExpressionSyntax): ()
+	TreePrinter.PrintNode(self, "IsPattern: " .. node.TypeName .. " " .. node.Designation)
+	SyntaxWalker.VisitIsPatternExpression(self, node)
+end
+
 function TreePrinter.VisitLambdaExpression(self: TreePrinter, node: LambdaExpressionSyntax): ()
 	TreePrinter.PrintNode(self, "Lambda (" .. #node.ParameterNames .. " params)")
 	SyntaxWalker.VisitLambdaExpression(self, node)
@@ -684,7 +758,7 @@ function TreePrinter.VisitElementAccess(self: TreePrinter, node: ElementAccessEx
 end
 
 function TreePrinter.VisitPostfixUnary(self: TreePrinter, node: PostfixUnaryExpressionSyntax): ()
-	local opText = if node.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--"
+	local opText = (if node.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--")
 	TreePrinter.PrintNode(self, "PostfixUnary: " .. opText)
 	SyntaxWalker.VisitPostfixUnary(self, node)
 end
@@ -700,7 +774,7 @@ function TreePrinter.VisitSwitchExpression(self: TreePrinter, node: SwitchExpres
 end
 
 function TreePrinter.VisitSwitchExpressionArm(self: TreePrinter, node: SwitchExpressionArmSyntax): ()
-	local label = if node.Pattern ~= nil then "case" else "default"
+	local label = (if node.Pattern ~= nil then "case" else "default")
 	TreePrinter.PrintNode(self, "SwitchArm: " .. label)
 	SyntaxWalker.VisitSwitchExpressionArm(self, node)
 end

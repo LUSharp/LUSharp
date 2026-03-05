@@ -115,7 +115,7 @@ function SimpleTranspiler.Transpile(self: SimpleTranspiler, source: string, file
 	local newlineCount = 0
 	local h = 0
 	while h < #output do
-		if output[h + 1] == 10 then
+		if string.byte(output, h + 1) == 10 then
 			newlineCount += 1
 			if newlineCount >= 3 then
 				headerEnd = h + 1
@@ -267,9 +267,9 @@ function SimpleTranspiler.IsTypeReferenced(self: SimpleTranspiler, typeName: str
 		if idx == -1 then
 			return false
 		end
-		local leftOk = (idx == 0) or not SimpleTranspiler.IsWordChar(self, emittedOutput[idx - 1 + 1])
+		local leftOk = (idx == 0) or not SimpleTranspiler.IsWordChar(self, string.byte(emittedOutput, idx - 1 + 1))
 		local afterIdx = idx + nameLen
-		local rightOk = (afterIdx >= outputLen) or not SimpleTranspiler.IsWordChar(self, emittedOutput[afterIdx + 1])
+		local rightOk = (afterIdx >= outputLen) or not SimpleTranspiler.IsWordChar(self, string.byte(emittedOutput, afterIdx + 1))
 		if leftOk and rightOk then
 			return true
 		end
@@ -287,7 +287,7 @@ function SimpleTranspiler.IndexOf(self: SimpleTranspiler, haystack: string, need
 		local match = true
 		local j = 0
 		while j < needleLen do
-			if haystack[i + j + 1] ~= needle[j + 1] then
+			if string.byte(haystack, i + j + 1) ~= string.byte(needle, j + 1) then
 				match = false
 				break
 			end
@@ -322,15 +322,15 @@ function SimpleTranspiler.InsertRequires(self: SimpleTranspiler, emittedOutput: 
 	local sentinelLen = #sentinel
 	local sentinelIdx = SimpleTranspiler.IndexOf(self, emittedOutput, sentinel, 0)
 	if sentinelIdx == -1 then
-		return requireBlock + emittedOutput
+		return requireBlock .. emittedOutput
 	end
 	local insertionPoint = sentinelIdx + sentinelLen
-	if insertionPoint < #emittedOutput and emittedOutput[insertionPoint + 1] == 10 then
+	if insertionPoint < #emittedOutput and string.byte(emittedOutput, insertionPoint + 1) == 10 then
 		insertionPoint += 1
 	end
 	local before = string.sub(emittedOutput, 0 + 1, 0 + insertionPoint)
 	local after = string.sub(emittedOutput, insertionPoint + 1)
-	return before + requireBlock + after
+	return before .. requireBlock .. after
 end
 
 function SimpleTranspiler.BuildRequireBlock(self: SimpleTranspiler, modules: { string }, types: { string }, typeCounts: { number }, moduleCount: number): string
@@ -414,10 +414,10 @@ function SimpleTranspiler.StringGreaterThan(self: SimpleTranspiler, a: string, b
 	end
 	local i = 0
 	while i < minLen do
-		if a[i + 1] > b[i + 1] then
+		if string.byte(a, i + 1) > string.byte(b, i + 1) then
 			return true
 		end
-		if a[i + 1] < b[i + 1] then
+		if string.byte(a, i + 1) < string.byte(b, i + 1) then
 			return false
 		end
 		i += 1
@@ -440,7 +440,7 @@ function SimpleTranspiler.StripDirectory(self: SimpleTranspiler, path: string): 
 	local lastSlash = -1
 	local i = #path - 1
 	while i >= 0 do
-		if path[i + 1] == 47 or path[i + 1] == 92 then
+		if string.byte(path, i + 1) == 47 or string.byte(path, i + 1) == 92 then
 			lastSlash = i
 			break
 		end
@@ -455,7 +455,7 @@ end
 function SimpleTranspiler.StripExtension(self: SimpleTranspiler, name: string): string
 	local i = #name - 1
 	while i >= 0 do
-		if name[i + 1] == 46 then
+		if string.byte(name, i + 1) == 46 then
 			return string.sub(name, 0 + 1, 0 + i)
 		end
 		i -= 1

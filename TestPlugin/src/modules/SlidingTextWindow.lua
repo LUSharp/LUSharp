@@ -33,6 +33,17 @@ function SlidingTextWindow.get_Width(self: SlidingTextWindow): number
 	return self.Position - self.LexemeStartPosition
 end
 
+function SlidingTextWindow.get_TextLength(self: SlidingTextWindow): number
+	return self._textEnd
+end
+
+function SlidingTextWindow.CharAt(self: SlidingTextWindow, pos: number): number
+	if pos >= 0 and pos < self._textEnd then
+		return string.byte(self._text, pos + 1)
+	end
+	return SlidingTextWindow.InvalidCharacter
+end
+
 function SlidingTextWindow.Start(self: SlidingTextWindow): ()
 	self.LexemeStartPosition = self.Position
 end

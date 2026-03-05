@@ -205,8 +205,8 @@ function ForStatementSyntax.AcceptWalker(self: ForStatementSyntax, walker: Synta
 end
 
 function ForStatementSyntax.Accept(self: ForStatementSyntax): string
-	local init = if self.Declaration ~= nil then self.Declaration:Accept() else ";"
-	local cond = if self.Condition ~= nil then self.Condition:Accept() else ""
+	local init = (if self.Declaration ~= nil then self.Declaration:Accept() else ";")
+	local cond = (if self.Condition ~= nil then self.Condition:Accept() else "")
 	local inc = ""
 	local i = 0
 	while i < #self.Incrementors do
@@ -485,4 +485,97 @@ function ThrowStatementSyntax.Accept(self: ThrowStatementSyntax): string
 	return "throw " .. self.Expression:Accept() .. ";"
 end
 
-return { BlockSyntax = BlockSyntax, ReturnStatementSyntax = ReturnStatementSyntax, ExpressionStatementSyntax = ExpressionStatementSyntax, LocalDeclarationStatementSyntax = LocalDeclarationStatementSyntax, IfStatementSyntax = IfStatementSyntax, WhileStatementSyntax = WhileStatementSyntax, ForStatementSyntax = ForStatementSyntax, ForEachStatementSyntax = ForEachStatementSyntax, DoStatementSyntax = DoStatementSyntax, BreakStatementSyntax = BreakStatementSyntax, ContinueStatementSyntax = ContinueStatementSyntax, SwitchStatementSyntax = SwitchStatementSyntax, SwitchSectionSyntax = SwitchSectionSyntax, TryStatementSyntax = TryStatementSyntax, CatchClauseSyntax = CatchClauseSyntax, ThrowStatementSyntax = ThrowStatementSyntax }
+type LockStatementSyntax_self = {
+	Expression: ExpressionSyntax;
+	Block: BlockSyntax;
+}
+
+local LockStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+LockStatementSyntax.__index = LockStatementSyntax
+export type LockStatementSyntax = typeof(setmetatable({} :: LockStatementSyntax_self, LockStatementSyntax))
+
+function LockStatementSyntax.new(expression: ExpressionSyntax, block: BlockSyntax): LockStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8818) :: any, LockStatementSyntax)
+	self.Expression = nil :: any
+	self.Block = nil :: any
+	self.Expression = expression
+	self.Block = block
+	return self
+end
+
+function LockStatementSyntax.AcceptWalker(self: LockStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitLockStatement(self)
+end
+
+function LockStatementSyntax.Accept(self: LockStatementSyntax): string
+	return "lock (" .. self.Expression:Accept() .. ") " .. BlockSyntax.Accept(self.Block)
+end
+
+type UsingStatementSyntax_self = {
+	Declaration: LocalDeclarationStatementSyntax;
+	Expression: ExpressionSyntax;
+	Block: BlockSyntax;
+}
+
+local UsingStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+UsingStatementSyntax.__index = UsingStatementSyntax
+export type UsingStatementSyntax = typeof(setmetatable({} :: UsingStatementSyntax_self, UsingStatementSyntax))
+
+function UsingStatementSyntax.new(declaration: LocalDeclarationStatementSyntax, expression: ExpressionSyntax, block: BlockSyntax): UsingStatementSyntax
+	local self = setmetatable(StatementSyntax.new(8813) :: any, UsingStatementSyntax)
+	self.Declaration = nil :: any
+	self.Expression = nil :: any
+	self.Block = nil :: any
+	self.Declaration = declaration
+	self.Expression = expression
+	self.Block = block
+	return self
+end
+
+function UsingStatementSyntax.AcceptWalker(self: UsingStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitUsingStatement(self)
+end
+
+function UsingStatementSyntax.Accept(self: UsingStatementSyntax): string
+	if self.Declaration ~= nil then
+		return "using (" .. LocalDeclarationStatementSyntax.Accept(self.Declaration) .. ") " .. BlockSyntax.Accept(self.Block)
+	end
+	return "using (" .. self.Expression:Accept() .. ") " .. BlockSyntax.Accept(self.Block)
+end
+
+type TupleDeconstructionStatementSyntax_self = {
+	VariableNames: { string };
+	Initializer: ExpressionSyntax;
+}
+
+local TupleDeconstructionStatementSyntax = setmetatable({}, {__index = StatementSyntax})
+TupleDeconstructionStatementSyntax.__index = TupleDeconstructionStatementSyntax
+export type TupleDeconstructionStatementSyntax = typeof(setmetatable({} :: TupleDeconstructionStatementSyntax_self, TupleDeconstructionStatementSyntax))
+
+function TupleDeconstructionStatementSyntax.new(variableNames: { string }, initializer: ExpressionSyntax): TupleDeconstructionStatementSyntax
+	local self = setmetatable(StatementSyntax.new(9081) :: any, TupleDeconstructionStatementSyntax)
+	self.VariableNames = {}
+	self.Initializer = nil :: any
+	self.VariableNames = variableNames
+	self.Initializer = initializer
+	return self
+end
+
+function TupleDeconstructionStatementSyntax.AcceptWalker(self: TupleDeconstructionStatementSyntax, walker: SyntaxWalker): ()
+	walker:VisitTupleDeconstructionStatement(self)
+end
+
+function TupleDeconstructionStatementSyntax.Accept(self: TupleDeconstructionStatementSyntax): string
+	local names = ""
+	local i = 0
+	while i < #self.VariableNames do
+		if i > 0 then
+			names = names .. ", "
+		end
+		names = names .. self.VariableNames[i + 1]
+		i += 1
+	end
+	return "var (" .. names .. ") = " .. self.Initializer:Accept() .. ";"
+end
+
+return { BlockSyntax = BlockSyntax, ReturnStatementSyntax = ReturnStatementSyntax, ExpressionStatementSyntax = ExpressionStatementSyntax, LocalDeclarationStatementSyntax = LocalDeclarationStatementSyntax, IfStatementSyntax = IfStatementSyntax, WhileStatementSyntax = WhileStatementSyntax, ForStatementSyntax = ForStatementSyntax, ForEachStatementSyntax = ForEachStatementSyntax, DoStatementSyntax = DoStatementSyntax, BreakStatementSyntax = BreakStatementSyntax, ContinueStatementSyntax = ContinueStatementSyntax, SwitchStatementSyntax = SwitchStatementSyntax, SwitchSectionSyntax = SwitchSectionSyntax, TryStatementSyntax = TryStatementSyntax, CatchClauseSyntax = CatchClauseSyntax, ThrowStatementSyntax = ThrowStatementSyntax, LockStatementSyntax = LockStatementSyntax, UsingStatementSyntax = UsingStatementSyntax, TupleDeconstructionStatementSyntax = TupleDeconstructionStatementSyntax }

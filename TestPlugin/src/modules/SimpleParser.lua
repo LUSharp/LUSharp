@@ -18,10 +18,12 @@ local ArrayCreationExpressionSyntax = _ExpressionNodes.ArrayCreationExpressionSy
 local AssignmentExpressionSyntax = _ExpressionNodes.AssignmentExpressionSyntax
 local BinaryExpressionSyntax = _ExpressionNodes.BinaryExpressionSyntax
 local CastExpressionSyntax = _ExpressionNodes.CastExpressionSyntax
+local ConditionalAccessExpressionSyntax = _ExpressionNodes.ConditionalAccessExpressionSyntax
 local ConditionalExpressionSyntax = _ExpressionNodes.ConditionalExpressionSyntax
 local ElementAccessExpressionSyntax = _ExpressionNodes.ElementAccessExpressionSyntax
 local IdentifierNameSyntax = _ExpressionNodes.IdentifierNameSyntax
 local InvocationExpressionSyntax = _ExpressionNodes.InvocationExpressionSyntax
+local IsPatternExpressionSyntax = _ExpressionNodes.IsPatternExpressionSyntax
 local LambdaExpressionSyntax = _ExpressionNodes.LambdaExpressionSyntax
 local LiteralExpressionSyntax = _ExpressionNodes.LiteralExpressionSyntax
 local MemberAccessExpressionSyntax = _ExpressionNodes.MemberAccessExpressionSyntax
@@ -45,11 +47,14 @@ local ForEachStatementSyntax = _StatementNodes.ForEachStatementSyntax
 local ForStatementSyntax = _StatementNodes.ForStatementSyntax
 local IfStatementSyntax = _StatementNodes.IfStatementSyntax
 local LocalDeclarationStatementSyntax = _StatementNodes.LocalDeclarationStatementSyntax
+local LockStatementSyntax = _StatementNodes.LockStatementSyntax
 local ReturnStatementSyntax = _StatementNodes.ReturnStatementSyntax
 local SwitchSectionSyntax = _StatementNodes.SwitchSectionSyntax
 local SwitchStatementSyntax = _StatementNodes.SwitchStatementSyntax
 local ThrowStatementSyntax = _StatementNodes.ThrowStatementSyntax
 local TryStatementSyntax = _StatementNodes.TryStatementSyntax
+local TupleDeconstructionStatementSyntax = _StatementNodes.TupleDeconstructionStatementSyntax
+local UsingStatementSyntax = _StatementNodes.UsingStatementSyntax
 local WhileStatementSyntax = _StatementNodes.WhileStatementSyntax
 local _SyntaxKind = require(script.Parent.SyntaxKind)
 local SyntaxKind = _SyntaxKind.SyntaxKind
@@ -229,7 +234,7 @@ function SimpleParser.ParseMemberDeclaration(self: SimpleParser): MemberDeclarat
 			SimpleParser.Advance(self)
 		elseif kind == SyntaxKind.ExternKeyword then
 			SimpleParser.Advance(self)
-		elseif kind == SyntaxKind.AsyncKeyword then
+		elseif kind == SyntaxKind.AsyncKeyword or (kind == SyntaxKind.IdentifierToken and SimpleParser.Current(self).Text == "async") then
 			SimpleParser.Advance(self)
 		elseif kind == SyntaxKind.UnsafeKeyword then
 			SimpleParser.Advance(self)
@@ -629,18 +634,30 @@ function SimpleParser.ParseTypeName(self: SimpleParser): string
 		SimpleParser.Advance(self)
 	end
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.LessThanToken then
+		name = name .. "<"
 		local depth = 0
 		while not SimpleParser.IsAtEnd(self) do
 			if SimpleParser.Current(self).Kind == SyntaxKind.LessThanToken then
 				depth += 1
+				if depth > 1 then
+					name = name .. "<"
+				end
+				SimpleParser.Advance(self)
 			elseif SimpleParser.Current(self).Kind == SyntaxKind.GreaterThanToken then
 				depth -= 1
 				if depth == 0 then
+					name = name .. ">"
 					SimpleParser.Advance(self)
 					break
 				end
+				name = name .. ">"
+				SimpleParser.Advance(self)
+			else
+				if SimpleParser.Current(self).Kind ~= SyntaxKind.WhitespaceTrivia then
+					name = name .. SimpleParser.Current(self).Text
+				end
+				SimpleParser.Advance(self)
 			end
-			SimpleParser.Advance(self)
 		end
 	end
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBracketToken and self._position + 1 < #self._tokens and self._tokens[self._position + 1 + 1].Kind == SyntaxKind.CloseBracketToken then
@@ -718,12 +735,22 @@ function SimpleParser.ParseStatement(self: SimpleParser): StatementSyntax
 	if kind == SyntaxKind.ThrowKeyword then
 		return SimpleParser.ParseThrowStatement(self)
 	end
+	if kind == SyntaxKind.LockKeyword then
+		return SimpleParser.ParseLockStatement(self)
+	end
+	if kind == SyntaxKind.UsingKeyword then
+		return SimpleParser.ParseUsingStatement(self)
+	end
 	if kind == SyntaxKind.OpenBraceToken then
 		return SimpleParser.ParseBlock(self)
 	end
-	if SimpleParser.IsTypeStart(self, kind) and self._position + 1 < #self._tokens then
+	local isContextualKeyword = kind == SyntaxKind.IdentifierToken and (SimpleParser.Current(self).Text == "await" or SimpleParser.Current(self).Text == "yield" or SimpleParser.Current(self).Text == "async")
+	if SimpleParser.IsTypeStart(self, kind) and not isContextualKeyword and self._position + 1 < #self._tokens then
 		local next = self._tokens[self._position + 1 + 1].Kind
 		if next == SyntaxKind.IdentifierToken then
+			return SimpleParser.ParseLocalDeclaration(self)
+		end
+		if next == SyntaxKind.QuestionToken and self._position + 2 < #self._tokens and self._tokens[self._position + 2 + 1].Kind == SyntaxKind.IdentifierToken then
 			return SimpleParser.ParseLocalDeclaration(self)
 		end
 		if next == SyntaxKind.OpenBracketToken and self._position + 3 < #self._tokens then
@@ -735,6 +762,9 @@ function SimpleParser.ParseStatement(self: SimpleParser): StatementSyntax
 	if kind == SyntaxKind.IdentifierToken and SimpleParser.Current(self).Text == "var" and self._position + 1 < #self._tokens then
 		if self._tokens[self._position + 1 + 1].Kind == SyntaxKind.IdentifierToken then
 			return SimpleParser.ParseLocalDeclaration(self)
+		end
+		if self._tokens[self._position + 1 + 1].Kind == SyntaxKind.OpenParenToken then
+			return SimpleParser.ParseTupleDeconstruction(self)
 		end
 	end
 	local expr = SimpleParser.ParseExpression(self)
@@ -978,6 +1008,57 @@ function SimpleParser.ParseThrowStatement(self: SimpleParser): ThrowStatementSyn
 	return ThrowStatementSyntax.new(expr)
 end
 
+function SimpleParser.ParseLockStatement(self: SimpleParser): LockStatementSyntax
+	SimpleParser.Advance(self)
+	SimpleParser.Expect(self, SyntaxKind.OpenParenToken)
+	local expr = SimpleParser.ParseExpression(self)
+	SimpleParser.Expect(self, SyntaxKind.CloseParenToken)
+	local block = SimpleParser.ParseBlock(self)
+	return LockStatementSyntax.new(expr, block)
+end
+
+function SimpleParser.ParseUsingStatement(self: SimpleParser): StatementSyntax
+	SimpleParser.Advance(self)
+	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.OpenParenToken then
+		local typeName = SimpleParser.ParseTypeName(self)
+		local varName = SimpleParser.Current(self).Text
+		SimpleParser.Advance(self)
+		local init = nil
+		if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.EqualsToken then
+			SimpleParser.Advance(self)
+			init = SimpleParser.ParseExpression(self)
+		end
+		SimpleParser.Expect(self, SyntaxKind.SemicolonToken)
+		return LocalDeclarationStatementSyntax.new(typeName, varName, init)
+	end
+	SimpleParser.Expect(self, SyntaxKind.OpenParenToken)
+	local decl = nil
+	local usingExpr = nil
+	local isDecl = false
+	if SimpleParser.IsTypeStart(self, SimpleParser.Current(self).Kind) and self._position + 1 < #self._tokens and self._tokens[self._position + 1 + 1].Kind == SyntaxKind.IdentifierToken then
+		isDecl = true
+	end
+	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.IdentifierToken and SimpleParser.Current(self).Text == "var" and self._position + 1 < #self._tokens and self._tokens[self._position + 1 + 1].Kind == SyntaxKind.IdentifierToken then
+		isDecl = true
+	end
+	if isDecl then
+		local typeName = SimpleParser.ParseTypeName(self)
+		local varName = SimpleParser.Current(self).Text
+		SimpleParser.Advance(self)
+		local init = nil
+		if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.EqualsToken then
+			SimpleParser.Advance(self)
+			init = SimpleParser.ParseExpression(self)
+		end
+		decl = LocalDeclarationStatementSyntax.new(typeName, varName, init)
+	else
+		usingExpr = SimpleParser.ParseExpression(self)
+	end
+	SimpleParser.Expect(self, SyntaxKind.CloseParenToken)
+	local block = SimpleParser.ParseBlock(self)
+	return UsingStatementSyntax.new(decl, usingExpr, block)
+end
+
 function SimpleParser.ParseStatementOrBlock(self: SimpleParser): StatementSyntax
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBraceToken then
 		return SimpleParser.ParseBlock(self)
@@ -998,6 +1079,34 @@ function SimpleParser.ParseLocalDeclaration(self: SimpleParser): LocalDeclaratio
 	return LocalDeclarationStatementSyntax.new(typeName, varName, initializer)
 end
 
+function SimpleParser.ParseTupleDeconstruction(self: SimpleParser): StatementSyntax
+	SimpleParser.Advance(self)
+	SimpleParser.Expect(self, SyntaxKind.OpenParenToken)
+	local names = table.create(8)
+	local nameCount = 0
+	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseParenToken do
+		if nameCount > 0 then
+			SimpleParser.Expect(self, SyntaxKind.CommaToken)
+		end
+		if nameCount < 8 then
+			names[nameCount + 1] = SimpleParser.Current(self).Text
+			nameCount = nameCount + 1
+		end
+		SimpleParser.Advance(self)
+	end
+	SimpleParser.Expect(self, SyntaxKind.CloseParenToken)
+	SimpleParser.Expect(self, SyntaxKind.EqualsToken)
+	local initializer = SimpleParser.ParseExpression(self)
+	SimpleParser.Expect(self, SyntaxKind.SemicolonToken)
+	local trimmed = table.create(nameCount)
+	local i = 0
+	while i < nameCount do
+		trimmed[i + 1] = names[i + 1]
+		i += 1
+	end
+	return TupleDeconstructionStatementSyntax.new(trimmed, initializer)
+end
+
 function SimpleParser.ParseExpression(self: SimpleParser): ExpressionSyntax
 	return SimpleParser.ParseAssignment(self)
 end
@@ -1006,10 +1115,10 @@ function SimpleParser.ParseAssignment(self: SimpleParser): ExpressionSyntax
 	local left = SimpleParser.ParseConditionalOr(self)
 	if not SimpleParser.IsAtEnd(self) then
 		local kind = SimpleParser.Current(self).Kind
-		if kind == SyntaxKind.EqualsToken or kind == SyntaxKind.PlusEqualsToken or kind == SyntaxKind.MinusEqualsToken or kind == SyntaxKind.AsteriskEqualsToken or kind == SyntaxKind.SlashEqualsToken or kind == SyntaxKind.PercentEqualsToken then
+		if kind == SyntaxKind.EqualsToken or kind == SyntaxKind.PlusEqualsToken or kind == SyntaxKind.MinusEqualsToken or kind == SyntaxKind.AsteriskEqualsToken or kind == SyntaxKind.SlashEqualsToken or kind == SyntaxKind.PercentEqualsToken or kind == SyntaxKind.QuestionQuestionEqualsToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local right = SimpleParser.ParseAssignment(self)
-			local exprKind = if kind == SyntaxKind.EqualsToken then SyntaxKind.SimpleAssignmentExpression else if kind == SyntaxKind.PlusEqualsToken then SyntaxKind.AddAssignmentExpression else if kind == SyntaxKind.MinusEqualsToken then SyntaxKind.SubtractAssignmentExpression else if kind == SyntaxKind.AsteriskEqualsToken then SyntaxKind.MultiplyAssignmentExpression else if kind == SyntaxKind.SlashEqualsToken then SyntaxKind.DivideAssignmentExpression else SyntaxKind.ModuloAssignmentExpression
+			local exprKind = (if kind == SyntaxKind.EqualsToken then SyntaxKind.SimpleAssignmentExpression else (if kind == SyntaxKind.PlusEqualsToken then SyntaxKind.AddAssignmentExpression else (if kind == SyntaxKind.MinusEqualsToken then SyntaxKind.SubtractAssignmentExpression else (if kind == SyntaxKind.AsteriskEqualsToken then SyntaxKind.MultiplyAssignmentExpression else (if kind == SyntaxKind.SlashEqualsToken then SyntaxKind.DivideAssignmentExpression else (if kind == SyntaxKind.PercentEqualsToken then SyntaxKind.ModuloAssignmentExpression else SyntaxKind.CoalesceAssignmentExpression))))))
 			return AssignmentExpressionSyntax.new(exprKind, left, op, right)
 		end
 		if kind == SyntaxKind.QuestionToken then
@@ -1060,7 +1169,7 @@ function SimpleParser.ParseEquality(self: SimpleParser): ExpressionSyntax
 		if kind == SyntaxKind.EqualsEqualsToken or kind == SyntaxKind.ExclamationEqualsToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local right = SimpleParser.ParseRelational(self)
-			local exprKind = if kind == SyntaxKind.EqualsEqualsToken then 8682 else 8683
+			local exprKind = (if kind == SyntaxKind.EqualsEqualsToken then 8682 else 8683)
 			left = BinaryExpressionSyntax.new(exprKind, left, op, right)
 		else
 			break
@@ -1076,16 +1185,19 @@ function SimpleParser.ParseRelational(self: SimpleParser): ExpressionSyntax
 		if kind == SyntaxKind.LessThanToken or kind == SyntaxKind.GreaterThanToken or kind == SyntaxKind.LessThanEqualsToken or kind == SyntaxKind.GreaterThanEqualsToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local right = SimpleParser.ParseAdditive(self)
-			local exprKind = if kind == SyntaxKind.LessThanToken then 8678 else if kind == SyntaxKind.GreaterThanToken then 8680 else if kind == SyntaxKind.LessThanEqualsToken then 8679 else 8681
+			local exprKind = (if kind == SyntaxKind.LessThanToken then 8678 else (if kind == SyntaxKind.GreaterThanToken then 8680 else (if kind == SyntaxKind.LessThanEqualsToken then 8679 else 8681)))
 			left = BinaryExpressionSyntax.new(exprKind, left, op, right)
 		elseif kind == SyntaxKind.IsKeyword then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local typeName = SimpleParser.ParseTypeName(self)
-			local typeIdent = SyntaxToken.new(SyntaxKind.IdentifierToken, typeName, 0, #typeName)
-			local right = IdentifierNameSyntax.new(typeIdent)
-			left = BinaryExpressionSyntax.new(8657, left, op, right)
 			if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.IdentifierToken then
+				local designation = SimpleParser.Current(self).Text
 				SimpleParser.Advance(self)
+				left = IsPatternExpressionSyntax.new(left, typeName, designation)
+			else
+				local typeIdent = SyntaxToken.new(SyntaxKind.IdentifierToken, typeName, 0, #typeName)
+				local right = IdentifierNameSyntax.new(typeIdent)
+				left = BinaryExpressionSyntax.new(8657, left, op, right)
 			end
 		elseif kind == SyntaxKind.AsKeyword then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
@@ -1107,7 +1219,7 @@ function SimpleParser.ParseAdditive(self: SimpleParser): ExpressionSyntax
 		if kind == SyntaxKind.PlusToken or kind == SyntaxKind.MinusToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local right = SimpleParser.ParseMultiplicative(self)
-			local exprKind = if kind == SyntaxKind.PlusToken then 8668 else 8669
+			local exprKind = (if kind == SyntaxKind.PlusToken then 8668 else 8669)
 			left = BinaryExpressionSyntax.new(exprKind, left, op, right)
 		else
 			break
@@ -1123,7 +1235,7 @@ function SimpleParser.ParseMultiplicative(self: SimpleParser): ExpressionSyntax
 		if kind == SyntaxKind.AsteriskToken or kind == SyntaxKind.SlashToken or kind == SyntaxKind.PercentToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local right = SimpleParser.ParseUnary(self)
-			local exprKind = if kind == SyntaxKind.AsteriskToken then 8670 else if kind == SyntaxKind.SlashToken then 8671 else 8672
+			local exprKind = (if kind == SyntaxKind.AsteriskToken then 8670 else (if kind == SyntaxKind.SlashToken then 8671 else 8672))
 			left = BinaryExpressionSyntax.new(exprKind, left, op, right)
 		else
 			break
@@ -1138,13 +1250,18 @@ function SimpleParser.ParseUnary(self: SimpleParser): ExpressionSyntax
 		if kind == SyntaxKind.MinusToken or kind == SyntaxKind.ExclamationToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local operand = SimpleParser.ParseUnary(self)
-			local exprKind = if kind == SyntaxKind.MinusToken then 8730 else 8731
+			local exprKind = (if kind == SyntaxKind.MinusToken then 8730 else 8731)
 			return PrefixUnaryExpressionSyntax.new(exprKind, op, operand)
+		end
+		if kind == SyntaxKind.AwaitKeyword or (kind == SyntaxKind.IdentifierToken and SimpleParser.Current(self).Text == "await") then
+			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+			local operand = SimpleParser.ParseUnary(self)
+			return PrefixUnaryExpressionSyntax.new(8740, op, operand)
 		end
 		if kind == SyntaxKind.PlusPlusToken or kind == SyntaxKind.MinusMinusToken then
 			local op = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			local operand = SimpleParser.ParseUnary(self)
-			local exprKind = if kind == SyntaxKind.PlusPlusToken then SyntaxKind.PreIncrementExpression else SyntaxKind.PreDecrementExpression
+			local exprKind = (if kind == SyntaxKind.PlusPlusToken then SyntaxKind.PreIncrementExpression else SyntaxKind.PreDecrementExpression)
 			return PrefixUnaryExpressionSyntax.new(exprKind, op, operand)
 		end
 	end
@@ -1158,6 +1275,35 @@ function SimpleParser.ParsePrimary(self: SimpleParser): ExpressionSyntax
 			SimpleParser.Advance(self)
 			local name = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 			expr = MemberAccessExpressionSyntax.new(expr, name)
+		elseif SimpleParser.Current(self).Kind == SyntaxKind.QuestionDotToken then
+			SimpleParser.Advance(self)
+			local name = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+			local memberAccess = MemberAccessExpressionSyntax.new(expr, name)
+			if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenParenToken then
+				SimpleParser.Advance(self)
+				local args = table.create(16)
+				local argCount = 0
+				while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseParenToken do
+					if argCount > 0 then
+						SimpleParser.Expect(self, SyntaxKind.CommaToken)
+					end
+					if argCount < 16 then
+						args[argCount + 1] = SimpleParser.ParseExpression(self)
+						argCount += 1
+					end
+				end
+				SimpleParser.Expect(self, SyntaxKind.CloseParenToken)
+				local argResult = table.create(argCount)
+				local i = 0
+				while i < argCount do
+					argResult[i + 1] = args[i + 1]
+					i += 1
+				end
+				local invocation = InvocationExpressionSyntax.new(memberAccess, argResult)
+				expr = ConditionalAccessExpressionSyntax.new(expr, invocation)
+			else
+				expr = ConditionalAccessExpressionSyntax.new(expr, memberAccess)
+			end
 		elseif SimpleParser.Current(self).Kind == SyntaxKind.OpenParenToken then
 			SimpleParser.Advance(self)
 			local args = table.create(16)
@@ -1187,7 +1333,7 @@ function SimpleParser.ParsePrimary(self: SimpleParser): ExpressionSyntax
 		elseif SimpleParser.Current(self).Kind == SyntaxKind.PlusPlusToken or SimpleParser.Current(self).Kind == SyntaxKind.MinusMinusToken then
 			local opKind = SimpleParser.Current(self).Kind
 			SimpleParser.Advance(self)
-			local exprKind = if opKind == SyntaxKind.PlusPlusToken then SyntaxKind.PostIncrementExpression else SyntaxKind.PostDecrementExpression
+			local exprKind = (if opKind == SyntaxKind.PlusPlusToken then SyntaxKind.PostIncrementExpression else SyntaxKind.PostDecrementExpression)
 			expr = PostfixUnaryExpressionSyntax.new(exprKind, expr, opKind)
 		elseif SimpleParser.Current(self).Kind == SyntaxKind.SwitchKeyword then
 			expr = SimpleParser.ParseSwitchExpression(self, expr)
@@ -1210,6 +1356,10 @@ function SimpleParser.ParseAtom(self: SimpleParser): ExpressionSyntax
 	if kind == SyntaxKind.StringLiteralToken then
 		local token = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
 		return LiteralExpressionSyntax.new(8751, token)
+	end
+	if kind == SyntaxKind.InterpolatedStringToken then
+		local token = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
+		return LiteralExpressionSyntax.new(8655, token)
 	end
 	if kind == SyntaxKind.CharacterLiteralToken then
 		local token = SimpleParser.MakeSyntaxToken(self, SimpleParser.Advance(self))
@@ -1341,7 +1491,7 @@ function SimpleParser.ParseObjectCreation(self: SimpleParser): ExpressionSyntax
 	end
 	local initializers = nil
 	if not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind == SyntaxKind.OpenBraceToken then
-		local isArrayType = #typeName > 2 and typeName[#typeName - 1 + 1] == 93 and typeName[#typeName - 2 + 1] == 91
+		local isArrayType = #typeName > 2 and string.byte(typeName, #typeName - 1 + 1) == 93 and string.byte(typeName, #typeName - 2 + 1) == 91
 		if isArrayType then
 			SimpleParser.Advance(self)
 			while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
@@ -1369,7 +1519,8 @@ function SimpleParser.ParseObjectCreation(self: SimpleParser): ExpressionSyntax
 					break
 				end
 				local expr = SimpleParser.ParseExpression(self)
-				if --[[TODO: IsPatternExpression]] nil and initCount < 32 then
+				local assign: AssignmentExpressionSyntax = expr
+				if (expr ~= nil) and initCount < 32 then
 					inits[initCount + 1] = assign
 					initCount += 1
 				end

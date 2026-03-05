@@ -21,7 +21,7 @@ end
 -- abstract: SyntaxNode.GetDisplayText
 
 function SyntaxNode.Describe(self: SyntaxNode): string
-	return "SyntaxNode(Kind=" .. self.Kind .. ")"
+	return "SyntaxNode(Kind=" + self.Kind + ")"
 end
 
 type ExpressionNode_self = {
@@ -44,7 +44,7 @@ function ExpressionNode.GetDisplayText(self: ExpressionNode): string
 end
 
 function ExpressionNode.Describe(self: ExpressionNode): string
-	return "ExpressionNode(Kind=" .. self.Kind .. ", Value=" .. self.Value .. ")"
+	return "ExpressionNode(Kind=" + self.Kind + ", Value=" + self.Value + ")"
 end
 
 local LiteralExpression = setmetatable({}, {__index = ExpressionNode})

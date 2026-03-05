@@ -574,7 +574,8 @@ public class RoslynToLuau
             or "TraceEventType" or "TraceEventCache" or "ExpressionType"
             or "UTF8Encoding" or "ExpandoObject" or "BigInteger"
             or "GC" or "EqualityComparer" or "StringComparer"
-            or "EventDescriptorCollection" or "Comparer";
+            or "EventDescriptorCollection" or "Comparer"
+            or "Encoding" or "Expression" or "DynamicMethod";
     }
 }
 

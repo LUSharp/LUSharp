@@ -3401,6 +3401,39 @@ public class LuauEmitter
             if (ownerName == "GC")
                 return "-- GC (no-op)";
 
+            // Encoding.GetBytes(s) / GetByteCount(s) → runtime UTF-8 helpers
+            if (ownerName == "Encoding")
+            {
+                NeedsRuntime = true;
+                if (memberName == "GetBytes") return $"__rt.Encoding.UTF8.GetBytes({argStr})";
+                if (memberName == "GetByteCount") return $"__rt.Encoding.UTF8.GetByteCount({argStr})";
+                if (memberName == "GetChars") return $"__rt.Encoding.UTF8.GetChars({argStr})";
+                if (memberName == "GetMaxCharCount") return $"__rt.Encoding.UTF8.GetMaxCharCount({argStr})";
+                if (memberName == "GetString") return $"__rt.Encoding.UTF8.GetString({argStr})";
+            }
+
+            // Expression.* → runtime stubs for expression tree construction (only known factory methods)
+            if (ownerName == "Expression" && memberName is "Constant" or "Convert" or "Call"
+                or "New" or "Parameter" or "Variable" or "Assign" or "ArrayIndex"
+                or "Block" or "Lambda" or "Condition" or "Throw" or "TypeAs"
+                or "MakeBinary" or "MakeUnary" or "Property" or "Field"
+                or "Invoke" or "NewArrayInit" or "NewArrayBounds" or "ListInit"
+                or "Bind" or "MemberInit" or "TypeIs" or "Coalesce" or "Quote"
+                or "TryCatch" or "TryFinally" or "IfThen" or "IfThenElse" or "Loop"
+                or "Break" or "Continue" or "Return" or "Label" or "Goto"
+                or "Switch" or "SwitchCase" or "Default" or "Empty" or "Not"
+                or "Negate" or "UnaryPlus" or "OnesComplement" or "Power"
+                or "Add" or "Subtract" or "Multiply" or "Divide" or "Modulo"
+                or "And" or "Or" or "ExclusiveOr" or "LeftShift" or "RightShift"
+                or "Equal" or "NotEqual" or "LessThan" or "GreaterThan"
+                or "LessThanOrEqual" or "GreaterThanOrEqual" or "AndAlso" or "OrElse"
+                or "MakeMemberAccess" or "GetFuncType" or "GetDelegateType"
+                or "ReferenceEqual" or "ReferenceNotEqual")
+            {
+                NeedsRuntime = true;
+                return $"__rt.Expression.{memberName}({argStr})";
+            }
+
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
             {
@@ -3870,6 +3903,9 @@ public class LuauEmitter
         // UTF8Encoding, TraceEventCache, ExpandoObject → empty table stubs
         if (cleanType is "UTF8Encoding" or "TraceEventCache" or "ExpandoObject")
             return "{}";
+        // DynamicMethod → __rt.DynamicMethod.new(...)
+        if (cleanType == "DynamicMethod")
+            return $"__rt.DynamicMethod.new({argStr})";
         // EventArgs-like types → {} (just data carriers)
         if (cleanType is "NotifyCollectionChangedEventArgs" or "ListChangedEventArgs"
             or "PropertyChangedEventArgs" or "PropertyChangingEventArgs"

@@ -1356,7 +1356,7 @@ function SyntaxFacts.GetText_Accessibility(accessibility: number): string
 	elseif accessibility == 6 then
 		return SyntaxFacts.GetText(SyntaxKind.PublicKeyword)
 	end
-	return --[[TODO: ThrowExpression]] nil
+	return (function() error(ArgumentOutOfRangeException.new("accessibility")) end)()
 end
 
 function SyntaxFacts.GetOperatorKind(operatorMetadataName: string): number

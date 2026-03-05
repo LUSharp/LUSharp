@@ -7,32 +7,34 @@ LanguageFeaturesTest.__index = LanguageFeaturesTest
 export type LanguageFeaturesTest = typeof(setmetatable({}, LanguageFeaturesTest))
 
 function LanguageFeaturesTest.SafeGetText(obj: any): string
-	local __ok, __err = pcall(function()
+	local __ok, __pcall_ret = pcall(function()
 		return tostring(obj)
 	end)
 	if not __ok then
 		return "error"
 	end
+	if __ok then return __pcall_ret end
 end
 
 function LanguageFeaturesTest.SafeGetTextWithVar(obj: any): string
-	local __ok, __err = pcall(function()
+	local __ok, __pcall_ret = pcall(function()
 		return tostring(obj)
 	end)
 	if not __ok then
-		local e_Message = tostring(__err)
-		return e_Message
+		local e = { Message = tostring(__pcall_ret) }
+		return e.Message
 	end
+	if __ok then return __pcall_ret end
 end
 
 function LanguageFeaturesTest.SafeGetTextWithFinally(obj: any): string
 	local result = ""
-	local __ok, __err = pcall(function()
+	local __ok, __pcall_ret = pcall(function()
 		result = tostring(obj)
 	end)
 	if not __ok then
-		local e_Message = tostring(__err)
-		result = e_Message
+		local e = { Message = tostring(__pcall_ret) }
+		result = e.Message
 	end
 	print("done")
 	return result
@@ -55,7 +57,7 @@ function LanguageFeaturesTest.ApplyTransform(value: number, multiplier: number):
 end
 
 function LanguageFeaturesTest.GetOrDefault(value: string, fallback: string): string
-	return if value ~= nil then value else fallback
+	return (if value ~= nil then value else fallback)
 end
 
 function LanguageFeaturesTest.CountDown(start: number): number
