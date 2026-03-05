@@ -418,6 +418,16 @@ public class RoslynToLuau
 
         if (typesToRequire.Count == 0) return;
 
+        // Get the emitted body to check which types are actually used at runtime
+        var body = emitter.GetOutput();
+
+        // Filter to only types that appear in the emitted body (not just in type annotations)
+        typesToRequire = typesToRequire
+            .Where(m => body.Contains(m))
+            .ToList();
+
+        if (typesToRequire.Count == 0) return;
+
         // Group types by their source module (using the type-to-module map)
         var moduleToTypes = new Dictionary<string, List<string>>();
         foreach (var typeName in typesToRequire)
