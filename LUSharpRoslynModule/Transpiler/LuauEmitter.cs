@@ -2706,6 +2706,10 @@ public class LuauEmitter
                 return $"\"{firstArg}\"";
             }
 
+            // ReferenceEquals(a, b) → rawequal(a, b)
+            if (name == "ReferenceEquals" && invocation.ArgumentList.Arguments.Count == 2)
+                return $"rawequal({EmitExpression(invocation.ArgumentList.Arguments[0].Expression)}, {EmitExpression(invocation.ArgumentList.Arguments[1].Expression)})";
+
             // Resolve overloaded name via the overload map
             var resolvedName = ResolveOverloadedName(name, argCount);
 
@@ -2850,6 +2854,10 @@ public class LuauEmitter
             // Array.Empty<T>() → {}
             if (ownerName == "Array" && memberName == "Empty")
                 return "{}";
+
+            // object.ReferenceEquals(a, b) → rawequal(a, b)
+            if (memberName == "ReferenceEquals" && arguments.Count == 2)
+                return $"rawequal({EmitExpression(arguments[0].Expression)}, {EmitExpression(arguments[1].Expression)})";
 
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
