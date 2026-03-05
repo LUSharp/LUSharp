@@ -11,6 +11,19 @@ public class LuauEmitter
     private readonly StringBuilder _sb = new();
     private int _indent = 0;
 
+    /// <summary>Luau reserved keywords that cannot be used as identifiers.</summary>
+    private static readonly HashSet<string> LuauReservedWords = new(StringComparer.Ordinal)
+    {
+        "and", "break", "do", "else", "elseif", "end", "false", "for",
+        "function", "if", "in", "local", "nil", "not", "or", "repeat",
+        "return", "then", "true", "until", "while", "continue", "export",
+        "type", "typeof"
+    };
+
+    /// <summary>Escape a C# identifier if it collides with a Luau reserved word.</summary>
+    private static string EscapeIdentifier(string name)
+        => LuauReservedWords.Contains(name) ? name + "_" : name;
+
     /// <summary>
     /// The class name currently being emitted (used to qualify static method calls).
     /// </summary>
@@ -469,7 +482,7 @@ public class LuauEmitter
                     foreach (var p in method.ParameterList.Parameters)
                     {
                         var pType = MapTypeNode(p.Type!);
-                        paramParts.Add($"{p.Identifier.Text}: {pType}");
+                        paramParts.Add($"{EscapeIdentifier(p.Identifier.Text)}: {pType}");
                     }
                     AppendLine($"{methodName}: ({string.Join(", ", paramParts)}) -> {returnType},");
                     break;
@@ -972,10 +985,11 @@ public class LuauEmitter
 
         foreach (var param in parameters)
         {
-            var paramName = param.Identifier.Text;
+            var paramName = EscapeIdentifier(param.Identifier.Text);
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
-            _currentMethodParams.Add(paramName);
+            _currentMethodParams.Add(param.Identifier.Text);
+            if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
             _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
@@ -1225,10 +1239,11 @@ public class LuauEmitter
         paramParts.Add($"self: {className}");
         foreach (var param in parameters)
         {
-            var paramName = param.Identifier.Text;
+            var paramName = EscapeIdentifier(param.Identifier.Text);
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
-            _currentMethodParams.Add(paramName);
+            _currentMethodParams.Add(param.Identifier.Text);
+            if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
             _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
@@ -1276,10 +1291,11 @@ public class LuauEmitter
         var paramParts = new List<string>();
         foreach (var param in parameters)
         {
-            var paramName = param.Identifier.Text;
+            var paramName = EscapeIdentifier(param.Identifier.Text);
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
-            _currentMethodParams.Add(paramName);
+            _currentMethodParams.Add(param.Identifier.Text);
+            if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
             _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
@@ -1341,10 +1357,11 @@ public class LuauEmitter
         var paramParts = new List<string>();
         foreach (var param in parameters)
         {
-            var paramName = param.Identifier.Text;
+            var paramName = EscapeIdentifier(param.Identifier.Text);
             var paramType = MapTypeNode(param.Type);
             paramParts.Add($"{paramName}: {paramType}");
-            _currentMethodParams.Add(paramName);
+            _currentMethodParams.Add(param.Identifier.Text);
+            if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
             _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
         }
 
@@ -1381,9 +1398,10 @@ public class LuauEmitter
         _currentMethodParamTypes = new Dictionary<string, string>();
 
         var param = convDecl.ParameterList.Parameters[0];
-        var paramName = param.Identifier.Text;
+        var paramName = EscapeIdentifier(param.Identifier.Text);
         var paramType = MapTypeNode(param.Type);
-        _currentMethodParams.Add(paramName);
+        _currentMethodParams.Add(param.Identifier.Text);
+        if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
         _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
 
         AppendLine($"function {className}.{methodName}({paramName}: {paramType}): {targetType}");
@@ -1408,7 +1426,7 @@ public class LuauEmitter
         // Emit getter and setter as __index/__newindex overrides via a wrapper
         var paramType = MapTypeNode(indexerDecl.ParameterList.Parameters[0].Type!);
         var returnType = MapTypeNode(indexerDecl.Type);
-        var paramName = indexerDecl.ParameterList.Parameters[0].Identifier.Text;
+        var paramName = EscapeIdentifier(indexerDecl.ParameterList.Parameters[0].Identifier.Text);
 
         if (indexerDecl.AccessorList != null)
         {
@@ -1762,8 +1780,10 @@ public class LuauEmitter
         {
             foreach (var variable in forStmt.Declaration.Variables)
             {
-                var name = variable.Identifier.Text;
-                _currentMethodLocals.Add(name);
+                var rawName = variable.Identifier.Text;
+                var name = EscapeIdentifier(rawName);
+                _currentMethodLocals.Add(rawName);
+                if (name != rawName) _currentMethodLocals.Add(name);
                 if (variable.Initializer != null)
                 {
                     var init = EmitExpression(variable.Initializer.Value);
@@ -1836,9 +1856,10 @@ public class LuauEmitter
 
     private void EmitForEach(ForEachStatementSyntax foreachStmt)
     {
-        var varName = foreachStmt.Identifier.Text;
+        var varName = EscapeIdentifier(foreachStmt.Identifier.Text);
         var collection = EmitExpression(foreachStmt.Expression);
-        _currentMethodLocals.Add(varName);
+        _currentMethodLocals.Add(foreachStmt.Identifier.Text);
+        if (varName != foreachStmt.Identifier.Text) _currentMethodLocals.Add(varName);
 
         AppendLine($"for _, {varName} in {collection} do");
         _indent++;
@@ -1853,9 +1874,11 @@ public class LuauEmitter
         {
             foreach (var v in usingStmt.Declaration.Variables)
             {
+                var vName = EscapeIdentifier(v.Identifier.Text);
                 var init = v.Initializer != null ? EmitExpression(v.Initializer.Value) : "nil";
-                AppendLine($"local {v.Identifier.Text} = {init}");
+                AppendLine($"local {vName} = {init}");
                 _currentMethodLocals.Add(v.Identifier.Text);
+                if (vName != v.Identifier.Text) _currentMethodLocals.Add(vName);
             }
         }
         else if (usingStmt.Expression != null)
@@ -2143,8 +2166,10 @@ public class LuauEmitter
     {
         foreach (var declarator in localDecl.Declaration.Variables)
         {
-            var name = declarator.Identifier.Text;
-            _currentMethodLocals.Add(name);
+            var rawName = declarator.Identifier.Text;
+            var name = EscapeIdentifier(rawName);
+            _currentMethodLocals.Add(rawName);
+            if (name != rawName) _currentMethodLocals.Add(name);
             if (declarator.Initializer != null)
             {
                 var init = EmitExpression(declarator.Initializer.Value);
@@ -2304,7 +2329,7 @@ public class LuauEmitter
 
     private string EmitIdentifier(IdentifierNameSyntax ident)
     {
-        var name = ident.Identifier.Text;
+        var name = EscapeIdentifier(ident.Identifier.Text);
 
         // Check for well-known replacements
         if (name == "string") return "string";
@@ -3371,7 +3396,7 @@ public class LuauEmitter
         var paramParts = new List<string>();
         foreach (var param in lambda.ParameterList.Parameters)
         {
-            var paramName = param.Identifier.Text;
+            var paramName = EscapeIdentifier(param.Identifier.Text);
             if (param.Type != null)
             {
                 var paramType = MapTypeNode(param.Type);
@@ -3403,7 +3428,7 @@ public class LuauEmitter
     /// </summary>
     private string EmitSimpleLambda(SimpleLambdaExpressionSyntax lambda)
     {
-        var paramName = lambda.Parameter.Identifier.Text;
+        var paramName = EscapeIdentifier(lambda.Parameter.Identifier.Text);
         string paramStr;
         if (lambda.Parameter.Type != null)
         {
@@ -4115,10 +4140,11 @@ public class LuauEmitter
             && dp.Designation is SingleVariableDesignationSyntax svd)
         {
             var subject = EmitExpression(isPattern.Expression);
-            var varName = svd.Identifier.Text;
+            var varName = EscapeIdentifier(svd.Identifier.Text);
             var luauType = MapComplexType(dp.Type.ToString());
             AppendLine($"local {varName}: {luauType} = {subject}");
-            _currentMethodLocals.Add(varName);
+            _currentMethodLocals.Add(svd.Identifier.Text);
+            if (varName != svd.Identifier.Text) _currentMethodLocals.Add(varName);
         }
         // Handle logical AND chains: `if (x is Type a && y is Type b)`
         else if (condition is BinaryExpressionSyntax binary
