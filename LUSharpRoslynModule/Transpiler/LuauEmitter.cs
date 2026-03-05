@@ -1140,6 +1140,19 @@ public class LuauEmitter
             case ForEachStatementSyntax foreachStmt:
                 EmitForEach(foreachStmt);
                 break;
+            case UsingStatementSyntax usingStmt:
+                EmitUsingStatement(usingStmt);
+                break;
+            case LockStatementSyntax lockStmt:
+                AppendLine($"-- lock ({EmitExpression(lockStmt.Expression)})");
+                EmitStatementBody(lockStmt.Statement);
+                break;
+            case YieldStatementSyntax yieldStmt:
+                EmitYieldStatement(yieldStmt);
+                break;
+            case LocalFunctionStatementSyntax localFunc:
+                EmitLocalFunction(localFunc);
+                break;
             default:
                 AppendLine($"-- TODO: {statement.Kind()}");
                 break;
@@ -1405,6 +1418,64 @@ public class LuauEmitter
         AppendLine($"for _, {varName} in {collection} do");
         _indent++;
         EmitStatementBody(foreachStmt.Statement);
+        _indent--;
+        AppendLine("end");
+    }
+
+    private void EmitUsingStatement(UsingStatementSyntax usingStmt)
+    {
+        if (usingStmt.Declaration != null)
+        {
+            foreach (var v in usingStmt.Declaration.Variables)
+            {
+                var init = v.Initializer != null ? EmitExpression(v.Initializer.Value) : "nil";
+                AppendLine($"local {v.Identifier.Text} = {init}");
+                _currentMethodLocals.Add(v.Identifier.Text);
+            }
+        }
+        else if (usingStmt.Expression != null)
+        {
+            AppendLine($"local __using = {EmitExpression(usingStmt.Expression)}");
+        }
+        AppendLine("do");
+        _indent++;
+        EmitStatementBody(usingStmt.Statement);
+        _indent--;
+        AppendLine("end");
+    }
+
+    private void EmitYieldStatement(YieldStatementSyntax yieldStmt)
+    {
+        if (yieldStmt.IsKind(SyntaxKind.YieldReturnStatement))
+        {
+            var expr = EmitExpression(yieldStmt.Expression!);
+            AppendLine($"coroutine.yield({expr})");
+        }
+        else // YieldBreakStatement
+        {
+            AppendLine("return");
+        }
+    }
+
+    private void EmitLocalFunction(LocalFunctionStatementSyntax localFunc)
+    {
+        var name = localFunc.Identifier.Text;
+        var parameters = localFunc.ParameterList.Parameters
+            .Select(p => p.Identifier.Text);
+        var paramStr = string.Join(", ", parameters);
+
+        AppendLine($"local function {name}({paramStr})");
+        _indent++;
+        if (localFunc.Body != null)
+        {
+            foreach (var stmt in localFunc.Body.Statements)
+                EmitStatement(stmt);
+        }
+        else if (localFunc.ExpressionBody != null)
+        {
+            var expr = EmitExpression(localFunc.ExpressionBody.Expression);
+            AppendLine($"return {expr}");
+        }
         _indent--;
         AppendLine("end");
     }
@@ -2023,6 +2094,20 @@ public class LuauEmitter
                 return $"{_currentClassName}.{memberName}(self, {argStr})";
             }
             return $"self.{memberName}({argStr})";
+        }
+
+        // ── SemanticModel + MethodMapper: centralized method rewriting ──
+        if (_model != null)
+        {
+            var symbol = _model.GetSymbolInfo(memberAccess).Symbol as IMethodSymbol
+                ?? _model.GetSymbolInfo(memberAccess.Parent!).Symbol as IMethodSymbol;
+            if (symbol != null)
+            {
+                var obj = EmitExpression(memberAccess.Expression);
+                var receiverType = GetExpressionType(memberAccess.Expression);
+                var result = MethodMapper.TryRewrite(symbol, obj, args.ToArray(), receiverType);
+                if (result != null) return result;
+            }
         }
 
         // ── Handle calls on identifier targets ──
