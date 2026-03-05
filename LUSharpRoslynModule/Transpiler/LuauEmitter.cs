@@ -1719,16 +1719,16 @@ public class LuauEmitter
                 _indent++;
 
                 // If the catch has a declaration (e.g., catch (Exception e)),
-                // emit local for the variable's .Message as tostring(__err)
+                // declare the exception variable as a table with Message property
                 if (catchClause.Declaration != null)
                 {
                     var varName = catchClause.Declaration.Identifier.Text;
                     if (!string.IsNullOrEmpty(varName))
                     {
                         _currentMethodLocals.Add(varName);
-                        // __pcall_ret is the error when __ok is false
-                        AppendLine($"local {varName}_Message = tostring(__pcall_ret)");
-                        _currentMethodLocals.Add($"{varName}_Message");
+                        // Create exception as table with Message for .Message access
+                        // and tostring() for passing as inner exception
+                        AppendLine($"local {varName} = {{ Message = tostring(__pcall_ret) }}");
                     }
                 }
 
@@ -2430,12 +2430,6 @@ public class LuauEmitter
         if (memberAccess.Expression is IdentifierNameSyntax typeName)
         {
             var typeStr = typeName.Identifier.Text;
-
-            // Handle catch variable .Message → varName_Message (created by try/catch emission)
-            if (memberName == "Message" && _currentMethodLocals.Contains($"{typeStr}_Message"))
-            {
-                return $"{typeStr}_Message";
-            }
 
             // Track external module references (not our own class, not a nested type)
             if (typeStr != _currentClassName
