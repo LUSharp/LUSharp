@@ -2680,7 +2680,10 @@ public class LuauEmitter
             }
 
             // Calls to static methods in the same class → ClassName.MethodName(...)
-            if (_currentClassName != null)
+            // But not local variables / parameters that are delegates
+            if (_currentClassName != null
+                && !_currentMethodLocals.Contains(name)
+                && !_currentMethodParams.Contains(name))
             {
                 return $"{_currentClassName}.{resolvedName}({argStr})";
             }
