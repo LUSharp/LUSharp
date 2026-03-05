@@ -2501,6 +2501,44 @@ public class LuauEmitter
             return $"self.{memberName}";
         }
 
+        // typeof(x).Name/FullName → typeof(x), typeof(x).IsSubclassOf(...) → true
+        // Handles both .GetType().Name and typeof(T).Name patterns
+        if (memberName is "Name" or "FullName" or "Namespace" or "IsValueType"
+            or "IsClass" or "IsInterface" or "IsAbstract" or "IsByRef" or "IsEnum"
+            or "BaseType" or "IsGenericType" or "IsArray" or "IsPrimitive")
+        {
+            // Check if expression is .GetType() invocation
+            if (memberAccess.Expression is InvocationExpressionSyntax getTypeCall
+                && getTypeCall.Expression is MemberAccessExpressionSyntax getTypeAccess
+                && getTypeAccess.Name.Identifier.Text == "GetType"
+                && getTypeCall.ArgumentList.Arguments.Count == 0)
+            {
+                var target = EmitExpression(getTypeAccess.Expression);
+                if (memberName is "Name" or "FullName")
+                    return $"typeof({target})";
+                // Boolean properties — best-effort defaults
+                if (memberName is "IsValueType" or "IsPrimitive")
+                    return "false";
+                if (memberName is "IsClass")
+                    return "true";
+                return $"typeof({target})";
+            }
+            // Check if expression is typeof(T) — emitted as "T" string
+            if (memberAccess.Expression is TypeOfExpressionSyntax)
+            {
+                var typeStr2 = EmitExpression(memberAccess.Expression);
+                if (memberName is "Name" or "FullName")
+                    return typeStr2; // Already a string
+                if (memberName is "IsValueType" or "IsPrimitive")
+                    return "false";
+                if (memberName is "IsClass")
+                    return "true";
+                return typeStr2;
+            }
+        }
+        // typeof(x).IsSubclassOf(T) / IsAssignableFrom(T) → true (can't check at runtime)
+        // Handled in EmitInvocation for method calls on typeof() results
+
         // Nullable<T>.HasValue → (x ~= nil), .Value → x
         if (memberName is "HasValue" or "Value")
         {
