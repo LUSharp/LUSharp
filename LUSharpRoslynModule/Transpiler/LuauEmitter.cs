@@ -2413,6 +2413,22 @@ public class LuauEmitter
             return $"self.{memberName}";
         }
 
+        // Nullable<T>.HasValue → (x ~= nil), .Value → x
+        if (memberName is "HasValue" or "Value")
+        {
+            bool isNullable = false;
+            if (_model != null)
+            {
+                var typeInfo = _model.GetTypeInfo(memberAccess.Expression);
+                isNullable = typeInfo.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T };
+            }
+            if (isNullable)
+            {
+                var receiver = EmitExpression(memberAccess.Expression);
+                return memberName == "HasValue" ? $"({receiver} ~= nil)" : receiver;
+            }
+        }
+
         // Handle PredefinedTypeSyntax: string.Empty, int.MaxValue, etc.
         if (memberAccess.Expression is PredefinedTypeSyntax predefined)
         {
@@ -2727,6 +2743,19 @@ public class LuauEmitter
         // ── Strip .ConfigureAwait(bool) — no-op in Luau ──
         if (memberName == "ConfigureAwait")
             return EmitExpression(memberAccess.Expression);
+
+        // ── Nullable<T>.GetValueOrDefault() → (x or 0) / (x or default) ──
+        if (memberName == "GetValueOrDefault")
+        {
+            var receiver = EmitExpression(memberAccess.Expression);
+            if (arguments.Count == 1)
+                return $"({receiver} or {EmitExpression(arguments[0].Expression)})";
+            // No args: default to 0 (most Nullable<T> uses are numeric)
+            return $"({receiver} or 0)";
+        }
+
+        // ── Nullable<T>.HasValue → (x ~= nil) ──
+        // (handled in EmitMemberAccess, but method call form here for completeness)
 
         var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
         var argStr = string.Join(", ", args);
