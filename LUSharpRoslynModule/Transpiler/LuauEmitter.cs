@@ -183,13 +183,34 @@ public class LuauEmitter
             .SelectMany(a => a.Attributes)
             .Any(a => a.Name.ToString() is "Flags" or "System.Flags" or "FlagsAttribute" or "System.FlagsAttribute");
 
-        // Forward enum table
-        AppendLine($"local {name} = table.freeze({{");
-        _indent++;
+        // Compute enum member values (auto-increment when no explicit = value)
+        var memberValues = new List<(string Name, string Value)>();
+        int nextAutoValue = 0;
         foreach (var member in enumDecl.Members)
         {
             var memberName = member.Identifier.Text;
-            var value = member.EqualsValue?.Value.ToString() ?? "0";
+            if (member.EqualsValue != null)
+            {
+                var explicitValue = member.EqualsValue.Value.ToString();
+                // Try to parse for auto-increment tracking
+                if (int.TryParse(explicitValue, out var parsed))
+                    nextAutoValue = parsed + 1;
+                else
+                    nextAutoValue++; // expression-based (e.g., 1 << 3), can't track — just bump
+                memberValues.Add((memberName, explicitValue));
+            }
+            else
+            {
+                memberValues.Add((memberName, nextAutoValue.ToString()));
+                nextAutoValue++;
+            }
+        }
+
+        // Forward enum table
+        AppendLine($"local {name} = table.freeze({{");
+        _indent++;
+        foreach (var (memberName, value) in memberValues)
+        {
             AppendLine($"{memberName} = {value},");
         }
         _indent--;
@@ -214,10 +235,8 @@ public class LuauEmitter
         // Reverse lookup table
         AppendLine($"local {name}_Name: {{ [number]: string }} = table.freeze({{");
         _indent++;
-        foreach (var member in enumDecl.Members)
+        foreach (var (memberName, value) in memberValues)
         {
-            var memberName = member.Identifier.Text;
-            var value = member.EqualsValue?.Value.ToString() ?? "0";
             AppendLine($"[{value}] = \"{memberName}\",");
         }
         _indent--;
