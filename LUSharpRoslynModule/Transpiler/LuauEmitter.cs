@@ -1532,6 +1532,19 @@ public class LuauEmitter
             case LocalFunctionStatementSyntax localFunc:
                 EmitLocalFunction(localFunc);
                 break;
+            case CheckedStatementSyntax checkedStmt:
+                // checked/unchecked blocks → just emit the body (Luau has no overflow)
+                EmitBlock(checkedStmt.Block);
+                break;
+            case GotoStatementSyntax gotoStmt:
+                EmitGotoStatement(gotoStmt);
+                break;
+            case LabeledStatementSyntax labeledStmt:
+                AppendLine($"-- label: {labeledStmt.Identifier.Text}");
+                EmitStatement(labeledStmt.Statement);
+                break;
+            case EmptyStatementSyntax:
+                break; // skip semicolons
             default:
                 AppendLine($"-- TODO: {statement.Kind()}");
                 break;
@@ -1835,6 +1848,25 @@ public class LuauEmitter
         else // YieldBreakStatement
         {
             AppendLine("return");
+        }
+    }
+
+    private void EmitGotoStatement(GotoStatementSyntax gotoStmt)
+    {
+        if (gotoStmt.IsKind(SyntaxKind.GotoCaseStatement) && gotoStmt.Expression != null)
+        {
+            // goto case X; → not directly supported in Luau, emit as comment
+            var caseValue = EmitExpression(gotoStmt.Expression);
+            AppendLine($"-- goto case {caseValue} (not supported in Luau — restructure switch)");
+        }
+        else if (gotoStmt.IsKind(SyntaxKind.GotoDefaultStatement))
+        {
+            AppendLine("-- goto default (not supported in Luau — restructure switch)");
+        }
+        else
+        {
+            // goto label;
+            AppendLine($"-- goto {gotoStmt.Expression?.ToString() ?? gotoStmt.CaseOrDefaultKeyword.Text}");
         }
     }
 
