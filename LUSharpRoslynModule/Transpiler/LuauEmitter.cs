@@ -2611,6 +2611,92 @@ public class LuauEmitter
                 if (result != null) return result;
             }
 
+            // .NET BCL enum constants → integer values
+            if (typeStr == "StringComparison")
+            {
+                var result = memberName switch
+                {
+                    "CurrentCulture" => "0",
+                    "CurrentCultureIgnoreCase" => "1",
+                    "InvariantCulture" => "2",
+                    "InvariantCultureIgnoreCase" => "3",
+                    "Ordinal" => "4",
+                    "OrdinalIgnoreCase" => "5",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "TypeCode")
+            {
+                var result = memberName switch
+                {
+                    "Empty" => "0",
+                    "Object" => "1",
+                    "DBNull" => "2",
+                    "Boolean" => "3",
+                    "Char" => "4",
+                    "SByte" => "5",
+                    "Byte" => "6",
+                    "Int16" => "7",
+                    "UInt16" => "8",
+                    "Int32" => "9",
+                    "UInt32" => "10",
+                    "Int64" => "11",
+                    "UInt64" => "12",
+                    "Single" => "13",
+                    "Double" => "14",
+                    "Decimal" => "15",
+                    "DateTime" => "16",
+                    "String" => "18",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "DateTimeKind")
+            {
+                var result = memberName switch
+                {
+                    "Unspecified" => "0",
+                    "Utc" => "1",
+                    "Local" => "2",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "MemberTypes")
+            {
+                var result = memberName switch
+                {
+                    "Constructor" => "1",
+                    "Event" => "2",
+                    "Field" => "4",
+                    "Method" => "8",
+                    "Property" => "16",
+                    "TypeInfo" => "32",
+                    "Custom" => "64",
+                    "NestedType" => "128",
+                    "All" => "191",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "BindingFlags")
+            {
+                var result = memberName switch
+                {
+                    "Default" => "0",
+                    "IgnoreCase" => "1",
+                    "DeclaredOnly" => "2",
+                    "Instance" => "4",
+                    "Static" => "8",
+                    "Public" => "16",
+                    "NonPublic" => "32",
+                    "FlattenHierarchy" => "64",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+
             // .Length on a string variable → string.len(var) or #var
             if (memberName == "Length")
             {
