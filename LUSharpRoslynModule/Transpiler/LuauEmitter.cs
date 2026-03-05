@@ -103,6 +103,8 @@ public class LuauEmitter
     /// Key: (OriginalName, ParamCount) → DisambiguatedName
     /// </summary>
     private Dictionary<(string Name, int ParamCount, string FirstParamType), string> _overloadMap = new();
+    /// <summary>Index-aligned with the methods list for per-method emit name lookup.</summary>
+    private List<string> _methodEmitNames = new();
 
     /// <summary>
     /// Set of type names referenced as member access (e.g., SyntaxKind.X) that need requires.
@@ -301,9 +303,10 @@ public class LuauEmitter
         // Detect overloaded method names so we can disambiguate them
         var methodNameCounts = new Dictionary<string, int>();
         var methodNameSeen = new Dictionary<string, int>();
+        var emitNamesUsed = new HashSet<string>();
         foreach (var member in classDecl.Members)
         {
-            if (member is MethodDeclarationSyntax m)
+            if (member is MethodDeclarationSyntax m && m.ExplicitInterfaceSpecifier == null)
             {
                 var name = m.Identifier.Text;
                 methodNameCounts[name] = methodNameCounts.GetValueOrDefault(name) + 1;
@@ -316,6 +319,10 @@ public class LuauEmitter
             {
                 case MethodDeclarationSyntax method:
                 {
+                    // Skip explicit interface implementations
+                    if (method.ExplicitInterfaceSpecifier != null)
+                        break;
+
                     var name = method.Identifier.Text;
                     string emitName = name;
 
@@ -330,11 +337,23 @@ public class LuauEmitter
                             // Use first parameter type as suffix
                             var firstParam = method.ParameterList.Parameters.FirstOrDefault();
                             var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
-                            // Clean up the suffix for Luau identifier
+                            // Clean up the suffix for Luau identifier; preserve nullable
+                            var isNullableSuffix = suffix.EndsWith("?");
                             suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                            if (isNullableSuffix) suffix += "_nullable";
                             emitName = $"{name}_{suffix}";
                         }
                     }
+
+                    // Collision detection: if emit name already used, append __N
+                    if (emitNamesUsed.Contains(emitName))
+                    {
+                        int counter = 2;
+                        while (emitNamesUsed.Contains($"{emitName}__{counter}"))
+                            counter++;
+                        emitName = $"{emitName}__{counter}";
+                    }
+                    emitNamesUsed.Add(emitName);
 
                     EmitStaticMethod(className, method, emitName);
                     AppendLine();
@@ -668,6 +687,9 @@ public class LuauEmitter
                     constructors.Add(ctorDecl);
                     break;
                 case MethodDeclarationSyntax methodDecl:
+                    // Skip explicit interface implementation methods — they duplicate the class method
+                    if (methodDecl.ExplicitInterfaceSpecifier != null)
+                        break;
                     methods.Add(methodDecl);
                     if (!methodDecl.Modifiers.Any(SyntaxKind.StaticKeyword))
                     {
@@ -814,10 +836,12 @@ public class LuauEmitter
         foreach (var f in staticFields)
             _constFields.Add(f.Name);
 
-        // Build overload disambiguation map
+        // Build overload disambiguation map (indexed by method position for uniqueness)
         _overloadMap = new Dictionary<(string Name, int ParamCount, string FirstParamType), string>();
+        _methodEmitNames = new List<string>();
         var methodNameCounts = new Dictionary<string, int>();
         var methodNameSeen = new Dictionary<string, int>();
+        var emitNamesUsed = new HashSet<string>();
         foreach (var method in methods)
         {
             var name = method.Identifier.Text;
@@ -839,13 +863,30 @@ public class LuauEmitter
                 {
                     var firstParam = method.ParameterList.Parameters.FirstOrDefault();
                     var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
+                    // Preserve nullable distinction: bool? → bool_nullable
+                    var isNullableSuffix = suffix.EndsWith("?");
                     suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                    if (isNullableSuffix) suffix += "_nullable";
                     emitName = $"{name}_{suffix}";
                 }
             }
 
+            // If this emit name collides with an already-used name, append __N
+            if (emitNamesUsed.Contains(emitName))
+            {
+                int counter = 2;
+                while (emitNamesUsed.Contains($"{emitName}__{counter}"))
+                    counter++;
+                emitName = $"{emitName}__{counter}";
+            }
+            emitNamesUsed.Add(emitName);
+            _methodEmitNames.Add(emitName);
+
             var fpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+            // Preserve nullable distinction in the overload key
+            var isNullableFpt = fpt.EndsWith("?");
             fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+            if (isNullableFpt) fpt += "_nullable";
             _overloadMap[(name, paramCount, fpt)] = emitName;
         }
 
@@ -921,13 +962,11 @@ public class LuauEmitter
         }
 
         // ── Phase 6: methods (use pre-computed overload map) ──
-        foreach (var method in methods)
+        for (int methodIdx = 0; methodIdx < methods.Count; methodIdx++)
         {
+            var method = methods[methodIdx];
             var name = method.Identifier.Text;
-            int paramCount = method.ParameterList.Parameters.Count;
-            var methodFpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
-            methodFpt = methodFpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
-            string emitName = _overloadMap.GetValueOrDefault((name, paramCount, methodFpt), name);
+            string emitName = _methodEmitNames[methodIdx];
 
             // Abstract methods have no body — emit as a comment stub only
             bool isAbstract = method.Modifiers.Any(SyntaxKind.AbstractKeyword);
@@ -1004,6 +1043,7 @@ public class LuauEmitter
         _constFields = new HashSet<string>();
         _instanceFieldTypes = new Dictionary<string, string>();
         _overloadMap = new Dictionary<(string Name, int ParamCount, string FirstParamType), string>();
+        _methodEmitNames = new List<string>();
     }
 
     /// <summary>
@@ -1177,6 +1217,10 @@ public class LuauEmitter
     /// </summary>
     private void EmitProperty(string className, PropertyDeclarationSyntax prop)
     {
+        // Skip explicit interface implementation properties (they duplicate the class property)
+        if (prop.ExplicitInterfaceSpecifier != null)
+            return;
+
         var propName = prop.Identifier.Text;
         var propType = MapTypeNode(prop.Type);
 
@@ -1443,7 +1487,9 @@ public class LuauEmitter
         var targetType = MapTypeNode(convDecl.Type);
         var direction = convDecl.ImplicitOrExplicitKeyword.IsKind(SyntaxKind.ImplicitKeyword)
             ? "from" : "to";
-        var methodName = $"__{direction}_{convDecl.Type.ToString().Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_")}";
+        var rawTypeName = convDecl.Type.ToString();
+        var isNullable = rawTypeName.EndsWith("?") || convDecl.ParameterList.Parameters[0].Type?.ToString().EndsWith("?") == true;
+        var methodName = $"__{direction}_{rawTypeName.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_")}{(isNullable ? "_nullable" : "")}";
 
         _isInstanceContext = false;
         _currentMethodParams = new HashSet<string>();
@@ -1478,6 +1524,10 @@ public class LuauEmitter
 
     private void EmitIndexer(string className, IndexerDeclarationSyntax indexerDecl)
     {
+        // Skip explicit interface implementation indexers (they duplicate the class indexer)
+        if (indexerDecl.ExplicitInterfaceSpecifier != null)
+            return;
+
         // Emit getter and setter as __index/__newindex overrides via a wrapper
         var paramType = MapTypeNode(indexerDecl.ParameterList.Parameters[0].Type!);
         var returnType = MapTypeNode(indexerDecl.Type);
