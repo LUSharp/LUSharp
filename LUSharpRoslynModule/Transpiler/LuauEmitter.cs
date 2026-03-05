@@ -2859,6 +2859,15 @@ public class LuauEmitter
             if (memberName == "ReferenceEquals" && arguments.Count == 2)
                 return $"rawequal({EmitExpression(arguments[0].Expression)}, {EmitExpression(arguments[1].Expression)})";
 
+            // Interlocked.CompareExchange(ref location, value, comparand) → location = value (single-threaded Luau)
+            if (ownerName == "Interlocked" && memberName == "CompareExchange" && arguments.Count == 3)
+            {
+                var location = EmitExpression(arguments[0].Expression);
+                var value = EmitExpression(arguments[1].Expression);
+                // In single-threaded Luau, CAS is just: location = location or value
+                return $"{location} = {location} or {value}";
+            }
+
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
             {
