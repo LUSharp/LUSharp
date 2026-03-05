@@ -3153,6 +3153,17 @@ public class LuauEmitter
         {
             var coalLeft = EmitExpression(binary.Left);
             var coalRight = EmitExpression(binary.Right);
+            // If left is a complex expression (not a simple identifier/literal), hoist to a temp
+            // to avoid evaluating it twice. Common case: settings?.Prop ?? default
+            bool isSimple = binary.Left is IdentifierNameSyntax
+                || binary.Left is LiteralExpressionSyntax
+                || binary.Left is ThisExpressionSyntax;
+            if (!isSimple)
+            {
+                var tempName = $"__coal_{_evalTempCounter++}";
+                AppendLine($"local {tempName} = {coalLeft}");
+                return $"(if {tempName} ~= nil then {tempName} else {coalRight})";
+            }
             return $"(if {coalLeft} ~= nil then {coalLeft} else {coalRight})";
         }
 
