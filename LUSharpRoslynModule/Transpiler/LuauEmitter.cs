@@ -2731,8 +2731,21 @@ public class LuauEmitter
                 };
                 if (result != null) return result;
             }
-            if (typeStr == "CultureInfo" && memberName == "InvariantCulture")
+            if (typeStr == "CultureInfo" && memberName is "InvariantCulture" or "CurrentCulture" or "CurrentUICulture")
                 return "nil";
+            if (typeStr == "TraceLevel")
+            {
+                var result = memberName switch
+                {
+                    "Off" => "0",
+                    "Error" => "1",
+                    "Warning" => "2",
+                    "Info" => "3",
+                    "Verbose" => "4",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
 
             // .Length on a string variable → string.len(var) or #var
             if (memberName == "Length")
