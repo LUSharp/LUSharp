@@ -2601,14 +2601,9 @@ public class LuauEmitter
 
     private string EmitThrowExpression(ThrowExpressionSyntax throwExpr)
     {
-        // throw expressions used in switch arms etc.
-        // We can't really do error() as an expression in Luau, so emit a TODO comment
-        if (throwExpr.Expression is ObjectCreationExpressionSyntax objCreate)
-        {
-            var exType = objCreate.Type.ToString();
-            return $"--[[TODO: ThrowExpression]] nil";
-        }
-        return "--[[TODO: throw]] nil";
+        // throw expressions in expression context → error() wrapped in IIFE
+        var inner = EmitExpression(throwExpr.Expression);
+        return $"(function() error({inner}) end)()";
     }
 
     private string EmitPostfixUnary(PostfixUnaryExpressionSyntax postfix)
