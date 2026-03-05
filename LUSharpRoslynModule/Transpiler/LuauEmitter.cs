@@ -2323,9 +2323,28 @@ public class LuauEmitter
         // Handle object initializer: new T() { Field = value, ... }
         if (objCreate.Initializer != null && objCreate.Initializer.Kind() == SyntaxKind.ObjectInitializerExpression)
         {
-            // Emit as: T.new(args) with follow-up assignments
-            // For expression context, just emit the constructor call (initializers need statement context)
-            return $"{cleanType}.new({argStr})";
+            var constructorCall = $"{cleanType}.new({argStr})";
+            var sb = new StringBuilder();
+            sb.Append($"(function() local __o = {constructorCall}; ");
+            foreach (var expr in objCreate.Initializer.Expressions)
+            {
+                if (expr is AssignmentExpressionSyntax assign)
+                {
+                    var name = assign.Left.ToString();
+                    var value = EmitExpression(assign.Right);
+                    sb.Append($"__o.{name} = {value}; ");
+                }
+            }
+            sb.Append("return __o end)()");
+            return sb.ToString();
+        }
+
+        // Handle collection initializer: new T() { item1, item2, ... }
+        if (objCreate.Initializer != null && objCreate.Initializer.Kind() == SyntaxKind.CollectionInitializerExpression)
+        {
+            var elements = objCreate.Initializer.Expressions
+                .Select(e => EmitExpression(e));
+            return $"{{ {string.Join(", ", elements)} }}";
         }
 
         return $"{cleanType}.new({argStr})";
