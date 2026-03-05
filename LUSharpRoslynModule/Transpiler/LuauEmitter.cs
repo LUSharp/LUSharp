@@ -3107,7 +3107,7 @@ public class LuauEmitter
         {
             var coalLeft = EmitExpression(binary.Left);
             var coalRight = EmitExpression(binary.Right);
-            return $"if {coalLeft} ~= nil then {coalLeft} else {coalRight}";
+            return $"(if {coalLeft} ~= nil then {coalLeft} else {coalRight})";
         }
 
         // Detect string concatenation: + with a string expression → ..
@@ -3271,8 +3271,8 @@ public class LuauEmitter
         var condition = EmitExpression(conditional.Condition);
         var whenTrue = EmitExpression(conditional.WhenTrue);
         var whenFalse = EmitExpression(conditional.WhenFalse);
-        // Luau ternary: `if condition then trueVal else falseVal`
-        return $"if {condition} then {whenTrue} else {whenFalse}";
+        // Luau ternary: wrap in parens for correct precedence in larger expressions
+        return $"(if {condition} then {whenTrue} else {whenFalse})";
     }
 
     /// <summary>
@@ -3439,7 +3439,9 @@ public class LuauEmitter
     {
         var target = EmitExpression(conditionalAccess.Expression);
         var binding = EmitConditionalBinding(target, conditionalAccess.WhenNotNull);
-        return $"if {target} ~= nil then {binding} else nil";
+        // Wrap in parens so comparison operators bind correctly:
+        // (if x ~= nil then x.Y else nil) == Z, not: if x ~= nil then x.Y else (nil == Z)
+        return $"(if {target} ~= nil then {binding} else nil)";
     }
 
     /// <summary>
