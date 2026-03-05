@@ -2190,7 +2190,8 @@ public class LuauEmitter
         }
         else
         {
-            AppendLine("error(\"rethrow\")");
+            // Bare throw; inside catch → rethrow the original pcall error
+            AppendLine("error(__pcall_ret)");
         }
     }
 
