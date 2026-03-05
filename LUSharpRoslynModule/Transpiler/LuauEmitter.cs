@@ -2873,8 +2873,15 @@ public class LuauEmitter
             }
 
             // List<T>.Add(item) → table.insert(list, item)
+            // Dictionary<K,V>.Add(key, value) → dict[key] = value
             if (memberName == "Add")
             {
+                if (arguments.Count == 2)
+                {
+                    var key = EmitExpression(arguments[0].Expression);
+                    var val = EmitExpression(arguments[1].Expression);
+                    return $"{luauOwner}[{key}] = {val}";
+                }
                 return $"table.insert({luauOwner}, {argStr})";
             }
 
