@@ -3665,6 +3665,8 @@ public class LuauEmitter
     {
         return whenNotNull switch
         {
+            MemberBindingExpressionSyntax memberBinding when memberBinding.Name.Identifier.Text is "Count" or "Length" =>
+                $"#{target}",
             MemberBindingExpressionSyntax memberBinding =>
                 $"{target}.{memberBinding.Name.Identifier.Text}",
             InvocationExpressionSyntax invocation when invocation.Expression is MemberBindingExpressionSyntax methodBinding =>
