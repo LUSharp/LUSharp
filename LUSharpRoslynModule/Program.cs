@@ -316,6 +316,23 @@ internal class Program
             }
         }
 
+        // Copy LUSharpRuntime.lua if any output file uses it
+        var runtimeNeeded = Directory.GetFiles(outDir, "*.lua")
+            .Any(f => File.ReadAllText(f).Contains("require(script.Parent.LUSharpRuntime)"));
+        if (runtimeNeeded)
+        {
+            var moduleDir = FindProjectDirectory();
+            if (moduleDir != null)
+            {
+                var runtimeSrc = Path.Combine(moduleDir, "out", "LUSharpRuntime.lua");
+                if (File.Exists(runtimeSrc))
+                {
+                    File.Copy(runtimeSrc, Path.Combine(outDir, "LUSharpRuntime.lua"), true);
+                    Console.WriteLine("  Copied LUSharpRuntime.lua");
+                }
+            }
+        }
+
         Console.WriteLine();
         Console.WriteLine($"Results: {succeeded} OK, {failed} failed ({csFiles.Length} total)");
         if (totalTodos > 0)
