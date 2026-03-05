@@ -2836,6 +2836,10 @@ public class LuauEmitter
                 return $"print({argStr})";
             }
 
+            // Array.Empty<T>() → {}
+            if (ownerName == "Array" && memberName == "Empty")
+                return "{}";
+
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
             {
