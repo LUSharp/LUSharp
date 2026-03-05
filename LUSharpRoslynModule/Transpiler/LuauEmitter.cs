@@ -2913,6 +2913,20 @@ public class LuauEmitter
     {
         var typeName = objCreate.Type.ToString();
 
+        // StringBuilder → empty string (all methods mapped in MethodMapper)
+        if (typeName == "StringBuilder" || typeName == "System.Text.StringBuilder")
+        {
+            // new StringBuilder() → ""
+            // new StringBuilder("initial") → "initial"
+            var ctorArgs = objCreate.ArgumentList?.Arguments;
+            if (ctorArgs != null && ctorArgs.Value.Count > 0)
+            {
+                var firstArg = EmitExpression(ctorArgs.Value[0].Expression);
+                return firstArg; // new StringBuilder("text") → "text"
+            }
+            return "\"\"";
+        }
+
         // Strip generic type args for Luau: List<TokenInfo> → just use {}
         if (typeName.StartsWith("List<") || typeName.StartsWith("Dictionary<")
             || typeName.StartsWith("HashSet<") || typeName.StartsWith("Queue<")
