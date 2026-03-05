@@ -341,6 +341,73 @@ public class LuauEmitter
         EmitInstanceClass(structDecl.Identifier.Text, structDecl.Members);
     }
 
+    /// <summary>
+    /// Emit an interface as a Luau export type with method signatures.
+    /// C# interfaces map to Luau structural type annotations:
+    ///   export type IFoo = {
+    ///     MethodA: (self: IFoo, x: number) -> string,
+    ///     PropertyB: number,
+    ///   }
+    /// </summary>
+    public void EmitInterface(InterfaceDeclarationSyntax ifaceDecl)
+    {
+        var name = ifaceDecl.Identifier.Text;
+        AppendLine($"export type {name} = {{");
+        _indent++;
+
+        foreach (var member in ifaceDecl.Members)
+        {
+            switch (member)
+            {
+                case MethodDeclarationSyntax method:
+                {
+                    var methodName = method.Identifier.Text;
+                    var returnType = MapTypeNode(method.ReturnType);
+                    var paramParts = new List<string> { $"self: {name}" };
+                    foreach (var p in method.ParameterList.Parameters)
+                    {
+                        var pType = MapTypeNode(p.Type!);
+                        paramParts.Add($"{p.Identifier.Text}: {pType}");
+                    }
+                    AppendLine($"{methodName}: ({string.Join(", ", paramParts)}) -> {returnType},");
+                    break;
+                }
+                case PropertyDeclarationSyntax prop:
+                {
+                    var propType = MapTypeNode(prop.Type);
+                    AppendLine($"{prop.Identifier.Text}: {propType},");
+                    break;
+                }
+                case EventDeclarationSyntax evt:
+                {
+                    AppendLine($"{evt.Identifier.Text}: RBXScriptSignal,");
+                    break;
+                }
+                case EventFieldDeclarationSyntax evtField:
+                {
+                    foreach (var v in evtField.Declaration.Variables)
+                    {
+                        AppendLine($"{v.Identifier.Text}: RBXScriptSignal,");
+                    }
+                    break;
+                }
+                case IndexerDeclarationSyntax indexer:
+                {
+                    // Indexers can't be directly represented in Luau type syntax — skip with comment
+                    AppendLine($"-- indexer: [{MapTypeNode(indexer.ParameterList.Parameters[0].Type!)}] -> {MapTypeNode(indexer.Type)}");
+                    break;
+                }
+            }
+        }
+
+        _indent--;
+        AppendLine("}");
+        AppendLine();
+
+        // Track for unified return
+        EmittedTopLevelTypes.Add(name);
+    }
+
     // ────────────────────────────────────────────────────────────────────
     //  Instance class/struct emission
     // ────────────────────────────────────────────────────────────────────
@@ -465,6 +532,38 @@ public class LuauEmitter
                     nestedTypes.Add(nestedClass);
                     _nestedTypeNames.Add(nestedClass.Identifier.Text);
                     break;
+                case EnumDeclarationSyntax nestedEnum:
+                    nestedTypes.Add(nestedEnum);
+                    _nestedTypeNames.Add(nestedEnum.Identifier.Text);
+                    break;
+                case InterfaceDeclarationSyntax nestedIface:
+                    nestedTypes.Add(nestedIface);
+                    _nestedTypeNames.Add(nestedIface.Identifier.Text);
+                    break;
+                case EventFieldDeclarationSyntax eventField:
+                {
+                    foreach (var v in eventField.Declaration.Variables)
+                    {
+                        var eventName = v.Identifier.Text;
+                        _instanceFields.Add(eventName);
+                        fields.Add((eventName, "RBXScriptSignal", null, false, false));
+                    }
+                    break;
+                }
+                case EventDeclarationSyntax eventDecl:
+                {
+                    var eventName = eventDecl.Identifier.Text;
+                    _instanceFields.Add(eventName);
+                    fields.Add((eventName, "RBXScriptSignal", null, false, false));
+                    break;
+                }
+                case OperatorDeclarationSyntax:
+                case ConversionOperatorDeclarationSyntax:
+                    // Collected for Phase 6.5 metamethods
+                    break;
+                case IndexerDeclarationSyntax:
+                    // Collected for Phase 6.5 metamethods
+                    break;
                 default:
                     // Ignore other members for now
                     break;
@@ -541,6 +640,15 @@ public class LuauEmitter
                     _instanceFieldTypes = savedFieldTypes;
                     break;
                 }
+
+                case EnumDeclarationSyntax nestedEnum:
+                    EmitEnum(nestedEnum);
+                    AppendLine();
+                    break;
+
+                case InterfaceDeclarationSyntax nestedIface:
+                    EmitInterface(nestedIface);
+                    break;
             }
         }
 
@@ -691,6 +799,23 @@ public class LuauEmitter
         }
 
         _isInstanceContext = false;
+
+        // ── Phase 6.5: operator overloads → metamethods, indexers ──
+        foreach (var member in members)
+        {
+            switch (member)
+            {
+                case OperatorDeclarationSyntax opDecl:
+                    EmitOperatorOverload(className, opDecl);
+                    break;
+                case ConversionOperatorDeclarationSyntax convDecl:
+                    EmitConversionOperator(className, convDecl);
+                    break;
+                case IndexerDeclarationSyntax indexerDecl:
+                    EmitIndexer(className, indexerDecl);
+                    break;
+            }
+        }
 
         // Register this type's instance fields for child class inheritance resolution
         _emittedTypeFields[className] = new HashSet<string>(_instanceFields);
@@ -1077,6 +1202,177 @@ public class LuauEmitter
         _indent--;
         AppendLine("end");
 
+        _currentMethodParams = new HashSet<string>();
+        _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Operator overloads → metamethods
+    // ────────────────────────────────────────────────────────────────────
+
+    private static readonly Dictionary<string, string> OperatorToMetamethod = new()
+    {
+        ["+"] = "__add", ["-"] = "__sub", ["*"] = "__mul", ["/"] = "__div",
+        ["%"] = "__mod", ["=="] = "__eq", ["<"] = "__lt", ["<="] = "__le",
+        ["-_unary"] = "__unm",
+    };
+
+    private void EmitOperatorOverload(string className, OperatorDeclarationSyntax opDecl)
+    {
+        var op = opDecl.OperatorToken.Text;
+        bool isUnary = opDecl.ParameterList.Parameters.Count == 1;
+        var metaKey = isUnary && op == "-" ? "-_unary" : op;
+
+        if (!OperatorToMetamethod.TryGetValue(metaKey, out var metamethod))
+        {
+            AppendLine($"-- unsupported operator overload: {op}");
+            return;
+        }
+
+        _isInstanceContext = false;
+        _currentMethodParams = new HashSet<string>();
+        _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
+
+        var parameters = opDecl.ParameterList.Parameters;
+        var paramParts = new List<string>();
+        foreach (var param in parameters)
+        {
+            var paramName = param.Identifier.Text;
+            var paramType = MapTypeNode(param.Type);
+            paramParts.Add($"{paramName}: {paramType}");
+            _currentMethodParams.Add(paramName);
+            _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
+        }
+
+        var returnType = MapTypeNode(opDecl.ReturnType);
+        AppendLine($"function {className}.{metamethod}({string.Join(", ", paramParts)}): {returnType}");
+        _indent++;
+
+        if (opDecl.Body != null)
+            EmitBlock(opDecl.Body);
+        else if (opDecl.ExpressionBody != null)
+            AppendLine($"return {EmitExpression(opDecl.ExpressionBody.Expression)}");
+
+        _indent--;
+        AppendLine("end");
+        AppendLine();
+
+        _currentMethodParams = new HashSet<string>();
+        _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
+    }
+
+    private void EmitConversionOperator(string className, ConversionOperatorDeclarationSyntax convDecl)
+    {
+        // C# implicit/explicit conversion operators don't map cleanly to Luau metamethods.
+        // Emit as a static conversion method.
+        var targetType = MapTypeNode(convDecl.Type);
+        var direction = convDecl.ImplicitOrExplicitKeyword.IsKind(SyntaxKind.ImplicitKeyword)
+            ? "from" : "to";
+        var methodName = $"__{direction}_{convDecl.Type.ToString().Replace(".", "_").Replace("<", "_").Replace(">", "_")}";
+
+        _isInstanceContext = false;
+        _currentMethodParams = new HashSet<string>();
+        _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
+
+        var param = convDecl.ParameterList.Parameters[0];
+        var paramName = param.Identifier.Text;
+        var paramType = MapTypeNode(param.Type);
+        _currentMethodParams.Add(paramName);
+        _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
+
+        AppendLine($"function {className}.{methodName}({paramName}: {paramType}): {targetType}");
+        _indent++;
+
+        if (convDecl.Body != null)
+            EmitBlock(convDecl.Body);
+        else if (convDecl.ExpressionBody != null)
+            AppendLine($"return {EmitExpression(convDecl.ExpressionBody.Expression)}");
+
+        _indent--;
+        AppendLine("end");
+        AppendLine();
+
+        _currentMethodParams = new HashSet<string>();
+        _currentMethodLocals = new HashSet<string>();
+        _currentMethodParamTypes = new Dictionary<string, string>();
+    }
+
+    private void EmitIndexer(string className, IndexerDeclarationSyntax indexerDecl)
+    {
+        // Emit getter and setter as __index/__newindex overrides via a wrapper
+        var paramType = MapTypeNode(indexerDecl.ParameterList.Parameters[0].Type!);
+        var returnType = MapTypeNode(indexerDecl.Type);
+        var paramName = indexerDecl.ParameterList.Parameters[0].Identifier.Text;
+
+        if (indexerDecl.AccessorList != null)
+        {
+            foreach (var accessor in indexerDecl.AccessorList.Accessors)
+            {
+                if (accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                {
+                    _isInstanceContext = true;
+                    _currentMethodParams = new HashSet<string> { paramName };
+                    _currentMethodLocals = new HashSet<string>();
+                    _currentMethodParamTypes = new Dictionary<string, string>
+                    {
+                        [paramName] = indexerDecl.ParameterList.Parameters[0].Type?.ToString() ?? ""
+                    };
+
+                    AppendLine($"function {className}.__index_get(self: {className}, {paramName}: {paramType}): {returnType}");
+                    _indent++;
+                    if (accessor.Body != null) EmitBlock(accessor.Body);
+                    else if (accessor.ExpressionBody != null)
+                        AppendLine($"return {EmitExpression(accessor.ExpressionBody.Expression)}");
+                    _indent--;
+                    AppendLine("end");
+                    AppendLine();
+                }
+                else if (accessor.IsKind(SyntaxKind.SetAccessorDeclaration))
+                {
+                    _isInstanceContext = true;
+                    _currentMethodParams = new HashSet<string> { paramName, "value" };
+                    _currentMethodLocals = new HashSet<string>();
+                    _currentMethodParamTypes = new Dictionary<string, string>
+                    {
+                        [paramName] = indexerDecl.ParameterList.Parameters[0].Type?.ToString() ?? "",
+                        ["value"] = indexerDecl.Type.ToString()
+                    };
+
+                    AppendLine($"function {className}.__index_set(self: {className}, {paramName}: {paramType}, value: {returnType})");
+                    _indent++;
+                    if (accessor.Body != null) EmitBlock(accessor.Body);
+                    else if (accessor.ExpressionBody != null)
+                        AppendLine(EmitExpression(accessor.ExpressionBody.Expression));
+                    _indent--;
+                    AppendLine("end");
+                    AppendLine();
+                }
+            }
+        }
+        else if (indexerDecl.ExpressionBody != null)
+        {
+            // Expression-bodied indexer (getter only)
+            _isInstanceContext = true;
+            _currentMethodParams = new HashSet<string> { paramName };
+            _currentMethodLocals = new HashSet<string>();
+            _currentMethodParamTypes = new Dictionary<string, string>
+            {
+                [paramName] = indexerDecl.ParameterList.Parameters[0].Type?.ToString() ?? ""
+            };
+
+            AppendLine($"function {className}.__index_get(self: {className}, {paramName}: {paramType}): {returnType}");
+            _indent++;
+            AppendLine($"return {EmitExpression(indexerDecl.ExpressionBody.Expression)}");
+            _indent--;
+            AppendLine("end");
+            AppendLine();
+        }
+
+        _isInstanceContext = false;
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
         _currentMethodParamTypes = new Dictionary<string, string>();
@@ -1898,7 +2194,62 @@ public class LuauEmitter
             if (typeStr == "string" && memberName == "Empty")
                 return "\"\"";
 
-            // int.MaxValue, int.MinValue, etc.
+            // int/long/short/byte MaxValue/MinValue
+            if (memberName == "MaxValue")
+            {
+                return typeStr switch
+                {
+                    "int" => "2147483647",
+                    "uint" => "4294967295",
+                    "long" => "9223372036854775807",
+                    "short" => "32767",
+                    "ushort" => "65535",
+                    "byte" => "255",
+                    "sbyte" => "127",
+                    "float" or "double" => "math.huge",
+                    _ => $"--[[TODO: {typeStr}.MaxValue]] 0",
+                };
+            }
+            if (memberName == "MinValue")
+            {
+                return typeStr switch
+                {
+                    "int" => "-2147483648",
+                    "uint" => "0",
+                    "long" => "-9223372036854775808",
+                    "short" => "-32768",
+                    "ushort" => "0",
+                    "byte" => "0",
+                    "sbyte" => "-128",
+                    "float" or "double" => "-math.huge",
+                    _ => $"--[[TODO: {typeStr}.MinValue]] 0",
+                };
+            }
+
+            // double/float special values
+            if (typeStr is "double" or "float")
+            {
+                return memberName switch
+                {
+                    "NaN" => "(0/0)",
+                    "PositiveInfinity" => "math.huge",
+                    "NegativeInfinity" => "-math.huge",
+                    "Epsilon" => "2.2204460492503131e-16",
+                    _ => $"--[[TODO: {typeStr}.{memberName}]] 0",
+                };
+            }
+
+            // char members
+            if (typeStr == "char")
+            {
+                return memberName switch
+                {
+                    "MaxValue" => "65535",
+                    "MinValue" => "0",
+                    _ => $"--[[TODO: char.{memberName}]] 0",
+                };
+            }
+
             return $"--[[TODO: {typeStr}.{memberName}]] nil";
         }
 
@@ -1927,6 +2278,61 @@ public class LuauEmitter
             // string.Empty → ""
             if (typeStr == "string" && memberName == "Empty")
                 return "\"\"";
+
+            // Predefined type constants accessed via .NET type names (Int32.MaxValue, Double.NaN, etc.)
+            if (typeStr is "Int32" or "UInt32" or "Int64" or "Int16" or "UInt16" or "Byte" or "SByte")
+            {
+                if (memberName == "MaxValue")
+                {
+                    return typeStr switch
+                    {
+                        "Int32" => "2147483647",
+                        "UInt32" => "4294967295",
+                        "Int64" => "9223372036854775807",
+                        "Int16" => "32767",
+                        "UInt16" => "65535",
+                        "Byte" => "255",
+                        "SByte" => "127",
+                        _ => "0",
+                    };
+                }
+                if (memberName == "MinValue")
+                {
+                    return typeStr switch
+                    {
+                        "Int32" => "-2147483648",
+                        "UInt32" or "UInt16" or "Byte" => "0",
+                        "Int64" => "-9223372036854775808",
+                        "Int16" => "-32768",
+                        "SByte" => "-128",
+                        _ => "0",
+                    };
+                }
+            }
+            if (typeStr is "Double" or "Single")
+            {
+                var result = memberName switch
+                {
+                    "MaxValue" => "math.huge",
+                    "MinValue" => "-math.huge",
+                    "NaN" => "(0/0)",
+                    "PositiveInfinity" => "math.huge",
+                    "NegativeInfinity" => "-math.huge",
+                    "Epsilon" => "2.2204460492503131e-16",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "Char")
+            {
+                var result = memberName switch
+                {
+                    "MaxValue" => "65535",
+                    "MinValue" => "0",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
 
             // .Length on a string variable → string.len(var) or #var
             if (memberName == "Length")

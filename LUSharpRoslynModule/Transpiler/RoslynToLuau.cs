@@ -234,6 +234,9 @@ public class RoslynToLuau
                 case StructDeclarationSyntax structDecl:
                     emitter.EmitStruct(structDecl);
                     break;
+                case InterfaceDeclarationSyntax ifaceDecl:
+                    emitter.EmitInterface(ifaceDecl);
+                    break;
                 default:
                     Console.Error.WriteLine($"Warning: unsupported top-level declaration: {member.Kind()}");
                     break;
@@ -275,6 +278,9 @@ public class RoslynToLuau
                 case StructDeclarationSyntax structDecl:
                     emitter.EmitStruct(structDecl);
                     break;
+                case InterfaceDeclarationSyntax ifaceDecl:
+                    emitter.EmitInterface(ifaceDecl);
+                    break;
                 default:
                     Console.Error.WriteLine($"Warning: unsupported member: {member.Kind()}");
                     break;
@@ -302,6 +308,7 @@ public class RoslynToLuau
                 case ClassDeclarationSyntax:
                 case StructDeclarationSyntax:
                 case EnumDeclarationSyntax:
+                case InterfaceDeclarationSyntax:
                     count++;
                     break;
             }
@@ -335,6 +342,9 @@ public class RoslynToLuau
                     break;
                 case EnumDeclarationSyntax enumDecl:
                     names.Add(enumDecl.Identifier.Text);
+                    break;
+                case InterfaceDeclarationSyntax ifaceDecl:
+                    names.Add(ifaceDecl.Identifier.Text);
                     break;
             }
         }
@@ -370,6 +380,9 @@ public class RoslynToLuau
                     break;
                 case EnumDeclarationSyntax enumDecl:
                     names.Add(enumDecl.Identifier.Text);
+                    break;
+                case InterfaceDeclarationSyntax ifaceDecl:
+                    names.Add(ifaceDecl.Identifier.Text);
                     break;
             }
         }
@@ -432,7 +445,10 @@ public class RoslynToLuau
     {
         return module is "CharUnicodeInfo" or "UnicodeCategory"
             or "ArgumentOutOfRangeException" or "Math" or "Console"
-            or "Char" or "String" or "Int32" or "Convert";
+            or "Char" or "String" or "Int32" or "Int64" or "UInt32"
+            or "Double" or "Single" or "Convert" or "Byte" or "SByte"
+            or "Array" or "Enumerable" or "Object" or "Task"
+            or "StringBuilder" or "Environment";
     }
 }
 

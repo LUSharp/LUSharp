@@ -165,9 +165,24 @@ public static class MethodMapper
         Register("Convert", "ToBoolean", (r, a, _) => $"(not not {a[0]})");
         Register("Convert", "ToByte", (r, a, _) => $"math.floor(tonumber({a[0]}))");
 
-        // === Int32/Double static ===
+        // === Int32/Double/Single static ===
         Register("Int32", "Parse", (r, a, _) => $"tonumber({a[0]})");
+        Register("Int32", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
         Register("Double", "Parse", (r, a, _) => $"tonumber({a[0]})");
+        Register("Double", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
+        Register("Single", "Parse", (r, a, _) => $"tonumber({a[0]})");
+
+        // === Char static ===
+        Register("Char", "IsLetter", (r, a, _) => $"(string.match(string.char({a[0]}), \"%a\") ~= nil)");
+        Register("Char", "IsDigit", (r, a, _) => $"({a[0]} >= 48 and {a[0]} <= 57)");
+        Register("Char", "IsLetterOrDigit", (r, a, _) => $"(string.match(string.char({a[0]}), \"%w\") ~= nil)");
+        Register("Char", "IsWhiteSpace", (r, a, _) => $"(string.match(string.char({a[0]}), \"%s\") ~= nil)");
+        Register("Char", "IsUpper", (r, a, _) => $"(string.match(string.char({a[0]}), \"%u\") ~= nil)");
+        Register("Char", "IsLower", (r, a, _) => $"(string.match(string.char({a[0]}), \"%l\") ~= nil)");
+        Register("Char", "IsPunctuation", (r, a, _) => $"(string.match(string.char({a[0]}), \"%p\") ~= nil)");
+        Register("Char", "ToUpper", (r, a, _) => $"string.byte(string.upper(string.char({a[0]})))");
+        Register("Char", "ToLower", (r, a, _) => $"string.byte(string.lower(string.char({a[0]})))");
+        Register("Char", "ToString", (r, a, _) => $"string.char({a[0]})");
 
         // === Object ===
         Register("Object", "ToString", (r, a, _) => $"tostring({r})");
