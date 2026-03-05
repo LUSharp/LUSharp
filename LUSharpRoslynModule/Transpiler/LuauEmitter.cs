@@ -1834,14 +1834,16 @@ public class LuauEmitter
             {
                 var rawName = variable.Identifier.Text;
                 var name = EscapeIdentifier(rawName);
+                var alreadyDeclared = _currentMethodLocals.Contains(rawName) || _currentMethodLocals.Contains(name);
                 _currentMethodLocals.Add(rawName);
                 if (name != rawName) _currentMethodLocals.Add(name);
+                var prefix = alreadyDeclared ? "" : "local ";
                 if (variable.Initializer != null)
                 {
                     var init = EmitExpression(variable.Initializer.Value);
-                    AppendLine($"local {name} = {init}");
+                    AppendLine($"{prefix}{name} = {init}");
                 }
-                else
+                else if (!alreadyDeclared)
                 {
                     AppendLine($"local {name}");
                 }
@@ -2220,14 +2222,16 @@ public class LuauEmitter
         {
             var rawName = declarator.Identifier.Text;
             var name = EscapeIdentifier(rawName);
+            var alreadyDeclared = _currentMethodLocals.Contains(rawName) || _currentMethodLocals.Contains(name);
             _currentMethodLocals.Add(rawName);
             if (name != rawName) _currentMethodLocals.Add(name);
+            var prefix = alreadyDeclared ? "" : "local ";
             if (declarator.Initializer != null)
             {
                 var init = EmitExpression(declarator.Initializer.Value);
-                AppendLine($"local {name} = {init}");
+                AppendLine($"{prefix}{name} = {init}");
             }
-            else
+            else if (!alreadyDeclared)
             {
                 AppendLine($"local {name}");
             }
