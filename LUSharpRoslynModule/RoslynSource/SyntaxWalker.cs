@@ -302,6 +302,33 @@ public class SyntaxWalker
         }
     }
 
+    public virtual void VisitLockStatement(LockStatementSyntax node)
+    {
+        _depth++;
+        Visit(node.Expression);
+        VisitBlock(node.Block);
+        _depth--;
+    }
+
+    public virtual void VisitUsingStatement(UsingStatementSyntax node)
+    {
+        _depth++;
+        if (node.Declaration != null)
+            VisitLocalDeclaration(node.Declaration);
+        if (node.Expression != null)
+            Visit(node.Expression);
+        VisitBlock(node.Block);
+        _depth--;
+    }
+
+    public virtual void VisitTupleDeconstructionStatement(TupleDeconstructionStatementSyntax node)
+    {
+        _depth++;
+        if (node.Initializer != null)
+            Visit(node.Initializer);
+        _depth--;
+    }
+
     // === Expression visitors ===
 
     public virtual void VisitLiteralExpression(LiteralExpressionSyntax node) { }
@@ -379,6 +406,21 @@ public class SyntaxWalker
             Visit(node.SizeExpression);
             _depth--;
         }
+    }
+
+    public virtual void VisitConditionalAccessExpression(ConditionalAccessExpressionSyntax node)
+    {
+        _depth++;
+        Visit(node.Expression);
+        Visit(node.WhenNotNull);
+        _depth--;
+    }
+
+    public virtual void VisitIsPatternExpression(IsPatternExpressionSyntax node)
+    {
+        _depth++;
+        Visit(node.Expression);
+        _depth--;
     }
 
     public virtual void VisitLambdaExpression(LambdaExpressionSyntax node)
@@ -661,6 +703,30 @@ public class TreePrinter : SyntaxWalker
         base.VisitThrowStatement(node);
     }
 
+    public override void VisitLockStatement(LockStatementSyntax node)
+    {
+        PrintNode("LockStatement");
+        base.VisitLockStatement(node);
+    }
+
+    public override void VisitUsingStatement(UsingStatementSyntax node)
+    {
+        PrintNode("UsingStatement");
+        base.VisitUsingStatement(node);
+    }
+
+    public override void VisitTupleDeconstructionStatement(TupleDeconstructionStatementSyntax node)
+    {
+        string names = "";
+        for (int i = 0; i < node.VariableNames.Length; i++)
+        {
+            if (i > 0) names = names + ", ";
+            names = names + node.VariableNames[i];
+        }
+        PrintNode("TupleDeconstruction: (" + names + ")");
+        base.VisitTupleDeconstructionStatement(node);
+    }
+
     public override void VisitLiteralExpression(LiteralExpressionSyntax node)
     {
         PrintNode("Literal: " + node.Token.Text);
@@ -717,6 +783,18 @@ public class TreePrinter : SyntaxWalker
     {
         PrintNode("ArrayCreation: " + node.TypeName);
         base.VisitArrayCreationExpression(node);
+    }
+
+    public override void VisitConditionalAccessExpression(ConditionalAccessExpressionSyntax node)
+    {
+        PrintNode("ConditionalAccess");
+        base.VisitConditionalAccessExpression(node);
+    }
+
+    public override void VisitIsPatternExpression(IsPatternExpressionSyntax node)
+    {
+        PrintNode("IsPattern: " + node.TypeName + " " + node.Designation);
+        base.VisitIsPatternExpression(node);
     }
 
     public override void VisitLambdaExpression(LambdaExpressionSyntax node)

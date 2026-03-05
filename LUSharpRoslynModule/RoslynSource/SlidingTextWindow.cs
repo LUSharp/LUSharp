@@ -14,6 +14,13 @@ public struct SlidingTextWindow
     public int LexemeStartPosition;
 
     public int Width => Position - LexemeStartPosition;
+    public int TextLength => _textEnd;
+
+    public char CharAt(int pos)
+    {
+        if (pos >= 0 && pos < _textEnd) return _text[pos];
+        return InvalidCharacter;
+    }
 
     public SlidingTextWindow(string text)
     {

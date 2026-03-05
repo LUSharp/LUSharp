@@ -189,7 +189,7 @@ public class SimpleParser
             else if (kind == SyntaxKind.ConstKeyword) { Advance(); }
             else if (kind == SyntaxKind.VolatileKeyword) { Advance(); }
             else if (kind == SyntaxKind.ExternKeyword) { Advance(); }
-            else if (kind == SyntaxKind.AsyncKeyword) { Advance(); }
+            else if (kind == SyntaxKind.AsyncKeyword || (kind == SyntaxKind.IdentifierToken && Current().Text == "async")) { Advance(); }
             else if (kind == SyntaxKind.UnsafeKeyword) { Advance(); }
             else if (kind == SyntaxKind.PartialKeyword) { Advance(); }
             else break;
@@ -708,19 +708,28 @@ public class SimpleParser
         }
 
         // Handle generic type parameters: List<int>, Dictionary<string, int>
-        // We strip the generic args but preserve the base type name
+        // Preserve generic args in the type name for MapType to resolve
         if (!IsAtEnd() && Current().Kind == SyntaxKind.LessThanToken)
         {
+            name = name + "<";
             int depth = 0;
             while (!IsAtEnd())
             {
-                if (Current().Kind == SyntaxKind.LessThanToken) depth++;
+                if (Current().Kind == SyntaxKind.LessThanToken) { depth++; if (depth > 1) name = name + "<"; Advance(); }
                 else if (Current().Kind == SyntaxKind.GreaterThanToken)
                 {
                     depth--;
-                    if (depth == 0) { Advance(); break; }
+                    if (depth == 0) { name = name + ">"; Advance(); break; }
+                    name = name + ">";
+                    Advance();
                 }
-                Advance();
+                else
+                {
+                    // Append the token text (for type args like int, string, commas)
+                    if (Current().Kind != SyntaxKind.WhitespaceTrivia)
+                        name = name + Current().Text;
+                    Advance();
+                }
             }
         }
 
@@ -733,7 +742,7 @@ public class SimpleParser
             name = name + "[]";
         }
 
-        // Handle nullable: int?
+        // Handle nullable: int? or int?. (QuestionDotToken in type context means nullable + start of next expression)
         if (!IsAtEnd() && Current().Kind == SyntaxKind.QuestionToken)
         {
             Advance();
@@ -818,15 +827,30 @@ public class SimpleParser
         if (kind == SyntaxKind.ThrowKeyword)
             return ParseThrowStatement();
 
+        if (kind == SyntaxKind.LockKeyword)
+            return ParseLockStatement();
+
+        if (kind == SyntaxKind.UsingKeyword)
+            return ParseUsingStatement();
+
         if (kind == SyntaxKind.OpenBraceToken)
             return ParseBlock();
 
         // Try local declaration: type name = expr;
         // Heuristic: if current looks like a type (identifier/keyword) followed by an identifier
-        if (IsTypeStart(kind) && _position + 1 < _tokens.Length)
+        // Exclude contextual keywords that look like identifiers (await, yield, async)
+        bool isContextualKeyword = kind == SyntaxKind.IdentifierToken
+            && (Current().Text == "await" || Current().Text == "yield" || Current().Text == "async");
+        if (IsTypeStart(kind) && !isContextualKeyword && _position + 1 < _tokens.Length)
         {
             SyntaxKind next = _tokens[_position + 1].Kind;
             if (next == SyntaxKind.IdentifierToken)
+            {
+                return ParseLocalDeclaration();
+            }
+            // Handle nullable type: int? name
+            if (next == SyntaxKind.QuestionToken && _position + 2 < _tokens.Length
+                && _tokens[_position + 2].Kind == SyntaxKind.IdentifierToken)
             {
                 return ParseLocalDeclaration();
             }
@@ -847,6 +871,11 @@ public class SimpleParser
             if (_tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
             {
                 return ParseLocalDeclaration();
+            }
+            // var (a, b) = expr; — tuple deconstruction
+            if (_tokens[_position + 1].Kind == SyntaxKind.OpenParenToken)
+            {
+                return ParseTupleDeconstruction();
             }
         }
 
@@ -1185,6 +1214,82 @@ public class SimpleParser
         return new ThrowStatementSyntax(expr);
     }
 
+    private LockStatementSyntax ParseLockStatement()
+    {
+        Advance(); // skip 'lock'
+        Expect(SyntaxKind.OpenParenToken);
+        var expr = ParseExpression();
+        Expect(SyntaxKind.CloseParenToken);
+        var block = ParseBlock();
+        return new LockStatementSyntax(expr, block);
+    }
+
+    private StatementSyntax ParseUsingStatement()
+    {
+        Advance(); // skip 'using'
+
+        // C# 8+ using declaration: using var x = expr; (no parens, no block)
+        if (!IsAtEnd() && Current().Kind != SyntaxKind.OpenParenToken)
+        {
+            // using var x = expr; or using Type x = expr;
+            string typeName = ParseTypeName();
+            string varName = Current().Text;
+            Advance(); // skip identifier
+            ExpressionSyntax init = null;
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+            {
+                Advance(); // skip '='
+                init = ParseExpression();
+            }
+            Expect(SyntaxKind.SemicolonToken);
+            // Emit as a plain local declaration (no Dispose in Luau)
+            return new LocalDeclarationStatementSyntax(typeName, varName, init);
+        }
+
+        Expect(SyntaxKind.OpenParenToken);
+
+        // using (Type name = expr) { } or using (expr) { }
+        LocalDeclarationStatementSyntax decl = null;
+        ExpressionSyntax usingExpr = null;
+
+        bool isDecl = false;
+
+        // Heuristic: if current is a type-start and next is identifier, it's a declaration
+        if (IsTypeStart(Current().Kind) && _position + 1 < _tokens.Length
+            && _tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
+        {
+            isDecl = true;
+        }
+        // Also check for var
+        if (!IsAtEnd() && Current().Kind == SyntaxKind.IdentifierToken && Current().Text == "var"
+            && _position + 1 < _tokens.Length && _tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
+        {
+            isDecl = true;
+        }
+
+        if (isDecl)
+        {
+            string typeName = ParseTypeName();
+            string varName = Current().Text;
+            Advance(); // skip identifier
+            ExpressionSyntax init = null;
+            if (!IsAtEnd() && Current().Kind == SyntaxKind.EqualsToken)
+            {
+                Advance(); // skip '='
+                init = ParseExpression();
+            }
+            decl = new LocalDeclarationStatementSyntax(typeName, varName, init);
+        }
+        else
+        {
+            usingExpr = ParseExpression();
+        }
+
+        Expect(SyntaxKind.CloseParenToken);
+        var block = ParseBlock();
+        return new UsingStatementSyntax(decl, usingExpr, block);
+    }
+
     private StatementSyntax ParseStatementOrBlock()
     {
         if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenBraceToken)
@@ -1209,6 +1314,38 @@ public class SimpleParser
         return new LocalDeclarationStatementSyntax(typeName, varName, initializer);
     }
 
+    private StatementSyntax ParseTupleDeconstruction()
+    {
+        // var (a, b, c) = expr;
+        Advance(); // skip 'var'
+        Expect(SyntaxKind.OpenParenToken);
+
+        string[] names = new string[8];
+        int nameCount = 0;
+        while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+        {
+            if (nameCount > 0) Expect(SyntaxKind.CommaToken);
+            if (nameCount < 8)
+            {
+                names[nameCount] = Current().Text;
+                nameCount = nameCount + 1;
+            }
+            Advance(); // consume identifier
+        }
+        Expect(SyntaxKind.CloseParenToken);
+        Expect(SyntaxKind.EqualsToken);
+        ExpressionSyntax initializer = ParseExpression();
+        Expect(SyntaxKind.SemicolonToken);
+
+        // Trim names array to actual count
+        string[] trimmed = new string[nameCount];
+        for (int i = 0; i < nameCount; i++)
+        {
+            trimmed[i] = names[i];
+        }
+        return new TupleDeconstructionStatementSyntax(trimmed, initializer);
+    }
+
     // === Expressions (Pratt-style precedence climbing) ===
 
     public ExpressionSyntax ParseExpression()
@@ -1229,7 +1366,8 @@ public class SimpleParser
                 || kind == SyntaxKind.MinusEqualsToken
                 || kind == SyntaxKind.AsteriskEqualsToken
                 || kind == SyntaxKind.SlashEqualsToken
-                || kind == SyntaxKind.PercentEqualsToken)
+                || kind == SyntaxKind.PercentEqualsToken
+                || kind == SyntaxKind.QuestionQuestionEqualsToken)
             {
                 var op = MakeSyntaxToken(Advance());
                 var right = ParseAssignment();
@@ -1239,7 +1377,8 @@ public class SimpleParser
                     : kind == SyntaxKind.MinusEqualsToken ? (int)SyntaxKind.SubtractAssignmentExpression
                     : kind == SyntaxKind.AsteriskEqualsToken ? (int)SyntaxKind.MultiplyAssignmentExpression
                     : kind == SyntaxKind.SlashEqualsToken ? (int)SyntaxKind.DivideAssignmentExpression
-                    : (int)SyntaxKind.ModuloAssignmentExpression;
+                    : kind == SyntaxKind.PercentEqualsToken ? (int)SyntaxKind.ModuloAssignmentExpression
+                    : (int)SyntaxKind.CoalesceAssignmentExpression;
 
                 return new AssignmentExpressionSyntax(exprKind, left, op, right);
             }
@@ -1343,14 +1482,19 @@ public class SimpleParser
                 // is type-pattern: expr is TypeName optionalIdentifier
                 var op = MakeSyntaxToken(Advance()); // skip 'is'
                 string typeName = ParseTypeName();
-                var typeIdent = new SyntaxToken((int)SyntaxKind.IdentifierToken, typeName, 0, typeName.Length);
-                var right = new IdentifierNameSyntax(typeIdent);
-                left = new BinaryExpressionSyntax(8657, left, op, right); // IsExpression
 
-                // Consume optional pattern variable: is TypeName varName
+                // Check for pattern variable: is TypeName varName
                 if (!IsAtEnd() && Current().Kind == SyntaxKind.IdentifierToken)
                 {
-                    Advance(); // skip pattern variable (we don't model it in AST)
+                    string designation = Current().Text;
+                    Advance(); // consume pattern variable
+                    left = new IsPatternExpressionSyntax(left, typeName, designation);
+                }
+                else
+                {
+                    var typeIdent = new SyntaxToken((int)SyntaxKind.IdentifierToken, typeName, 0, typeName.Length);
+                    var right = new IdentifierNameSyntax(typeIdent);
+                    left = new BinaryExpressionSyntax(8657, left, op, right); // IsExpression
                 }
             }
             else if (kind == SyntaxKind.AsKeyword)
@@ -1423,6 +1567,14 @@ public class SimpleParser
                 return new PrefixUnaryExpressionSyntax(exprKind, op, operand);
             }
 
+            // await expr
+            if (kind == SyntaxKind.AwaitKeyword || (kind == SyntaxKind.IdentifierToken && Current().Text == "await"))
+            {
+                var op = MakeSyntaxToken(Advance());
+                var operand = ParseUnary();
+                return new PrefixUnaryExpressionSyntax(8740, op, operand); // AwaitExpression
+            }
+
             // Prefix ++/--
             if (kind == SyntaxKind.PlusPlusToken || kind == SyntaxKind.MinusMinusToken)
             {
@@ -1450,6 +1602,39 @@ public class SimpleParser
                 Advance(); // skip .
                 var name = MakeSyntaxToken(Advance());
                 expr = new MemberAccessExpressionSyntax(expr, name);
+            }
+            else if (Current().Kind == SyntaxKind.QuestionDotToken)
+            {
+                Advance(); // skip ?.
+                var name = MakeSyntaxToken(Advance());
+                var memberAccess = new MemberAccessExpressionSyntax(expr, name);
+                // If followed by ( → wrap the invocation inside the conditional
+                if (!IsAtEnd() && Current().Kind == SyntaxKind.OpenParenToken)
+                {
+                    Advance(); // skip (
+                    var args = new ExpressionSyntax[16];
+                    int argCount = 0;
+                    while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseParenToken)
+                    {
+                        if (argCount > 0)
+                            Expect(SyntaxKind.CommaToken);
+                        if (argCount < 16)
+                        {
+                            args[argCount] = ParseExpression();
+                            argCount++;
+                        }
+                    }
+                    Expect(SyntaxKind.CloseParenToken);
+                    var argResult = new ExpressionSyntax[argCount];
+                    for (int i = 0; i < argCount; i++)
+                        argResult[i] = args[i];
+                    var invocation = new InvocationExpressionSyntax(memberAccess, argResult);
+                    expr = new ConditionalAccessExpressionSyntax(expr, invocation);
+                }
+                else
+                {
+                    expr = new ConditionalAccessExpressionSyntax(expr, memberAccess);
+                }
             }
             else if (Current().Kind == SyntaxKind.OpenParenToken)
             {
@@ -1521,6 +1706,13 @@ public class SimpleParser
         {
             var token = MakeSyntaxToken(Advance());
             return new LiteralExpressionSyntax(8751, token);
+        }
+
+        // Interpolated string: $"..." → treated as InterpolatedStringExpression (8655)
+        if (kind == SyntaxKind.InterpolatedStringToken)
+        {
+            var token = MakeSyntaxToken(Advance());
+            return new LiteralExpressionSyntax(8655, token);
         }
 
         // Character literal

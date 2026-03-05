@@ -67,6 +67,7 @@ public enum SyntaxKind : ushort
     CaretEqualsToken = 8282,
     PercentEqualsToken = 8283,
     QuestionQuestionEqualsToken = 8284,
+    QuestionDotToken = 8285,
     GreaterThanGreaterThanGreaterThanToken = 8286,
     GreaterThanGreaterThanGreaterThanEqualsToken = 8287,
     BoolKeyword = 8304,

@@ -81,6 +81,16 @@ public class SimpleTokenizer
             return ScanNumericLiteral();
         }
 
+        // Interpolated string: $"..."
+        if (ch == '$' && !_window.IsReallyAtEnd())
+        {
+            int peekPos = _window.Position + 1;
+            if (peekPos < _window.TextLength && _window.CharAt(peekPos) == '"')
+            {
+                return ScanInterpolatedStringLiteral();
+            }
+        }
+
         // String literals
         if (ch == '"')
         {
@@ -161,6 +171,57 @@ public class SimpleTokenizer
 
         string text = _window.GetText(false);
         return new TokenInfo(SyntaxKind.NumericLiteralToken, text, start, text.Length);
+    }
+
+    private TokenInfo ScanInterpolatedStringLiteral()
+    {
+        int start = _window.Position;
+        _window.AdvanceChar(); // skip $
+        _window.AdvanceChar(); // skip "
+
+        int braceDepth = 0;
+        while (!_window.IsReallyAtEnd())
+        {
+            char ch = _window.PeekChar();
+            if (ch == '{' && braceDepth == 0)
+            {
+                // Check for {{ (escaped brace)
+                int nextPos = _window.Position + 1;
+                if (nextPos < _window.TextLength && _window.CharAt(nextPos) == '{')
+                {
+                    _window.AdvanceChar();
+                    _window.AdvanceChar();
+                    continue;
+                }
+                braceDepth++;
+                _window.AdvanceChar();
+                continue;
+            }
+            if (ch == '}' && braceDepth > 0)
+            {
+                braceDepth--;
+                _window.AdvanceChar();
+                continue;
+            }
+            if (ch == '"' && braceDepth == 0)
+            {
+                _window.AdvanceChar();
+                break;
+            }
+            if (ch == '\\')
+            {
+                _window.AdvanceChar();
+                if (!_window.IsReallyAtEnd())
+                    _window.AdvanceChar();
+            }
+            else
+            {
+                _window.AdvanceChar();
+            }
+        }
+
+        string text = _window.GetText(false);
+        return new TokenInfo(SyntaxKind.InterpolatedStringToken, text, start, text.Length);
     }
 
     private TokenInfo ScanStringLiteral()
@@ -316,7 +377,13 @@ public class SimpleTokenizer
 
     private SyntaxKind ScanQuestionToken()
     {
-        if (_window.PeekChar() == '?') { _window.AdvanceChar(); return SyntaxKind.QuestionQuestionToken; }
+        if (_window.PeekChar() == '?')
+        {
+            _window.AdvanceChar();
+            if (_window.PeekChar() == '=') { _window.AdvanceChar(); return SyntaxKind.QuestionQuestionEqualsToken; }
+            return SyntaxKind.QuestionQuestionToken;
+        }
+        if (_window.PeekChar() == '.') { _window.AdvanceChar(); return SyntaxKind.QuestionDotToken; }
         return SyntaxKind.QuestionToken;
     }
 

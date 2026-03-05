@@ -516,3 +516,62 @@ public class ArrayCreationExpressionSyntax : ExpressionSyntax
         return "NewArray(" + TypeName + ")";
     }
 }
+
+public class ConditionalAccessExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public ExpressionSyntax WhenNotNull { get; }
+
+    public ConditionalAccessExpressionSyntax(ExpressionSyntax expression, ExpressionSyntax whenNotNull) : base(8691)
+    {
+        Expression = expression;
+        WhenNotNull = whenNotNull;
+    }
+
+    public override string Accept()
+    {
+        return Expression.Accept() + "?." + WhenNotNull.Accept();
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitConditionalAccessExpression(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "ConditionalAccess(" + Expression.ToDisplayString() + ", " + WhenNotNull.ToDisplayString() + ")";
+    }
+}
+
+/// <summary>
+/// Represents 'expr is Type varName' pattern expression (kind 8692).
+/// </summary>
+public class IsPatternExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public string TypeName { get; }
+    public string Designation { get; }
+
+    public IsPatternExpressionSyntax(ExpressionSyntax expression, string typeName, string designation) : base(8692)
+    {
+        Expression = expression;
+        TypeName = typeName;
+        Designation = designation;
+    }
+
+    public override string Accept()
+    {
+        return Expression.Accept() + " is " + TypeName + " " + Designation;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitIsPatternExpression(this);
+    }
+
+    public override string ToDisplayString()
+    {
+        return "IsPattern(" + Expression.ToDisplayString() + ", " + TypeName + ", " + Designation + ")";
+    }
+}

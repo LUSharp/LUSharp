@@ -399,3 +399,82 @@ public class ThrowStatementSyntax : StatementSyntax
         return "throw " + Expression.Accept() + ";";
     }
 }
+
+public class LockStatementSyntax : StatementSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public BlockSyntax Block { get; }
+
+    public LockStatementSyntax(ExpressionSyntax expression, BlockSyntax block) : base(8818)
+    {
+        Expression = expression;
+        Block = block;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitLockStatement(this);
+    }
+
+    public override string Accept()
+    {
+        return "lock (" + Expression.Accept() + ") " + Block.Accept();
+    }
+}
+
+public class UsingStatementSyntax : StatementSyntax
+{
+    public LocalDeclarationStatementSyntax Declaration { get; }
+    public ExpressionSyntax Expression { get; }
+    public BlockSyntax Block { get; }
+
+    public UsingStatementSyntax(LocalDeclarationStatementSyntax declaration, ExpressionSyntax expression, BlockSyntax block) : base(8813)
+    {
+        Declaration = declaration;
+        Expression = expression;
+        Block = block;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitUsingStatement(this);
+    }
+
+    public override string Accept()
+    {
+        if (Declaration != null)
+            return "using (" + Declaration.Accept() + ") " + Block.Accept();
+        return "using (" + Expression.Accept() + ") " + Block.Accept();
+    }
+}
+
+/// <summary>
+/// var (a, b, c) = expr; — tuple deconstruction statement (kind 9081).
+/// </summary>
+public class TupleDeconstructionStatementSyntax : StatementSyntax
+{
+    public string[] VariableNames { get; }
+    public ExpressionSyntax Initializer { get; }
+
+    public TupleDeconstructionStatementSyntax(string[] variableNames, ExpressionSyntax initializer) : base(9081)
+    {
+        VariableNames = variableNames;
+        Initializer = initializer;
+    }
+
+    public override void AcceptWalker(SyntaxWalker walker)
+    {
+        walker.VisitTupleDeconstructionStatement(this);
+    }
+
+    public override string Accept()
+    {
+        string names = "";
+        for (int i = 0; i < VariableNames.Length; i++)
+        {
+            if (i > 0) names = names + ", ";
+            names = names + VariableNames[i];
+        }
+        return "var (" + names + ") = " + Initializer.Accept() + ";";
+    }
+}

@@ -288,7 +288,80 @@ public class LuauEmitter
                     break;
                 }
 
-                // Fields, properties, etc. can be added later
+                case FieldDeclarationSyntax fieldDecl:
+                {
+                    var luauType = MapTypeNode(fieldDecl.Declaration.Type);
+                    foreach (var variable in fieldDecl.Declaration.Variables)
+                    {
+                        var fieldName = variable.Identifier.Text;
+                        if (variable.Initializer != null)
+                        {
+                            var value = EmitExpression(variable.Initializer.Value);
+                            AppendLine($"{className}.{fieldName} = {value}");
+                        }
+                        else
+                        {
+                            AppendLine($"{className}.{fieldName} = nil :: {luauType}");
+                        }
+                    }
+                    break;
+                }
+
+                case PropertyDeclarationSyntax propDecl:
+                {
+                    var propName = propDecl.Identifier.Text;
+                    if (propDecl.ExpressionBody != null)
+                    {
+                        // Expression-bodied property → getter function
+                        var expr = EmitExpression(propDecl.ExpressionBody.Expression);
+                        AppendLine($"function {className}.get_{propName}(): {MapTypeNode(propDecl.Type)}");
+                        _indent++;
+                        AppendLine($"return {expr}");
+                        _indent--;
+                        AppendLine("end");
+                        AppendLine();
+                    }
+                    else if (propDecl.Initializer != null)
+                    {
+                        var value = EmitExpression(propDecl.Initializer.Value);
+                        AppendLine($"{className}.{propName} = {value}");
+                    }
+                    else
+                    {
+                        // Auto-property on static class → just a field
+                        AppendLine($"{className}.{propName} = nil :: {MapTypeNode(propDecl.Type)}");
+                    }
+                    break;
+                }
+
+                case EnumDeclarationSyntax nestedEnum:
+                    EmitEnum(nestedEnum);
+                    AppendLine();
+                    break;
+
+                case ClassDeclarationSyntax nestedClass:
+                {
+                    var savedClassName = _currentClassName;
+                    EmitClass(nestedClass);
+                    _currentClassName = savedClassName;
+                    break;
+                }
+
+                case StructDeclarationSyntax nestedStruct:
+                    EmitStruct(nestedStruct);
+                    break;
+
+                case InterfaceDeclarationSyntax nestedIface:
+                    EmitInterface(nestedIface);
+                    break;
+
+                case OperatorDeclarationSyntax:
+                case ConversionOperatorDeclarationSyntax:
+                case ConstructorDeclarationSyntax:
+                case EventFieldDeclarationSyntax:
+                    // Static class operators/ctors/events — skip silently
+                    break;
+
                 default:
                     AppendLine($"-- TODO: unsupported member {member.Kind()}");
                     break;
