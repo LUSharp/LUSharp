@@ -2882,15 +2882,28 @@ public class LuauEmitter
 
             // List<T>.Add(item) → table.insert(list, item)
             // Dictionary<K,V>.Add(key, value) → dict[key] = value
+            // But NOT DateTime.Add(TimeSpan) or other non-collection Add methods
             if (memberName == "Add")
             {
-                if (arguments.Count == 2)
+                // Check if the Add method returns void (collection Add) vs a value (DateTime.Add, etc.)
+                bool isCollectionAdd = true;
+                if (_model != null)
                 {
-                    var key = EmitExpression(arguments[0].Expression);
-                    var val = EmitExpression(arguments[1].Expression);
-                    return $"{luauOwner}[{key}] = {val}";
+                    var symbol = GetSymbol(memberAccess);
+                    if (symbol is IMethodSymbol addMethod && !addMethod.ReturnsVoid)
+                        isCollectionAdd = false;
                 }
-                return $"table.insert({luauOwner}, {argStr})";
+
+                if (isCollectionAdd)
+                {
+                    if (arguments.Count == 2)
+                    {
+                        var key = EmitExpression(arguments[0].Expression);
+                        var val = EmitExpression(arguments[1].Expression);
+                        return $"{luauOwner}[{key}] = {val}";
+                    }
+                    return $"table.insert({luauOwner}, {argStr})";
+                }
             }
 
             // List<T>.Clear() → table.clear(list)
