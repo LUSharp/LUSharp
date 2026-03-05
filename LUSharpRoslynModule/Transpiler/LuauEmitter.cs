@@ -2548,6 +2548,10 @@ public class LuauEmitter
             if (typeStr == "string" && memberName == "Empty")
                 return "\"\"";
 
+            // Environment.NewLine → "\n"
+            if (typeStr == "Environment" && memberName == "NewLine")
+                return "\"\\n\"";
+
             // Predefined type constants accessed via .NET type names (Int32.MaxValue, Double.NaN, etc.)
             if (typeStr is "Int32" or "UInt32" or "Int64" or "Int16" or "UInt16" or "Byte" or "SByte")
             {
