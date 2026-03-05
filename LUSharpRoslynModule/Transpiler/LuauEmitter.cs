@@ -2889,6 +2889,19 @@ public class LuauEmitter
                 return $"__rt.reverse({EmitExpression(arguments[0].Expression)})";
             }
 
+            // Array.CreateInstance(type, size) → table.create(size)
+            if (ownerName == "Array" && memberName == "CreateInstance" && arguments.Count == 2)
+            {
+                var size = EmitExpression(arguments[1].Expression);
+                return $"table.create({size})";
+            }
+
+            // Array.Sort(array) → table.sort(array)
+            if (ownerName == "Array" && memberName == "Sort" && arguments.Count >= 1)
+            {
+                return $"table.sort({EmitExpression(arguments[0].Expression)})";
+            }
+
             // Convert.ToInt32/ToInt64/ToByte(x, ...) → math.floor(tonumber(x))
             // Convert.ToDouble/ToSingle/ToDecimal(x, ...) → tonumber(x)
             // Convert.ToBoolean(x) → (x and true or false) — truthy coercion
