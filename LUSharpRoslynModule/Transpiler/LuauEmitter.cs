@@ -3274,6 +3274,10 @@ public class LuauEmitter
                 return $"{location} = {location} or {value}";
             }
 
+            // GC.SuppressFinalize / GC.Collect → no-op in Luau (no GC control)
+            if (ownerName == "GC")
+                return "-- GC (no-op)";
+
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
             {
