@@ -3493,6 +3493,95 @@ public class LuauEmitter
             return $"{{ {string.Join(", ", elements)} }}";
         }
 
+        // ── .NET BCL type constructors ──
+        if (cleanType == "KeyValuePair")
+        {
+            var argList = objCreate.ArgumentList?.Arguments;
+            if (argList != null && argList.Value.Count == 2)
+            {
+                var k = EmitExpression(argList.Value[0].Expression);
+                var v = EmitExpression(argList.Value[1].Expression);
+                return $"{{ Key = {k}, Value = {v} }}";
+            }
+            return "{ Key = nil, Value = nil }";
+        }
+        if (cleanType == "StringWriter")
+            return "\"\"";
+        if (cleanType == "StringReader")
+        {
+            if (objCreate.ArgumentList?.Arguments.Count > 0)
+                return EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
+            return "\"\"";
+        }
+        if (cleanType == "StringBuilder")
+        {
+            if (objCreate.ArgumentList?.Arguments.Count > 0)
+            {
+                var firstArg = objCreate.ArgumentList.Arguments[0].Expression;
+                if (_model != null)
+                {
+                    var typeInfo = _model.GetTypeInfo(firstArg);
+                    if (typeInfo.Type?.SpecialType == SpecialType.System_String)
+                        return EmitExpression(firstArg);
+                }
+                // Fallback: if it looks like a string arg, use it
+                if (firstArg is LiteralExpressionSyntax { Token.Value: string })
+                    return EmitExpression(firstArg);
+            }
+            return "\"\"";
+        }
+        if (cleanType is "ArgumentException" or "ArgumentNullException" or "ArgumentOutOfRangeException"
+            or "InvalidOperationException" or "NotSupportedException" or "NotImplementedException"
+            or "FormatException" or "OverflowException" or "IndexOutOfRangeException")
+        {
+            // Exception constructors: new XException("message") → just the message string for error()
+            // But since these are used in `throw new ...` which becomes `error(...)`,
+            // we construct a table so the throw site can use it
+            if (objCreate.ArgumentList?.Arguments.Count > 0)
+            {
+                var msg = EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
+                return $"{{ Message = {msg} }}";
+            }
+            return $"{{ Message = \"{cleanType}\" }}";
+        }
+        if (cleanType == "Regex")
+        {
+            // new Regex(pattern, options?) → { Pattern = pattern, Options = options }
+            if (objCreate.ArgumentList?.Arguments.Count >= 1)
+            {
+                var pattern = EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
+                if (objCreate.ArgumentList.Arguments.Count >= 2)
+                {
+                    var options = EmitExpression(objCreate.ArgumentList.Arguments[1].Expression);
+                    return $"{{ Pattern = {pattern}, Options = {options} }}";
+                }
+                return $"{{ Pattern = {pattern}, Options = 0 }}";
+            }
+        }
+        if (cleanType == "Uri")
+        {
+            if (objCreate.ArgumentList?.Arguments.Count >= 1)
+                return EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
+        }
+        if (cleanType == "Version")
+        {
+            // new Version(major, minor, ...) → { Major = x, Minor = y, ... }
+            if (objCreate.ArgumentList?.Arguments.Count >= 2)
+            {
+                var fieldNames = new[] { "Major", "Minor", "Build", "Revision" };
+                var entries = objCreate.ArgumentList.Arguments
+                    .Select((a, i) => $"{(i < fieldNames.Length ? fieldNames[i] : $"_{i}")} = {EmitExpression(a.Expression)}");
+                return $"{{ {string.Join(", ", entries)} }}";
+            }
+        }
+        if (cleanType == "Tuple")
+        {
+            var items = objCreate.ArgumentList?.Arguments.Select(a => EmitExpression(a.Expression)) ?? Enumerable.Empty<string>();
+            return $"{{ {string.Join(", ", items)} }}";
+        }
+        if (cleanType == "CancellationToken")
+            return "{ IsCancellationRequested = false }";
+
         return $"{cleanType}.new({argStr})";
     }
 

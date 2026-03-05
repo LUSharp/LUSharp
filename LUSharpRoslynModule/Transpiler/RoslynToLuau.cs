@@ -556,7 +556,14 @@ public class RoslynToLuau
             or "MemberTypes" or "BindingFlags"
             or "DateTimeStyles" or "RegexOptions" or "CultureInfo"
             or "TraceLevel" or "Activator" or "Volatile"
-            or "Attribute" or "Assembly";
+            or "Attribute" or "Assembly"
+            or "StringWriter" or "StringReader" or "KeyValuePair"
+            or "ArgumentException" or "ArgumentNullException"
+            or "ArgumentOutOfRangeException" or "InvalidOperationException"
+            or "NotSupportedException" or "NotImplementedException"
+            or "FormatException" or "OverflowException" or "IndexOutOfRangeException"
+            or "Regex" or "Uri" or "Version" or "Tuple"
+            or "CancellationToken";
     }
 }
 
