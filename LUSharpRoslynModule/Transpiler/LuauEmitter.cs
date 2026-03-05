@@ -2723,6 +2723,11 @@ public class LuauEmitter
     private string EmitMemberInvocation(MemberAccessExpressionSyntax memberAccess, SeparatedSyntaxList<ArgumentSyntax> arguments)
     {
         var memberName = memberAccess.Name.Identifier.Text;
+
+        // ── Strip .ConfigureAwait(bool) — no-op in Luau ──
+        if (memberName == "ConfigureAwait")
+            return EmitExpression(memberAccess.Expression);
+
         var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
         var argStr = string.Join(", ", args);
 
