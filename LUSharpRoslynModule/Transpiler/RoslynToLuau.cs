@@ -10,7 +10,7 @@ public class RoslynToLuau
     /// Global overload registry: (TypeName, MethodName, ArgCount) → DisambiguatedName.
     /// Pre-populated by PreScan() so cross-type calls resolve overloaded names correctly.
     /// </summary>
-    private Dictionary<(string TypeName, string MethodName, int ArgCount), string> _globalOverloadMap = new();
+    private Dictionary<(string TypeName, string MethodName, int ArgCount, string FirstParamType), string> _globalOverloadMap = new();
 
     /// <summary>
     /// Maps each type name to the module file name (without extension) that contains it.
@@ -215,6 +215,9 @@ public class RoslynToLuau
             }
         }
 
+        // Track emitted names per (name, paramCount) to detect same-count overloads
+        var emittedPerKey = new Dictionary<(string, int), List<(string firstParamType, string emitName)>>();
+
         foreach (var member in members)
         {
             if (member is not MethodDeclarationSyntax method) continue;
@@ -237,7 +240,10 @@ public class RoslynToLuau
                 }
             }
 
-            _globalOverloadMap[(typeName, name, paramCount)] = emitName;
+            // Use first param type in the key to disambiguate same-count overloads
+            var firstParamType = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+            firstParamType = firstParamType.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+            _globalOverloadMap[(typeName, name, paramCount, firstParamType)] = emitName;
         }
     }
 

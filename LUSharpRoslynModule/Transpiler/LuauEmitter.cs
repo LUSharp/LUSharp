@@ -102,7 +102,7 @@ public class LuauEmitter
     /// Used so call sites can resolve the correct overloaded variant.
     /// Key: (OriginalName, ParamCount) → DisambiguatedName
     /// </summary>
-    private Dictionary<(string Name, int ParamCount), string> _overloadMap = new();
+    private Dictionary<(string Name, int ParamCount, string FirstParamType), string> _overloadMap = new();
 
     /// <summary>
     /// Set of type names referenced as member access (e.g., SyntaxKind.X) that need requires.
@@ -167,7 +167,7 @@ public class LuauEmitter
     /// Global overload registry from pre-scan: (TypeName, MethodName, ArgCount) → DisambiguatedName.
     /// Set by the orchestrator before emission for cross-type overload resolution.
     /// </summary>
-    public Dictionary<(string TypeName, string MethodName, int ArgCount), string> GlobalOverloadMap { get; set; } = new();
+    public Dictionary<(string TypeName, string MethodName, int ArgCount, string FirstParamType), string> GlobalOverloadMap { get; set; } = new();
 
     /// <summary>
     /// Global base class map: ClassName → BaseClassName.
@@ -815,7 +815,7 @@ public class LuauEmitter
             _constFields.Add(f.Name);
 
         // Build overload disambiguation map
-        _overloadMap = new Dictionary<(string Name, int ParamCount), string>();
+        _overloadMap = new Dictionary<(string Name, int ParamCount, string FirstParamType), string>();
         var methodNameCounts = new Dictionary<string, int>();
         var methodNameSeen = new Dictionary<string, int>();
         foreach (var method in methods)
@@ -844,7 +844,9 @@ public class LuauEmitter
                 }
             }
 
-            _overloadMap[(name, paramCount)] = emitName;
+            var fpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+            fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+            _overloadMap[(name, paramCount, fpt)] = emitName;
         }
 
         // ── Phase 2: type self ──
@@ -923,7 +925,9 @@ public class LuauEmitter
         {
             var name = method.Identifier.Text;
             int paramCount = method.ParameterList.Parameters.Count;
-            string emitName = _overloadMap.GetValueOrDefault((name, paramCount), name);
+            var methodFpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+            methodFpt = methodFpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+            string emitName = _overloadMap.GetValueOrDefault((name, paramCount, methodFpt), name);
 
             // Abstract methods have no body — emit as a comment stub only
             bool isAbstract = method.Modifiers.Any(SyntaxKind.AbstractKeyword);
@@ -999,7 +1003,7 @@ public class LuauEmitter
         _nestedTypeNames = new HashSet<string>();
         _constFields = new HashSet<string>();
         _instanceFieldTypes = new Dictionary<string, string>();
-        _overloadMap = new Dictionary<(string Name, int ParamCount), string>();
+        _overloadMap = new Dictionary<(string Name, int ParamCount, string FirstParamType), string>();
     }
 
     /// <summary>
@@ -2764,11 +2768,33 @@ public class LuauEmitter
     /// Resolve an overloaded method name using the overload map.
     /// Falls back to the original name if no overload is found.
     /// </summary>
-    private string ResolveOverloadedName(string name, int argCount)
+    private string ResolveOverloadedName(string name, int argCount, string firstArgType = "")
     {
-        if (_overloadMap.TryGetValue((name, argCount), out var resolved))
-            return resolved;
+        // Try exact match with first param type
+        if (firstArgType != "" && _overloadMap.TryGetValue((name, argCount, firstArgType), out var exactMatch))
+            return exactMatch;
+        // Fall back to any matching (name, argCount) entry
+        foreach (var kvp in _overloadMap)
+        {
+            if (kvp.Key.Name == name && kvp.Key.ParamCount == argCount)
+                return kvp.Value;
+        }
         return name;
+    }
+
+    private bool TryResolveGlobalOverload(string typeName, string methodName, int argCount, out string resolvedName)
+    {
+        // Try any matching entry (ignore first param type on caller side)
+        foreach (var kvp in GlobalOverloadMap)
+        {
+            if (kvp.Key.TypeName == typeName && kvp.Key.MethodName == methodName && kvp.Key.ArgCount == argCount)
+            {
+                resolvedName = kvp.Value;
+                return true;
+            }
+        }
+        resolvedName = methodName;
+        return false;
     }
 
     /// <summary>
@@ -3070,7 +3096,7 @@ public class LuauEmitter
             {
                 // Try to resolve overloaded name via the field's type and global overload map
                 if (_instanceFieldTypes.TryGetValue(ownerName, out var fieldType)
-                    && GlobalOverloadMap.TryGetValue((fieldType, memberName, args.Count), out var resolvedName))
+                    && TryResolveGlobalOverload(fieldType, memberName, args.Count, out var resolvedName))
                 {
                     // Track the field type as a referenced module (it's used for explicit dispatch)
                     if (fieldType != _currentClassName && !_nestedTypeNames.Contains(fieldType))
