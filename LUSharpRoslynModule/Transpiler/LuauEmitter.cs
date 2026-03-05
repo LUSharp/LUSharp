@@ -1688,14 +1688,19 @@ public class LuauEmitter
     /// Emit a try/catch/finally block using pcall.
     ///   try { body } catch (Exception e) { handler } finally { cleanup }
     /// becomes:
-    ///   local __ok, __err = pcall(function() body end)
+    ///   local __ok, __pcall_ret = pcall(function() body end)
     ///   if not __ok then handler end
     ///   cleanup
+    ///   return __pcall_ret  -- only if try block contains return statements
+    /// pcall returns (true, returnValue) on success, (false, error) on failure.
     /// </summary>
     private void EmitTryCatch(TryStatementSyntax tryStmt)
     {
+        // Check if the try block contains any return statements
+        bool tryHasReturn = tryStmt.Block.DescendantNodes().OfType<ReturnStatementSyntax>().Any();
+
         // Emit pcall wrapper for the try block
-        AppendLine("local __ok, __err = pcall(function()");
+        AppendLine("local __ok, __pcall_ret = pcall(function()");
         _indent++;
         EmitBlock(tryStmt.Block);
         _indent--;
@@ -1721,8 +1726,8 @@ public class LuauEmitter
                     if (!string.IsNullOrEmpty(varName))
                     {
                         _currentMethodLocals.Add(varName);
-                        // Create a local table with a Message property for compatibility
-                        AppendLine($"local {varName}_Message = tostring(__err)");
+                        // __pcall_ret is the error when __ok is false
+                        AppendLine($"local {varName}_Message = tostring(__pcall_ret)");
                         _currentMethodLocals.Add($"{varName}_Message");
                     }
                 }
@@ -1737,6 +1742,13 @@ public class LuauEmitter
         if (tryStmt.Finally != null)
         {
             EmitBlock(tryStmt.Finally.Block);
+        }
+
+        // Forward the try block's return value if it contained return statements
+        // pcall returns (true, retval) on success — we need to propagate retval
+        if (tryHasReturn)
+        {
+            AppendLine("if __ok then return __pcall_ret end");
         }
     }
 
