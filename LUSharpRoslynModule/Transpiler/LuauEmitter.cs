@@ -2781,8 +2781,11 @@ public class LuauEmitter
             return $"({receiver} or 0)";
         }
 
-        // ── Nullable<T>.HasValue → (x ~= nil) ──
-        // (handled in EmitMemberAccess, but method call form here for completeness)
+        // ── String case methods — work on any expression receiver ──
+        if (memberName is "ToLower" or "ToLowerInvariant" && arguments.Count == 0)
+            return $"string.lower({EmitExpression(memberAccess.Expression)})";
+        if (memberName is "ToUpper" or "ToUpperInvariant" && arguments.Count == 0)
+            return $"string.upper({EmitExpression(memberAccess.Expression)})";
 
         var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
         var argStr = string.Join(", ", args);
