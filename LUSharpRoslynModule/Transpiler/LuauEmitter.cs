@@ -2089,6 +2089,19 @@ public class LuauEmitter
             AwaitExpressionSyntax awaitExpr => EmitAwait(awaitExpr),
             TypeOfExpressionSyntax typeOf => $"\"{typeOf.Type}\"",
             InitializerExpressionSyntax initExpr => EmitInitializerExpression(initExpr),
+            DeclarationExpressionSyntax declExpr => EmitDeclarationExpression(declExpr),
+            ImplicitArrayCreationExpressionSyntax implicitArray => EmitImplicitArrayCreation(implicitArray),
+            CheckedExpressionSyntax checkedExpr => EmitExpression(checkedExpr.Expression), // checked/unchecked → just emit inner
+            GenericNameSyntax genericName => genericName.Identifier.Text, // Generic<T> → just the name
+            MemberBindingExpressionSyntax memberBinding => $".{memberBinding.Name.Identifier.Text}",
+            SizeOfExpressionSyntax sizeOf => $"--[[sizeof({sizeOf.Type})]] 0",
+            TupleExpressionSyntax tuple => EmitTupleExpression(tuple),
+            RangeExpressionSyntax range => EmitRangeExpression(range),
+            RefExpressionSyntax refExpr => EmitExpression(refExpr.Expression), // ref → just emit inner
+            StackAllocArrayCreationExpressionSyntax stackAlloc => EmitArrayCreation(stackAlloc),
+            AnonymousObjectCreationExpressionSyntax anonObj => EmitAnonymousObjectCreation(anonObj),
+            QueryExpressionSyntax queryExpr => EmitQueryExpression(queryExpr),
+            PredefinedTypeSyntax predefined => predefined.Keyword.Text, // int, string → literal type name
             _ => $"--[[TODO: {expr.Kind()}]] nil"
         };
     }
@@ -2679,6 +2692,29 @@ public class LuauEmitter
             if (typeStr == "string" && memberName == "IsNullOrEmpty" && args.Count == 1)
             {
                 return $"({args[0]} == nil or {args[0]} == \"\")";
+            }
+
+            // Try MethodMapper fallback for predefined type calls (string.Equals, int.Parse, etc.)
+            // Map C# keyword to .NET type name for lookup
+            var dotNetTypeName = typeStr switch
+            {
+                "string" => "String",
+                "int" => "Int32",
+                "long" => "Int64",
+                "double" => "Double",
+                "float" => "Single",
+                "bool" => "Boolean",
+                "char" => "Char",
+                "byte" => "Byte",
+                "short" => "Int16",
+                "decimal" => "Decimal",
+                _ => typeStr,
+            };
+            var mapped = MethodMapper.TryRewriteByName(dotNetTypeName, memberName, "", args.Select(a => a).ToArray());
+            if (mapped != null)
+            {
+                if (mapped.Contains("__rt.")) NeedsRuntime = true;
+                return mapped;
             }
 
             return $"--[[TODO: {typeStr}.{memberName}]] nil";
@@ -3688,6 +3724,153 @@ public class LuauEmitter
     {
         var items = initExpr.Expressions.Select(e => EmitExpression(e));
         return $"{{ {string.Join(", ", items)} }}";
+    }
+
+    private string EmitDeclarationExpression(DeclarationExpressionSyntax declExpr)
+    {
+        // `out var x` or `out int x` → just emit the variable name
+        // The variable declaration is handled by the surrounding statement
+        if (declExpr.Designation is SingleVariableDesignationSyntax svd)
+        {
+            var varName = svd.Identifier.Text;
+            if (varName != "_") // discard
+            {
+                _currentMethodLocals.Add(varName);
+            }
+            return varName;
+        }
+        if (declExpr.Designation is DiscardDesignationSyntax)
+            return "_";
+        if (declExpr.Designation is ParenthesizedVariableDesignationSyntax parenDesig)
+        {
+            var names = parenDesig.Variables.Select(v =>
+                v is SingleVariableDesignationSyntax s ? s.Identifier.Text : "_");
+            return string.Join(", ", names);
+        }
+        return $"--[[TODO: decl {declExpr.Designation.Kind()}]] nil";
+    }
+
+    private string EmitImplicitArrayCreation(ImplicitArrayCreationExpressionSyntax implicitArray)
+    {
+        // new[] { 1, 2, 3 } → { 1, 2, 3 }
+        if (implicitArray.Initializer != null)
+        {
+            var items = implicitArray.Initializer.Expressions.Select(e => EmitExpression(e));
+            return $"{{ {string.Join(", ", items)} }}";
+        }
+        return "{}";
+    }
+
+    private string EmitTupleExpression(TupleExpressionSyntax tuple)
+    {
+        var items = tuple.Arguments.Select(a => EmitExpression(a.Expression));
+        return $"{{ {string.Join(", ", items)} }}";
+    }
+
+    private string EmitRangeExpression(RangeExpressionSyntax range)
+    {
+        // Range expressions (x..y) — emit as a table { start, end }
+        var left = range.LeftOperand != null ? EmitExpression(range.LeftOperand) : "1";
+        var right = range.RightOperand != null ? EmitExpression(range.RightOperand) : "-1";
+        return $"{{ {left}, {right} }}";
+    }
+
+    private string EmitArrayCreation(StackAllocArrayCreationExpressionSyntax stackAlloc)
+    {
+        // stackalloc T[n] → table.create(n, default)
+        if (stackAlloc.Type is ArrayTypeSyntax arrayType && arrayType.RankSpecifiers.Count > 0)
+        {
+            var rank = arrayType.RankSpecifiers[0];
+            if (rank.Sizes.Count > 0 && rank.Sizes[0] is not OmittedArraySizeExpressionSyntax)
+            {
+                var size = EmitExpression(rank.Sizes[0]);
+                return $"table.create({size}, 0)";
+            }
+        }
+        if (stackAlloc.Initializer != null)
+        {
+            var items = stackAlloc.Initializer.Expressions.Select(e => EmitExpression(e));
+            return $"{{ {string.Join(", ", items)} }}";
+        }
+        return "{}";
+    }
+
+    private string EmitAnonymousObjectCreation(AnonymousObjectCreationExpressionSyntax anonObj)
+    {
+        // new { X = 1, Y = 2 } → { X = 1, Y = 2 }
+        var parts = new List<string>();
+        foreach (var init in anonObj.Initializers)
+        {
+            var name = init.NameEquals?.Name.Identifier.Text ?? EmitExpression(init.Expression);
+            var value = EmitExpression(init.Expression);
+            if (init.NameEquals != null)
+                parts.Add($"{name} = {value}");
+            else
+                parts.Add(value);
+        }
+        return $"{{ {string.Join(", ", parts)} }}";
+    }
+
+    private string EmitQueryExpression(QueryExpressionSyntax queryExpr)
+    {
+        // LINQ query syntax → chained __rt calls
+        // Simple approach: emit the from clause source and chain operations
+        var source = EmitExpression(queryExpr.FromClause.Expression);
+        var result = source;
+
+        foreach (var clause in queryExpr.Body.Clauses)
+        {
+            switch (clause)
+            {
+                case WhereClauseSyntax where:
+                    var pred = EmitExpression(where.Condition);
+                    var rangeVar = queryExpr.FromClause.Identifier.Text;
+                    result = $"__rt.where({result}, function({rangeVar}) return {pred} end)";
+                    NeedsRuntime = true;
+                    break;
+                case OrderByClauseSyntax orderBy:
+                    foreach (var ordering in orderBy.Orderings)
+                    {
+                        var key = EmitExpression(ordering.Expression);
+                        var desc = ordering.AscendingOrDescendingKeyword.IsKind(SyntaxKind.DescendingKeyword);
+                        var fn = desc ? "orderByDescending" : "orderBy";
+                        var rv = queryExpr.FromClause.Identifier.Text;
+                        result = $"__rt.{fn}({result}, function({rv}) return {key} end)";
+                        NeedsRuntime = true;
+                    }
+                    break;
+                case LetClauseSyntax let:
+                    // Let clauses create intermediate variables — complex to inline, emit TODO
+                    result = $"--[[TODO: let clause]] {result}";
+                    break;
+                case FromClauseSyntax fromClause:
+                    // Additional from = SelectMany
+                    result = $"--[[TODO: multiple from]] {result}";
+                    break;
+            }
+        }
+
+        // Handle the select clause
+        if (queryExpr.Body.SelectOrGroup is SelectClauseSyntax select)
+        {
+            var rangeVar = queryExpr.FromClause.Identifier.Text;
+            var selectExpr = EmitExpression(select.Expression);
+            // If select just returns the range variable, skip the projection
+            if (selectExpr != rangeVar)
+            {
+                result = $"__rt.select({result}, function({rangeVar}) return {selectExpr} end)";
+                NeedsRuntime = true;
+            }
+        }
+        else if (queryExpr.Body.SelectOrGroup is GroupClauseSyntax group)
+        {
+            var rangeVar = queryExpr.FromClause.Identifier.Text;
+            var keyExpr = EmitExpression(group.ByExpression);
+            result = $"__rt.groupBy({result}, function({rangeVar}) return {keyExpr} end)";
+            NeedsRuntime = true;
+        }
+
+        return result;
     }
 
     /// <summary>

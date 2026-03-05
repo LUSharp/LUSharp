@@ -18,14 +18,30 @@ public static class MethodMapper
         var typeName = method.ContainingType?.Name ?? "";
         // Try exact type match first
         if (_map.TryGetValue((typeName, method.Name), out var rewriter))
-            return rewriter(receiver, args, receiverType);
+        {
+            try { return rewriter(receiver, args, receiverType); }
+            catch (IndexOutOfRangeException) { return null; } // args count mismatch
+        }
         // Try base types
         var current = method.ContainingType?.BaseType;
         while (current != null)
         {
             if (_map.TryGetValue((current.Name, method.Name), out rewriter))
-                return rewriter(receiver, args, receiverType);
+            {
+                try { return rewriter(receiver, args, receiverType); }
+                catch (IndexOutOfRangeException) { return null; }
+            }
             current = current.BaseType;
+        }
+        // Try interfaces (for LINQ extension methods on IEnumerable, IList, etc.)
+        if (method.IsExtensionMethod && method.ReducedFrom != null)
+        {
+            var containingName = method.ReducedFrom.ContainingType?.Name ?? "";
+            if (_map.TryGetValue((containingName, method.Name), out rewriter))
+            {
+                try { return rewriter(receiver, args, receiverType); }
+                catch (IndexOutOfRangeException) { return null; }
+            }
         }
         return null;
     }
@@ -157,6 +173,42 @@ public static class MethodMapper
         Register("Math", "Sign", (r, a, _) => $"math.sign({a[0]})");
         Register("Math", "Exp", (r, a, _) => $"math.exp({a[0]})");
         Register("Math", "Truncate", (r, a, _) => $"(if {a[0]} >= 0 then math.floor({a[0]}) else math.ceil({a[0]}))");
+
+        // === Double/Single static ===
+        Register("Double", "IsNaN", (r, a, _) => $"({a[0]} ~= {a[0]})");
+        Register("Double", "IsInfinity", (r, a, _) => $"({a[0]} == math.huge or {a[0]} == -math.huge)");
+        Register("Double", "IsPositiveInfinity", (r, a, _) => $"({a[0]} == math.huge)");
+        Register("Double", "IsNegativeInfinity", (r, a, _) => $"({a[0]} == -math.huge)");
+        Register("Single", "IsNaN", (r, a, _) => $"({a[0]} ~= {a[0]})");
+        Register("Single", "IsInfinity", (r, a, _) => $"({a[0]} == math.huge or {a[0]} == -math.huge)");
+
+        // === String comparison methods ===
+        Register("String", "Equals", (r, a, _) => a.Length >= 2
+            ? $"({a[0]} == {a[1]})" // String.Equals(a, b) or String.Equals(a, b, comparison)
+            : $"({r} == {a[0]})");  // s.Equals(other)
+        Register("String", "Compare", (r, a, _) => $"(if {a[0]} < {a[1]} then -1 elseif {a[0]} > {a[1]} then 1 else 0)");
+        Register("String", "CompareOrdinal", (r, a, _) => $"(if {a[0]} < {a[1]} then -1 elseif {a[0]} > {a[1]} then 1 else 0)");
+
+        // === Char invariant methods ===
+        Register("Char", "ToLowerInvariant", (r, a, _) => $"string.byte(string.lower(string.char({a[0]})))");
+        Register("Char", "ToUpperInvariant", (r, a, _) => $"string.byte(string.upper(string.char({a[0]})))");
+        Register("Char", "IsNumber", (r, a, _) => $"({a[0]} >= 48 and {a[0]} <= 57)");
+        Register("Char", "IsSeparator", (r, a, _) => $"(string.match(string.char({a[0]}), \"%s\") ~= nil)");
+        Register("Char", "IsControl", (r, a, _) => $"(string.match(string.char({a[0]}), \"%c\") ~= nil)");
+        Register("Char", "IsSurrogate", (r, a, _) => $"({a[0]} >= 0xD800 and {a[0]} <= 0xDFFF)");
+        Register("Char", "IsHighSurrogate", (r, a, _) => $"({a[0]} >= 0xD800 and {a[0]} <= 0xDBFF)");
+        Register("Char", "IsLowSurrogate", (r, a, _) => $"({a[0]} >= 0xDC00 and {a[0]} <= 0xDFFF)");
+
+        // === Boolean ===
+        Register("Boolean", "TryParse", (r, a, _) => $"(string.lower({a[0]}) == \"true\" or string.lower({a[0]}) == \"false\")");
+
+        // === Decimal ===
+        Register("Decimal", "Parse", (r, a, _) => $"tonumber({a[0]})");
+        Register("Decimal", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
+
+        // === Int64/Long ===
+        Register("Int64", "Parse", (r, a, _) => $"tonumber({a[0]})");
+        Register("Int64", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
 
         // === Convert ===
         Register("Convert", "ToInt32", (r, a, _) => $"math.floor(tonumber({a[0]}))");

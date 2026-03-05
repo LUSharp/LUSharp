@@ -16,6 +16,7 @@ internal class Program
             Console.WriteLine("  transpile <file.cs>       Transpile a single C# file to Luau");
             Console.WriteLine("  transpile-all             Transpile all files in RoslynSource/");
             Console.WriteLine("  reference <command>       Run reference test harness (self-emit, transpiler, ...)");
+            Console.WriteLine("  transpile-project <dir>   Transpile all .cs files in a directory (recursive)");
             return 1;
         }
 
@@ -30,6 +31,9 @@ internal class Program
                 return TranspileFile(args[1]);
             case "transpile-all":
                 return TranspileAll();
+            case "transpile-project":
+                if (args.Length < 2) { Console.Error.WriteLine("Usage: transpile-project <directory>"); return 1; }
+                return TranspileProject(args[1]);
             case "reference":
                 return RunReference(args.Skip(1).ToArray());
             default:
@@ -222,6 +226,90 @@ internal class Program
         Console.WriteLine();
         Console.WriteLine($"Transpile complete: {succeeded} succeeded, {failed} failed ({csFiles.Length} total)");
         return failed > 0 ? 1 : 0;
+    }
+
+    static int TranspileProject(string projectDir)
+    {
+        if (!Directory.Exists(projectDir))
+        {
+            Console.Error.WriteLine($"Error: directory not found: {projectDir}");
+            return 1;
+        }
+
+        var outDir = Path.Combine(projectDir, "luau-out");
+        Directory.CreateDirectory(outDir);
+
+        // Recursively find all .cs files (exclude obj/, bin/, test directories)
+        var csFiles = Directory.GetFiles(projectDir, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)
+                     && !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar)
+                     && !f.Contains(Path.AltDirectorySeparatorChar + "obj" + Path.AltDirectorySeparatorChar)
+                     && !f.Contains(Path.AltDirectorySeparatorChar + "bin" + Path.AltDirectorySeparatorChar))
+            .ToArray();
+
+        if (csFiles.Length == 0)
+        {
+            Console.WriteLine("No .cs files found in directory.");
+            return 0;
+        }
+
+        Console.WriteLine($"Found {csFiles.Length} C# files in {projectDir}");
+
+        var transpiler = new RoslynToLuau();
+
+        // Pre-scan all files
+        Console.Write("Pre-scanning...");
+        var sourceFiles = csFiles.Select(f => (File.ReadAllText(f), Path.GetFileName(f)));
+        transpiler.PreScan(sourceFiles);
+        Console.WriteLine(" done");
+
+        int succeeded = 0;
+        int failed = 0;
+        int totalTodos = 0;
+
+        foreach (var csFile in csFiles)
+        {
+            var sourceCode = File.ReadAllText(csFile);
+            var fileName = Path.GetFileName(csFile);
+            var relativePath = Path.GetRelativePath(projectDir, csFile);
+
+            try
+            {
+                var result = transpiler.Transpile(sourceCode, fileName);
+
+                if (result.Success)
+                {
+                    var outputName = Path.GetFileNameWithoutExtension(fileName) + ".lua";
+                    var outputPath = Path.Combine(outDir, outputName);
+                    File.WriteAllText(outputPath, result.LuauSource);
+
+                    // Count TODOs in output
+                    var todoCount = result.LuauSource.Split("--[[TODO:").Length - 1;
+                    totalTodos += todoCount;
+
+                    var todoStr = todoCount > 0 ? $"  ({todoCount} TODOs)" : "";
+                    Console.WriteLine($"  OK    {relativePath}{todoStr}");
+                    succeeded++;
+                }
+                else
+                {
+                    Console.Error.WriteLine($"  FAIL  {relativePath}: {result.Errors.FirstOrDefault()}");
+                    failed++;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  CRASH {relativePath}: {ex.Message}");
+                failed++;
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Results: {succeeded} OK, {failed} failed ({csFiles.Length} total)");
+        if (totalTodos > 0)
+            Console.WriteLine($"Remaining TODOs: {totalTodos}");
+        Console.WriteLine($"Output: {outDir}");
+        return 0;
     }
 
     static int RunReference(string[] args)
