@@ -2608,12 +2608,23 @@ public class LuauEmitter
                 return $"{_currentClassName}.{resolvedName}(self, {argStr})";
             }
 
-            // Check if this is a local function (SemanticModel can tell us)
+            // SemanticModel: resolve local functions and inherited instance methods
             if (_model != null)
             {
                 var symbol = GetSymbol(methodName);
-                if (symbol is IMethodSymbol ms && ms.MethodKind == MethodKind.LocalFunction)
-                    return $"{resolvedName}({argStr})";
+                if (symbol is IMethodSymbol ms)
+                {
+                    if (ms.MethodKind == MethodKind.LocalFunction)
+                        return $"{resolvedName}({argStr})";
+
+                    // Inherited instance method called by bare name → add self dispatch
+                    if (!ms.IsStatic && ms.MethodKind == MethodKind.Ordinary && _currentClassName != null)
+                    {
+                        if (string.IsNullOrEmpty(argStr))
+                            return $"{_currentClassName}.{resolvedName}(self)";
+                        return $"{_currentClassName}.{resolvedName}(self, {argStr})";
+                    }
+                }
             }
 
             // Calls to static methods in the same class → ClassName.MethodName(...)
