@@ -3695,6 +3695,11 @@ public class LuauEmitter
         var methodName = methodBinding.Name.Identifier.Text;
         var args = arguments.Select(a => EmitExpression(a.Expression));
         var argStr = string.Join(", ", args);
+
+        // ?.ToString() → tostring(target)
+        if (methodName == "ToString" && arguments.Count == 0)
+            return $"tostring({target})";
+
         return $"{target}:{methodName}({argStr})";
     }
 
