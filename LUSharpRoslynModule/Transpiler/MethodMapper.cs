@@ -202,11 +202,88 @@ public static class MethodMapper
         Register("Array", "Sort", (r, a, _) => $"table.sort({a[0]})");
         Register("Array", "Resize", (r, a, _) => $"-- Array.Resize not directly supported");
 
-        // === Enumerable (LINQ) — maps to runtime helpers ===
-        Register("Enumerable", "Range", (r, a, _) =>
-            $"(function() local __t = {{}}; for __i = {a[0]}, {a[0]} + {a[1]} - 1 do table.insert(__t, __i) end; return __t end)()");
-        Register("Enumerable", "Repeat", (r, a, _) =>
-            $"(function() local __t = {{}}; for __i = 1, {a[1]} do table.insert(__t, {a[0]}) end; return __t end)()");
+        // === Enumerable (LINQ) — static methods ===
+        Register("Enumerable", "Range", (r, a, _) => $"__rt.range({a[0]}, {a[1]})");
+        Register("Enumerable", "Repeat", (r, a, _) => $"__rt.repeat_({a[0]}, {a[1]})");
         Register("Enumerable", "Empty", (r, a, _) => "{}");
+
+        // === LINQ extension methods (instance-style calls resolved by Roslyn) ===
+        // Where/Select/First/etc. come through as calls on Enumerable but receiver is the collection
+        RegisterLinq("Where", (r, a) => $"__rt.where({r}, {a[0]})");
+        RegisterLinq("Select", (r, a) => $"__rt.select({r}, {a[0]})");
+        RegisterLinq("SelectMany", (r, a) => $"__rt.selectMany({r}, {a[0]})");
+        RegisterLinq("First", (r, a) => a.Length > 0 ? $"__rt.first({r}, {a[0]})" : $"__rt.first({r})");
+        RegisterLinq("FirstOrDefault", (r, a) => a.Length > 0 ? $"__rt.firstOrDefault({r}, {a[0]})" : $"__rt.firstOrDefault({r})");
+        RegisterLinq("Last", (r, a) => a.Length > 0 ? $"__rt.last({r}, {a[0]})" : $"__rt.last({r})");
+        RegisterLinq("LastOrDefault", (r, a) => a.Length > 0 ? $"__rt.lastOrDefault({r}, {a[0]})" : $"__rt.lastOrDefault({r})");
+        RegisterLinq("Single", (r, a) => a.Length > 0 ? $"__rt.single({r}, {a[0]})" : $"__rt.single({r})");
+        RegisterLinq("SingleOrDefault", (r, a) => a.Length > 0 ? $"__rt.singleOrDefault({r}, {a[0]})" : $"__rt.singleOrDefault({r})");
+        RegisterLinq("Any", (r, a) => a.Length > 0 ? $"__rt.any({r}, {a[0]})" : $"__rt.any({r})");
+        RegisterLinq("All", (r, a) => $"__rt.all({r}, {a[0]})");
+        RegisterLinq("Count", (r, a) => a.Length > 0 ? $"__rt.count({r}, {a[0]})" : $"__rt.count({r})");
+        RegisterLinq("Sum", (r, a) => a.Length > 0 ? $"__rt.sum({r}, {a[0]})" : $"__rt.sum({r})");
+        RegisterLinq("Min", (r, a) => a.Length > 0 ? $"__rt.min({r}, {a[0]})" : $"__rt.min({r})");
+        RegisterLinq("Max", (r, a) => a.Length > 0 ? $"__rt.max({r}, {a[0]})" : $"__rt.max({r})");
+        RegisterLinq("Average", (r, a) => a.Length > 0 ? $"__rt.average({r}, {a[0]})" : $"__rt.average({r})");
+        RegisterLinq("OrderBy", (r, a) => $"__rt.orderBy({r}, {a[0]})");
+        RegisterLinq("OrderByDescending", (r, a) => $"__rt.orderByDescending({r}, {a[0]})");
+        RegisterLinq("ThenBy", (r, a) => $"__rt.thenBy({r}, {a[0]})");
+        RegisterLinq("ThenByDescending", (r, a) => $"__rt.thenByDescending({r}, {a[0]})");
+        RegisterLinq("GroupBy", (r, a) => $"__rt.groupBy({r}, {a[0]})");
+        RegisterLinq("Distinct", (r, a) => $"__rt.distinct({r})");
+        RegisterLinq("Zip", (r, a) => a.Length > 1 ? $"__rt.zip({r}, {a[0]}, {a[1]})" : $"__rt.zip({r}, {a[0]})");
+        RegisterLinq("Aggregate", (r, a) => a.Length > 1 ? $"__rt.aggregate({r}, {a[0]}, {a[1]})" : $"__rt.aggregate({r}, nil, {a[0]})");
+        RegisterLinq("Take", (r, a) => $"__rt.take({r}, {a[0]})");
+        RegisterLinq("Skip", (r, a) => $"__rt.skip({r}, {a[0]})");
+        RegisterLinq("TakeWhile", (r, a) => $"__rt.takeWhile({r}, {a[0]})");
+        RegisterLinq("SkipWhile", (r, a) => $"__rt.skipWhile({r}, {a[0]})");
+        RegisterLinq("Concat", (r, a) => $"__rt.concat({r}, {a[0]})");
+        RegisterLinq("Except", (r, a) => $"__rt.except({r}, {a[0]})");
+        RegisterLinq("Intersect", (r, a) => $"__rt.intersect({r}, {a[0]})");
+        RegisterLinq("Union", (r, a) => $"__rt.union({r}, {a[0]})");
+        RegisterLinq("SequenceEqual", (r, a) => $"__rt.sequenceEqual({r}, {a[0]})");
+        RegisterLinq("Contains", (r, a) => $"__rt.contains({r}, {a[0]})");
+        RegisterLinq("ToDictionary", (r, a) => a.Length > 1 ? $"__rt.toDictionary({r}, {a[0]}, {a[1]})" : $"__rt.toDictionary({r}, {a[0]})");
+        RegisterLinq("ToLookup", (r, a) => $"__rt.toLookup({r}, {a[0]})");
+        RegisterLinq("ToHashSet", (r, a) => $"__rt.toHashSet({r})");
+        RegisterLinq("ToList", (r, a) => $"table.clone({r})");
+        RegisterLinq("ToArray", (r, a) => $"table.clone({r})");
+        RegisterLinq("Reverse", (r, a) => $"(function() local __t = table.clone({r}); RT.reverseInPlace(__t); return __t end)()");
+
+        // === List methods that need runtime ===
+        Register("List", "RemoveAll", (r, a, _) => $"__rt.removeAll({r}, {a[0]})");
+        Register("List", "RemoveRange", (r, a, _) => $"__rt.removeRange({r}, {a[0]}, {a[1]})");
+        Register("List", "GetRange", (r, a, _) => $"__rt.getRange({r}, {a[0]}, {a[1]})");
+        Register("List", "Reverse", (r, a, _) => $"__rt.reverseInPlace({r})");
+
+        // === HashSet methods that need runtime ===
+        Register("HashSet", "UnionWith", (r, a, _) => $"__rt.unionWith({r}, {a[0]})");
+        Register("HashSet", "IntersectWith", (r, a, _) => $"__rt.intersectWith({r}, {a[0]})");
+        Register("HashSet", "ExceptWith", (r, a, _) => $"__rt.exceptWith({r}, {a[0]})");
+        Register("HashSet", "SymmetricExceptWith", (r, a, _) => $"__rt.symmetricExceptWith({r}, {a[0]})");
+        Register("HashSet", "IsSubsetOf", (r, a, _) => $"__rt.isSubsetOf({r}, {a[0]})");
+        Register("HashSet", "IsSupersetOf", (r, a, _) => $"__rt.isSupersetOf({r}, {a[0]})");
+        Register("HashSet", "Overlaps", (r, a, _) => $"__rt.overlaps({r}, {a[0]})");
+        Register("HashSet", "SetEquals", (r, a, _) => $"__rt.setEquals({r}, {a[0]})");
+
+        // === Dictionary methods that need runtime ===
+        Register("Dictionary", "TryGetValue", (r, a, _) => $"__rt.tryGetValue({r}, {a[0]})");
+
+        // === Stopwatch ===
+        Register("Stopwatch", "StartNew", (r, a, _) => $"__rt.Stopwatch.StartNew()");
+        Register("Stopwatch", "Start", (r, a, _) => $"__rt.Stopwatch.Start({r})");
+        Register("Stopwatch", "Stop", (r, a, _) => $"__rt.Stopwatch.Stop({r})");
+        Register("Stopwatch", "Reset", (r, a, _) => $"__rt.Stopwatch.Reset({r})");
+        Register("Stopwatch", "Restart", (r, a, _) => $"__rt.Stopwatch.Restart({r})");
+
+        // === Guid ===
+        Register("Guid", "NewGuid", (r, a, _) => $"__rt.newGuid()");
+    }
+
+    private static void RegisterLinq(string methodName, Func<string, string[], string> rewriter)
+    {
+        // LINQ extension methods are resolved by Roslyn as Enumerable.MethodName
+        // but called as receiver.MethodName(args) — receiver is the collection
+        Register("Enumerable", methodName, (r, a, _) => rewriter(r, a));
     }
 }

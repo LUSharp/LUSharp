@@ -255,6 +255,12 @@ public class RoslynToLuau
         // Post-process: insert require() statements for referenced modules
         InsertRequires(emitter, localTypeNames);
 
+        // Insert runtime require if needed
+        if (emitter.NeedsRuntime)
+        {
+            emitter.InsertAfterHeader("local __rt = require(script.Parent.LUSharpRuntime)\n\n");
+        }
+
         return new TranspileResult
         {
             Success = true,

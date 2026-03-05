@@ -92,6 +92,11 @@ public class LuauEmitter
     public HashSet<string> ReferencedModules { get; } = new();
 
     /// <summary>
+    /// Whether this file requires the LUSharpRuntime module (set when LINQ, dictionary helpers, etc. are used).
+    /// </summary>
+    public bool NeedsRuntime { get; private set; }
+
+    /// <summary>
     /// Registry of instance fields for each emitted type.
     /// Used to resolve inherited field access in child classes (same-file inheritance).
     /// Key: type name, Value: set of instance field names.
@@ -2519,7 +2524,11 @@ public class LuauEmitter
                 var obj = EmitExpression(memberAccess.Expression);
                 var receiverType = GetExpressionType(memberAccess.Expression);
                 var result = MethodMapper.TryRewrite(symbol, obj, args.ToArray(), receiverType);
-                if (result != null) return result;
+                if (result != null)
+                {
+                    if (result.Contains("__rt.")) NeedsRuntime = true;
+                    return result;
+                }
             }
         }
 
