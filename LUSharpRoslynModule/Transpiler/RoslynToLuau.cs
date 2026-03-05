@@ -545,7 +545,8 @@ public class RoslynToLuau
             or "Char" or "String" or "Int32" or "Int64" or "UInt32"
             or "Double" or "Single" or "Convert" or "Byte" or "SByte"
             or "Array" or "Enumerable" or "Object" or "Task"
-            or "StringBuilder" or "Environment" or "Interlocked";
+            or "StringBuilder" or "Environment" or "Interlocked"
+            or "Convert" or "Array";
     }
 }
 

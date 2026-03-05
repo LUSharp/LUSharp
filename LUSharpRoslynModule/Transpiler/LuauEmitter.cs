@@ -2855,6 +2855,80 @@ public class LuauEmitter
             if (ownerName == "Array" && memberName == "Empty")
                 return "{}";
 
+            // Array.IndexOf(array, value) → (table.find(array, value) or 0) - 1
+            // Array.IndexOf with 3-4 args also maps (startIndex/count ignored for simplicity)
+            if (ownerName == "Array" && memberName == "IndexOf" && arguments.Count >= 2)
+            {
+                var arr = EmitExpression(arguments[0].Expression);
+                var val = EmitExpression(arguments[1].Expression);
+                return $"((table.find({arr}, {val}) or 0) - 1)";
+            }
+
+            // Array.BinarySearch(array, value) → (table.find(array, value) or 0) - 1
+            // Not a true binary search but semantically equivalent for sorted arrays
+            if (ownerName == "Array" && memberName == "BinarySearch" && arguments.Count >= 2)
+            {
+                var arr = EmitExpression(arguments[0].Expression);
+                var val = EmitExpression(arguments[1].Expression);
+                return $"((table.find({arr}, {val}) or 0) - 1)";
+            }
+
+            // Array.Copy(src, dst, length) → table.move(src, 1, length, 1, dst)
+            if (ownerName == "Array" && memberName == "Copy" && arguments.Count == 3)
+            {
+                var src = EmitExpression(arguments[0].Expression);
+                var dst = EmitExpression(arguments[1].Expression);
+                var len = EmitExpression(arguments[2].Expression);
+                return $"table.move({src}, 1, {len}, 1, {dst})";
+            }
+
+            // Array.Reverse(array) → __rt.reverse(array)
+            if (ownerName == "Array" && memberName == "Reverse" && arguments.Count == 1)
+            {
+                NeedsRuntime = true;
+                return $"__rt.reverse({EmitExpression(arguments[0].Expression)})";
+            }
+
+            // Convert.ToInt32/ToInt64/ToByte(x, ...) → math.floor(tonumber(x))
+            // Convert.ToDouble/ToSingle/ToDecimal(x, ...) → tonumber(x)
+            // Convert.ToBoolean(x) → (x and true or false) — truthy coercion
+            // Convert.ToString(x, ...) → tostring(x)
+            // Convert.ToBase64String(x) → __rt.toBase64(x)
+            // Convert.FromBase64String(x) → __rt.fromBase64(x)
+            if (ownerName is "Convert" or "System")
+            {
+                if (memberName is "ToInt32" or "ToInt64" or "ToByte" or "ToInt16" or "ToUInt16" or "ToUInt32" or "ToUInt64" or "ToSByte")
+                {
+                    var val = EmitExpression(arguments[0].Expression);
+                    return $"math.floor(tonumber({val}))";
+                }
+                if (memberName is "ToDouble" or "ToSingle" or "ToDecimal")
+                {
+                    var val = EmitExpression(arguments[0].Expression);
+                    return $"tonumber({val})";
+                }
+                if (memberName == "ToBoolean" && arguments.Count >= 1)
+                {
+                    var val = EmitExpression(arguments[0].Expression);
+                    return $"(not not {val})";
+                }
+                if (memberName == "ToString" && arguments.Count >= 1 && ownerName == "Convert")
+                {
+                    var val = EmitExpression(arguments[0].Expression);
+                    return $"tostring({val})";
+                }
+                if (memberName == "ToBase64String" && arguments.Count >= 1)
+                {
+                    NeedsRuntime = true;
+                    return $"__rt.toBase64({EmitExpression(arguments[0].Expression)})";
+                }
+                if (memberName == "FromBase64String" && arguments.Count >= 1)
+                {
+                    NeedsRuntime = true;
+                    return $"__rt.fromBase64({EmitExpression(arguments[0].Expression)})";
+                }
+            }
+
             // object.ReferenceEquals(a, b) → rawequal(a, b)
             if (memberName == "ReferenceEquals" && arguments.Count == 2)
                 return $"rawequal({EmitExpression(arguments[0].Expression)}, {EmitExpression(arguments[1].Expression)})";
@@ -2966,6 +3040,12 @@ public class LuauEmitter
             if (memberName == "ToString" && args.Count == 0)
             {
                 return $"tostring({luauOwner})";
+            }
+
+            // .GetType() → typeof(obj)
+            if (memberName == "GetType" && args.Count == 0)
+            {
+                return $"typeof({luauOwner})";
             }
 
             // If the owner is an instance field, dispatch the method call.
@@ -3704,6 +3784,10 @@ public class LuauEmitter
         // ?.ToString() → tostring(target)
         if (methodName == "ToString" && arguments.Count == 0)
             return $"tostring({target})";
+
+        // ?.GetType() → typeof(target)
+        if (methodName == "GetType" && arguments.Count == 0)
+            return $"typeof({target})";
 
         return $"{target}:{methodName}({argStr})";
     }
