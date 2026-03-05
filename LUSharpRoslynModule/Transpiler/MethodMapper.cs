@@ -99,7 +99,18 @@ public static class MethodMapper
         Register("String", "IsNullOrEmpty", (r, a, _) => $"({a[0]} == nil or {a[0]} == \"\")");
         Register("String", "IsNullOrWhiteSpace", (r, a, _) => $"({a[0]} == nil or string.match({a[0]}, \"^%s*$\") ~= nil)");
         Register("String", "Join", (r, a, _) => $"table.concat({a[1]}, {a[0]})");
-        Register("String", "Format", (r, a, _) => $"string.format({string.Join(", ", a)})");
+        Register("String", "Format", (r, a, _) =>
+        {
+            // First arg is the format string; convert {0}/{1}/... → %s at compile time if literal
+            var fmt = a[0];
+            if (fmt.StartsWith("\"") && fmt.EndsWith("\""))
+                fmt = System.Text.RegularExpressions.Regex.Replace(fmt, @"\{(\d+)\}", "%s");
+            var rest = a.Skip(1).Select(arg => $"tostring({arg})");
+            var restStr = string.Join(", ", rest);
+            return restStr.Length > 0
+                ? $"string.format({fmt}, {restStr})"
+                : fmt;
+        });
         Register("String", "Concat", (r, a, _) => string.Join(" .. ", a));
 
         // StringUtils.FormatWith (Newtonsoft extension on string)
@@ -108,8 +119,17 @@ public static class MethodMapper
         {
             // a[0] is CultureInfo (skip), a[1..] are the format args
             var formatArgs = a.Skip(1).Select(arg => $"tostring({arg})");
-            // {%d} matches {0}, {1}, etc. in Lua patterns; %%s is literal %s in gsub replacement
-            return $"string.format(string.gsub({r}, \"{{%d}}\", \"%%s\"), {string.Join(", ", formatArgs)})";
+            var joinedArgs = string.Join(", ", formatArgs);
+            // If receiver is a string literal, convert {0}/{1}/... → %s at compile time
+            if (r.StartsWith("\"") && r.EndsWith("\""))
+            {
+                var converted = System.Text.RegularExpressions.Regex.Replace(r, @"\{(\d+)\}", "%s");
+                return joinedArgs.Length > 0
+                    ? $"string.format({converted}, {joinedArgs})"
+                    : converted;
+            }
+            // Dynamic format string — must use runtime gsub
+            return $"string.format(string.gsub({r}, \"{{%d}}\", \"%%s\"), {joinedArgs})";
         });
 
         // === StringBuilder ===
