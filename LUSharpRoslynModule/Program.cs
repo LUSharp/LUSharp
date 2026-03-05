@@ -277,6 +277,7 @@ internal class Program
 
         int succeeded = 0;
         int failed = 0;
+        int skipped = 0;
         int totalTodos = 0;
 
         foreach (var csFile in csFiles)
@@ -291,6 +292,16 @@ internal class Program
 
                 if (result.Success)
                 {
+                    // Skip empty files (header-only — preprocessor-excluded, delegate-only, attribute-only)
+                    var lines = result.LuauSource.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    var hasContent = lines.Any(l => !l.StartsWith("--") && l.Trim().Length > 0);
+                    if (!hasContent)
+                    {
+                        Console.WriteLine($"  SKIP  {relativePath}  (empty — no emittable content)");
+                        skipped++;
+                        continue;
+                    }
+
                     var outputName = Path.GetFileNameWithoutExtension(fileName) + ".lua";
                     var outputPath = Path.Combine(outDir, outputName);
                     File.WriteAllText(outputPath, result.LuauSource);
@@ -334,7 +345,7 @@ internal class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"Results: {succeeded} OK, {failed} failed ({csFiles.Length} total)");
+        Console.WriteLine($"Results: {succeeded} OK, {failed} failed, {skipped} skipped ({csFiles.Length} total)");
         if (totalTodos > 0)
             Console.WriteLine($"Remaining TODOs: {totalTodos}");
         Console.WriteLine($"Output: {outDir}");
