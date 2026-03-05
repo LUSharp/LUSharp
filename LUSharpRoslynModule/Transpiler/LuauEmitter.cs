@@ -3158,12 +3158,28 @@ public class LuauEmitter
 
         // Evaluation order fix: Luau's register-based VM doesn't materialize simple local
         // variable reads into temp registers, so if the right operand is a function call that
-        // mutates a local used on the left, the left sees the post-mutation value.
+        // mutates a field used on the left, the left sees the post-mutation value.
         // C# guarantees left-to-right evaluation. We hoist the left into a temp when:
-        //   1. Left is a simple identifier (bare local variable)
+        //   1. Left is a simple identifier that resolves to a field/property (mutable by calls)
         //   2. Right subtree contains any invocation (could have side effects)
+        // We do NOT hoist locals/parameters — they can't be mutated by a call in Luau.
         string left;
-        if (binary.Left is IdentifierNameSyntax && ContainsInvocation(binary.Right))
+        bool needsHoist = false;
+        if (binary.Left is IdentifierNameSyntax leftIdent && ContainsInvocation(binary.Right))
+        {
+            if (_model != null)
+            {
+                var sym = GetSymbol(leftIdent);
+                // Only hoist fields and properties — locals/params are safe
+                needsHoist = sym is IFieldSymbol or IPropertySymbol;
+            }
+            else
+            {
+                // Without semantic model, conservatively hoist
+                needsHoist = true;
+            }
+        }
+        if (needsHoist)
         {
             var rawLeft = EmitExpression(binary.Left);
             var tempName = $"__eval_{_evalTempCounter++}";
