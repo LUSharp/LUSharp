@@ -108,6 +108,11 @@ public class LuauEmitter
     /// </summary>
     private readonly SemanticModel? _model;
 
+    /// <summary>
+    /// Counter for generating unique temp variable names for evaluation order hoisting.
+    /// </summary>
+    private int _evalTempCounter = 0;
+
     public LuauEmitter(SemanticModel? model = null)
     {
         _model = model;
@@ -2502,6 +2507,12 @@ public class LuauEmitter
 
     private string EmitInvocation(InvocationExpressionSyntax invocation)
     {
+        // Delegate to EmitMemberInvocation early to avoid double-emitting arguments
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            return EmitMemberInvocation(memberAccess, invocation.ArgumentList.Arguments);
+        }
+
         var args = invocation.ArgumentList.Arguments.Select(a => EmitExpression(a.Expression));
         var argStr = string.Join(", ", args);
         int argCount = invocation.ArgumentList.Arguments.Count;
@@ -2547,11 +2558,6 @@ public class LuauEmitter
             }
 
             return $"{resolvedName}({argStr})";
-        }
-
-        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
-        {
-            return EmitMemberInvocation(memberAccess, invocation.ArgumentList.Arguments);
         }
 
         // Fallback
@@ -3053,7 +3059,24 @@ public class LuauEmitter
             }
         }
 
-        var left = EmitExpression(binary.Left);
+        // Evaluation order fix: Luau's register-based VM doesn't materialize simple local
+        // variable reads into temp registers, so if the right operand is a function call that
+        // mutates a local used on the left, the left sees the post-mutation value.
+        // C# guarantees left-to-right evaluation. We hoist the left into a temp when:
+        //   1. Left is a simple identifier (bare local variable)
+        //   2. Right subtree contains any invocation (could have side effects)
+        string left;
+        if (binary.Left is IdentifierNameSyntax && ContainsInvocation(binary.Right))
+        {
+            var rawLeft = EmitExpression(binary.Left);
+            var tempName = $"__eval_{_evalTempCounter++}";
+            AppendLine($"local {tempName} = {rawLeft}");
+            left = tempName;
+        }
+        else
+        {
+            left = EmitExpression(binary.Left);
+        }
         var right = EmitExpression(binary.Right);
 
         // Restore flag if we set it at this level
@@ -3641,6 +3664,26 @@ public class LuauEmitter
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // ────────────────────────────────────────────────────────────────────
+    //  Evaluation order helpers
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Check if an expression subtree contains any invocation (method call, delegate call, etc.)
+    /// that could potentially have side effects on local variables.
+    /// </summary>
+    private static bool ContainsInvocation(ExpressionSyntax expr)
+    {
+        if (expr is InvocationExpressionSyntax or ObjectCreationExpressionSyntax)
+            return true;
+        foreach (var child in expr.DescendantNodes())
+        {
+            if (child is InvocationExpressionSyntax or ObjectCreationExpressionSyntax)
+                return true;
+        }
+        return false;
+    }
+
     //  Output helpers
     // ────────────────────────────────────────────────────────────────────
 
