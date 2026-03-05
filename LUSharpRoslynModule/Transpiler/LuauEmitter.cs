@@ -3581,6 +3581,92 @@ public class LuauEmitter
         }
         if (cleanType == "CancellationToken")
             return "{ IsCancellationRequested = false }";
+        if (cleanType == "DateTime")
+        {
+            var argList = objCreate.ArgumentList?.Arguments;
+            if (argList != null && argList.Value.Count >= 2)
+            {
+                var ticks = EmitExpression(argList.Value[0].Expression);
+                var kind = EmitExpression(argList.Value[1].Expression);
+                return $"{{ Ticks = {ticks}, Kind = {kind} }}";
+            }
+            if (argList != null && argList.Value.Count == 1)
+                return $"{{ Ticks = {EmitExpression(argList.Value[0].Expression)}, Kind = 0 }}";
+            return "{ Ticks = 0, Kind = 0 }";
+        }
+        if (cleanType == "DateTimeOffset")
+        {
+            var argList = objCreate.ArgumentList?.Arguments;
+            if (argList != null && argList.Value.Count >= 2)
+            {
+                var dt = EmitExpression(argList.Value[0].Expression);
+                var offset = EmitExpression(argList.Value[1].Expression);
+                return $"{{ DateTime = {dt}, Offset = {offset} }}";
+            }
+            if (argList != null && argList.Value.Count == 1)
+                return $"{{ DateTime = {EmitExpression(argList.Value[0].Expression)}, Offset = 0 }}";
+            return "{ DateTime = { Ticks = 0, Kind = 0 }, Offset = 0 }";
+        }
+        if (cleanType == "TimeSpan")
+        {
+            var argList = objCreate.ArgumentList?.Arguments;
+            if (argList != null)
+            {
+                return argList.Value.Count switch
+                {
+                    1 => EmitExpression(argList.Value[0].Expression), // TimeSpan(ticks) → ticks
+                    3 => $"({EmitExpression(argList.Value[0].Expression)} * 3600 + {EmitExpression(argList.Value[1].Expression)} * 60 + {EmitExpression(argList.Value[2].Expression)})",
+                    _ => argStr,
+                };
+            }
+            return "0";
+        }
+        if (cleanType == "BigInteger" || cleanType == "decimal")
+        {
+            if (objCreate.ArgumentList?.Arguments.Count >= 1)
+                return EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
+            return "0";
+        }
+        if (cleanType == "Guid")
+        {
+            if (objCreate.ArgumentList?.Arguments.Count >= 1)
+                return EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
+            return "\"00000000-0000-0000-0000-000000000000\"";
+        }
+        // Collection<T>, ReadOnlyCollection<T>, KeyedCollection → {}
+        if (cleanType is "Collection" or "ReadOnlyCollection" or "KeyedCollection"
+            or "PropertyDescriptorCollection" or "NameTable" or "ConcurrentDictionary")
+            return "{}";
+        // string(char[], start, length) → string.sub(chars, start+1, start+length)
+        if (cleanType == "string")
+        {
+            var argList = objCreate.ArgumentList?.Arguments;
+            if (argList != null && argList.Value.Count == 3)
+            {
+                var chars = EmitExpression(argList.Value[0].Expression);
+                var start = EmitExpression(argList.Value[1].Expression);
+                var length = EmitExpression(argList.Value[2].Expression);
+                return $"string.sub({chars}, {start} + 1, {start} + {length})";
+            }
+            if (argList != null && argList.Value.Count == 2)
+            {
+                // string(char, count) → string.rep(char, count)
+                var ch = EmitExpression(argList.Value[0].Expression);
+                var count = EmitExpression(argList.Value[1].Expression);
+                return $"string.rep(string.char({ch}), {count})";
+            }
+            if (argList != null && argList.Value.Count == 1)
+            {
+                // string(char[]) → table.concat(chars)
+                return $"table.concat({EmitExpression(argList.Value[0].Expression)})";
+            }
+        }
+        // EventArgs-like types → {} (just data carriers)
+        if (cleanType is "NotifyCollectionChangedEventArgs" or "ListChangedEventArgs"
+            or "PropertyChangedEventArgs" or "PropertyChangingEventArgs"
+            or "AddingNewEventArgs" or "StreamingContext" or "SerializationInfo"
+            or "DictionaryEntry" or "FormatterConverter")
+            return $"{{ {argStr} }}";
 
         return $"{cleanType}.new({argStr})";
     }
@@ -4403,7 +4489,8 @@ public class LuauEmitter
             or "IFormattable" or "IConvertible" or "ICloneable"
             or "MarshalByRefObject" or "ValueType"
             or "ICollection" or "IList" or "IEnumerable" or "IDictionary"
-            or "ISerializable" or "IDeserializationCallback";
+            or "ISerializable" or "IDeserializationCallback"
+            or "Collection" or "ReadOnlyCollection" or "KeyedCollection";
     }
 
     /// <summary>

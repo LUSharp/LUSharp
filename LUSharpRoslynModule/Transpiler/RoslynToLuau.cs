@@ -563,7 +563,14 @@ public class RoslynToLuau
             or "NotSupportedException" or "NotImplementedException"
             or "FormatException" or "OverflowException" or "IndexOutOfRangeException"
             or "Regex" or "Uri" or "Version" or "Tuple"
-            or "CancellationToken";
+            or "CancellationToken" or "DateTime" or "DateTimeOffset"
+            or "TimeSpan" or "BigInteger" or "Guid" or "Collection"
+            or "ReadOnlyCollection" or "KeyedCollection" or "NameTable"
+            or "ConcurrentDictionary" or "PropertyDescriptorCollection"
+            or "NotifyCollectionChangedEventArgs" or "ListChangedEventArgs"
+            or "PropertyChangedEventArgs" or "PropertyChangingEventArgs"
+            or "AddingNewEventArgs" or "StreamingContext" or "SerializationInfo"
+            or "DictionaryEntry" or "FormatterConverter";
     }
 }
 
