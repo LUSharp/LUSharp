@@ -1713,6 +1713,11 @@ public class LuauEmitter
             ParenthesizedLambdaExpressionSyntax parenLambda => EmitParenthesizedLambda(parenLambda),
             SimpleLambdaExpressionSyntax simpleLambda => EmitSimpleLambda(simpleLambda),
             ConditionalAccessExpressionSyntax conditionalAccess => EmitConditionalAccess(conditionalAccess),
+            InterpolatedStringExpressionSyntax interp => EmitInterpolatedString(interp),
+            IsPatternExpressionSyntax isPattern => EmitIsPattern(isPattern),
+            AwaitExpressionSyntax awaitExpr => EmitAwait(awaitExpr),
+            TypeOfExpressionSyntax typeOf => $"\"{typeOf.Type}\"",
+            InitializerExpressionSyntax initExpr => EmitInitializerExpression(initExpr),
             _ => $"--[[TODO: {expr.Kind()}]] nil"
         };
     }
@@ -1902,9 +1907,26 @@ public class LuauEmitter
         // Handle member access on complex expressions
         var left = EmitExpression(memberAccess.Expression);
 
-        // .Length on arbitrary expression → #expr
+        // .Length/.Count → #expr (for strings, arrays, collections)
         if (memberName == "Length" || memberName == "Count")
         {
+            if (_model != null)
+            {
+                var ownerType = GetExpressionType(memberAccess.Expression);
+                // String, array, List, Queue, Stack, etc. → #
+                if (ownerType?.SpecialType == SpecialType.System_String
+                    || ownerType is IArrayTypeSymbol
+                    || ownerType?.Name is "List" or "Array" or "Queue" or "Stack" or "StringBuilder")
+                {
+                    return $"#{left}";
+                }
+                // Dictionary.Count needs a runtime helper (# doesn't work on dicts)
+                if (ownerType?.Name is "Dictionary" or "ConcurrentDictionary")
+                {
+                    return $"--[[dictCount]] #{left}"; // TODO: replace with __rt.dictCount
+                }
+            }
+            // Fallback: always use # (matches old behavior)
             return $"#{left}";
         }
 
@@ -2290,11 +2312,19 @@ public class LuauEmitter
 
         var index = EmitExpression(args[0].Expression);
 
-        // Check if the object is likely a string (heuristic: field name starts with _ and
-        // appears to be a string type, or known string variables)
-        // For our use case, _text[_position] → string.byte(self._text, self._position + 1)
-        // We use a heuristic: if the expression is a string-typed field, use string.byte
-        if (IsLikelyStringAccess(elementAccess.Expression))
+        // Check if target is a string → string.byte()
+        if (_model != null)
+        {
+            var receiverType = GetExpressionType(elementAccess.Expression);
+            if (receiverType?.SpecialType == SpecialType.System_String)
+                return $"string.byte({obj}, {index} + 1)";
+
+            // Dictionary access: no 0→1 offset
+            if (receiverType?.Name is "Dictionary" or "IDictionary" or "ConcurrentDictionary"
+                || (receiverType?.AllInterfaces.Any(i => i.Name == "IDictionary") ?? false))
+                return $"{obj}[{index}]";
+        }
+        else if (IsLikelyStringAccess(elementAccess.Expression))
         {
             return $"string.byte({obj}, {index} + 1)";
         }
@@ -2341,6 +2371,20 @@ public class LuauEmitter
 
     private string EmitBinary(BinaryExpressionSyntax binary)
     {
+        // Handle 'is' expression: x is T → type check
+        if (binary.Kind() == SyntaxKind.IsExpression)
+        {
+            var isLeft = EmitExpression(binary.Left);
+            var typeName = binary.Right.ToString();
+            return EmitTypeCheck(isLeft, typeName);
+        }
+
+        // Handle 'as' expression: x as T → just emit x (type erasure in Luau)
+        if (binary.Kind() == SyntaxKind.AsExpression)
+        {
+            return EmitExpression(binary.Left);
+        }
+
         // Handle null-coalescing early (before emitting children) since it has special syntax
         if (binary.Kind() == SyntaxKind.CoalesceExpression)
         {
@@ -3007,5 +3051,121 @@ public class LuauEmitter
         }
         // Fallback: just prepend after header
         _sb.Insert(0, text);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Interpolated strings: $"..." → `...`
+    // ────────────────────────────────────────────────────────────────────
+
+    private string EmitInterpolatedString(InterpolatedStringExpressionSyntax interp)
+    {
+        var sb = new StringBuilder("`");
+        foreach (var content in interp.Contents)
+        {
+            if (content is InterpolatedStringTextSyntax text)
+            {
+                var raw = text.TextToken.Text;
+                raw = raw.Replace("\\n", "\n").Replace("\\t", "\t")
+                         .Replace("\\r", "\r").Replace("\\\"", "\"");
+                sb.Append(raw);
+            }
+            else if (content is InterpolationSyntax hole)
+            {
+                sb.Append('{');
+                sb.Append(EmitExpression(hole.Expression));
+                sb.Append('}');
+            }
+        }
+        sb.Append('`');
+        return sb.ToString();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  is/as pattern matching
+    // ────────────────────────────────────────────────────────────────────
+
+    private string EmitIsPattern(IsPatternExpressionSyntax isPattern)
+    {
+        var left = EmitExpression(isPattern.Expression);
+        return EmitPattern(left, isPattern.Pattern);
+    }
+
+    private string EmitPattern(string subject, PatternSyntax pattern)
+    {
+        return pattern switch
+        {
+            ConstantPatternSyntax cp => $"{subject} == {EmitExpression(cp.Expression)}",
+            DeclarationPatternSyntax dp => EmitDeclarationPattern(subject, dp),
+            UnaryPatternSyntax np when np.IsKind(SyntaxKind.NotPattern) =>
+                $"not ({EmitPattern(subject, np.Pattern)})",
+            BinaryPatternSyntax bp when bp.IsKind(SyntaxKind.OrPattern) =>
+                $"({EmitPattern(subject, bp.Left)} or {EmitPattern(subject, bp.Right)})",
+            BinaryPatternSyntax bp when bp.IsKind(SyntaxKind.AndPattern) =>
+                $"({EmitPattern(subject, bp.Left)} and {EmitPattern(subject, bp.Right)})",
+            RelationalPatternSyntax rp => $"{subject} {rp.OperatorToken.Text} {EmitExpression(rp.Expression)}",
+            DiscardPatternSyntax => "true",
+            TypePatternSyntax tp => EmitTypeCheck(subject, tp.Type.ToString()),
+            VarPatternSyntax => "true", // var pattern always matches
+            _ => $"--[[TODO: pattern {pattern.Kind()}]] true",
+        };
+    }
+
+    private string EmitDeclarationPattern(string subject, DeclarationPatternSyntax dp)
+    {
+        var typeName = dp.Type.ToString();
+        // The variable is declared via the designation — just check the type
+        return EmitTypeCheck(subject, typeName);
+    }
+
+    private string EmitTypeCheck(string subject, string typeName)
+    {
+        return typeName switch
+        {
+            "string" => $"(type({subject}) == \"string\")",
+            "int" or "float" or "double" or "long" or "decimal" or "number" =>
+                $"(type({subject}) == \"number\")",
+            "bool" or "boolean" => $"(type({subject}) == \"boolean\")",
+            _ => $"({subject} ~= nil)" // reference type check
+        };
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  await expression: await expr → direct call or task.wait
+    // ────────────────────────────────────────────────────────────────────
+
+    private string EmitAwait(AwaitExpressionSyntax awaitExpr)
+    {
+        // await Task.Delay(ms) → task.wait(ms / 1000)
+        if (awaitExpr.Expression is InvocationExpressionSyntax invocation
+            && invocation.Expression is MemberAccessExpressionSyntax ma)
+        {
+            var typePart = ma.Expression.ToString();
+            var methodName = ma.Name.Identifier.Text;
+
+            if (typePart == "Task" && methodName == "Delay")
+            {
+                var arg = invocation.ArgumentList.Arguments.FirstOrDefault();
+                if (arg != null)
+                {
+                    var ms = EmitExpression(arg.Expression);
+                    return $"task.wait({ms} / 1000)";
+                }
+            }
+            if (typePart == "Task" && methodName == "Yield")
+                return "task.wait()";
+        }
+
+        // General await → just emit the expression (direct call in Luau)
+        return EmitExpression(awaitExpr.Expression);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Initializer expressions: { expr, expr, ... }
+    // ────────────────────────────────────────────────────────────────────
+
+    private string EmitInitializerExpression(InitializerExpressionSyntax initExpr)
+    {
+        var items = initExpr.Expressions.Select(e => EmitExpression(e));
+        return $"{{ {string.Join(", ", items)} }}";
     }
 }
