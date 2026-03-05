@@ -555,7 +555,8 @@ public class RoslynToLuau
             or "StringComparison" or "TypeCode" or "DateTimeKind"
             or "MemberTypes" or "BindingFlags"
             or "DateTimeStyles" or "RegexOptions" or "CultureInfo"
-            or "TraceLevel";
+            or "TraceLevel" or "Activator" or "Volatile"
+            or "Attribute" or "Assembly";
     }
 }
 

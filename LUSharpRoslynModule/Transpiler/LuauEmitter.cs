@@ -1045,7 +1045,8 @@ public class LuauEmitter
             var baseArgs = ctor.Initializer.ArgumentList.Arguments
                 .Select(a => EmitExpression(a.Expression));
             var baseArgStr = string.Join(", ", baseArgs);
-            AppendLine($"local self = setmetatable({baseClassName}.new({baseArgStr}) :: any, {className})");
+            var baseCall = IsNetFrameworkBaseClass(baseClassName) ? "{}" : $"{baseClassName}.new({baseArgStr})";
+            AppendLine($"local self = setmetatable({baseCall} :: any, {className})");
 
             // Set child-specific field defaults
             foreach (var field in instanceFields)
@@ -1057,7 +1058,8 @@ public class LuauEmitter
         else if (baseClassName != null)
         {
             // Inheritance but no explicit base() call — call parameterless parent constructor
-            AppendLine($"local self = setmetatable({baseClassName}.new() :: any, {className})");
+            var baseCall = IsNetFrameworkBaseClass(baseClassName) ? "{}" : $"{baseClassName}.new()";
+            AppendLine($"local self = setmetatable({baseCall} :: any, {className})");
 
             // Set child-specific field defaults
             foreach (var field in instanceFields)
@@ -1119,7 +1121,8 @@ public class LuauEmitter
         if (baseClassName != null)
         {
             // Inheritance: call parent constructor and re-set metatable to child
-            AppendLine($"local self = setmetatable({baseClassName}.new() :: any, {className})");
+            var baseCall = IsNetFrameworkBaseClass(baseClassName) ? "{}" : $"{baseClassName}.new()";
+            AppendLine($"local self = setmetatable({baseCall} :: any, {className})");
 
             // Set child-specific field defaults
             foreach (var field in instanceFields)
@@ -3002,6 +3005,31 @@ public class LuauEmitter
             }
         }
 
+        // ── Handle nested member access: System.Convert.Method(...) → flatten to Convert.Method ──
+        if (memberAccess.Expression is MemberAccessExpressionSyntax nestedMember
+            && nestedMember.Expression is IdentifierNameSyntax nsIdent
+            && nsIdent.Identifier.Text == "System")
+        {
+            // Rewrite: treat System.Convert.X as Convert.X
+            var innerType = nestedMember.Name.Identifier.Text;
+            if (innerType is "Convert")
+            {
+                if (memberName == "ChangeType" && arguments.Count >= 2)
+                    return EmitExpression(arguments[0].Expression);
+                if (memberName == "FromBase64String" && arguments.Count >= 1)
+                {
+                    NeedsRuntime = true;
+                    return $"__rt.fromBase64({EmitExpression(arguments[0].Expression)})";
+                }
+                if (memberName == "ToDateTime" && arguments.Count >= 1)
+                    return EmitExpression(arguments[0].Expression);
+                if (memberName == "ToChar" && arguments.Count >= 1)
+                    return $"string.char({EmitExpression(arguments[0].Expression)})";
+                if (memberName == "ToString" && arguments.Count >= 1)
+                    return $"tostring({EmitExpression(arguments[0].Expression)})";
+            }
+        }
+
         // ── Handle calls on identifier targets ──
         if (memberAccess.Expression is IdentifierNameSyntax ownerIdent)
         {
@@ -3102,7 +3130,57 @@ public class LuauEmitter
                     NeedsRuntime = true;
                     return $"__rt.fromBase64({EmitExpression(arguments[0].Expression)})";
                 }
+                if (memberName == "FromBase64CharArray" && arguments.Count >= 3)
+                {
+                    NeedsRuntime = true;
+                    // FromBase64CharArray(chars, offset, length) → fromBase64(string.sub(chars, offset+1, offset+length))
+                    var chars = EmitExpression(arguments[0].Expression);
+                    var offset = EmitExpression(arguments[1].Expression);
+                    var length = EmitExpression(arguments[2].Expression);
+                    return $"__rt.fromBase64(string.sub({chars}, {offset} + 1, {offset} + {length}))";
+                }
+                if (memberName == "ToChar" && arguments.Count >= 1)
+                {
+                    var val = EmitExpression(arguments[0].Expression);
+                    return $"string.char({val})";
+                }
+                if (memberName == "ToDateTime" && arguments.Count >= 1)
+                {
+                    // Pass-through: DateTime is a value type, Convert.ToDateTime is mostly identity
+                    return EmitExpression(arguments[0].Expression);
+                }
+                if (memberName == "ChangeType" && arguments.Count >= 2)
+                {
+                    // Best-effort: pass through the value (type coercion not available in Luau)
+                    return EmitExpression(arguments[0].Expression);
+                }
             }
+
+            // Activator.CreateInstance(type) → {} (empty table stub)
+            if (ownerName == "Activator" && memberName == "CreateInstance" && arguments.Count >= 1)
+                return "{}";
+
+            // Volatile.Read(x) → x, Volatile.Write(x, v) → assignment handled at statement level
+            if (ownerName == "Volatile")
+            {
+                if (memberName == "Read" && arguments.Count == 1)
+                    return EmitExpression(arguments[0].Expression);
+                if (memberName == "Write" && arguments.Count == 2)
+                {
+                    // Volatile.Write(ref x, v) — in single-threaded Luau, just assign
+                    var target = EmitExpression(arguments[0].Expression);
+                    var value = EmitExpression(arguments[1].Expression);
+                    return $"(function() {target} = {value} end)()";
+                }
+            }
+
+            // Attribute.GetCustomAttributes(...) → {} (no reflection in Luau)
+            if (ownerName == "Attribute" && memberName == "GetCustomAttributes")
+                return "{}";
+
+            // Assembly.LoadWithPartialName(name) → nil (no assembly loading in Luau)
+            if (ownerName == "Assembly" && memberName == "LoadWithPartialName")
+                return "nil";
 
             // object.ReferenceEquals(a, b) → rawequal(a, b)
             if (memberName == "ReferenceEquals" && arguments.Count == 2)
@@ -4222,6 +4300,21 @@ public class LuauEmitter
         if (string.IsNullOrEmpty(name)) return false;
         // PascalCase heuristic: starts with uppercase, has at least 2 chars
         return char.IsUpper(name[0]) && name.Length >= 2;
+    }
+
+    /// <summary>
+    /// Returns true if the given type name is a .NET framework base class
+    /// that won't have a transpiled Luau module (e.g. Attribute, Exception, EventArgs).
+    /// For these, we emit {} instead of BaseType.new() in constructors.
+    /// </summary>
+    private static bool IsNetFrameworkBaseClass(string name)
+    {
+        return name is "Attribute" or "Exception" or "EventArgs"
+            or "IDisposable" or "IComparable" or "IEquatable"
+            or "IFormattable" or "IConvertible" or "ICloneable"
+            or "MarshalByRefObject" or "ValueType"
+            or "ICollection" or "IList" or "IEnumerable" or "IDictionary"
+            or "ISerializable" or "IDeserializationCallback";
     }
 
     /// <summary>
