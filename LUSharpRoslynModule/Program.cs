@@ -257,6 +257,18 @@ internal class Program
 
         var transpiler = new RoslynToLuau();
 
+        // Detect preprocessor symbols from .csproj file (if present)
+        var csprojFiles = Directory.GetFiles(projectDir, "*.csproj", SearchOption.TopDirectoryOnly);
+        if (csprojFiles.Length > 0)
+        {
+            var symbols = LoadPreprocessorSymbols(csprojFiles[0]);
+            if (symbols.Count > 0)
+            {
+                transpiler.PreprocessorSymbols = symbols;
+                Console.WriteLine($"Loaded {symbols.Count} preprocessor symbols from {Path.GetFileName(csprojFiles[0])}");
+            }
+        }
+
         // Pre-scan all files
         Console.Write("Pre-scanning...");
         var sourceFiles = csFiles.Select(f => (File.ReadAllText(f), Path.GetFileName(f)));
@@ -310,6 +322,39 @@ internal class Program
             Console.WriteLine($"Remaining TODOs: {totalTodos}");
         Console.WriteLine($"Output: {outDir}");
         return 0;
+    }
+
+    /// <summary>
+    /// Load preprocessor symbols from the first DefineConstants in a .csproj file.
+    /// Takes the longest DefineConstants value (most complete target framework).
+    /// </summary>
+    static List<string> LoadPreprocessorSymbols(string csprojPath)
+    {
+        var symbols = new List<string>();
+        try
+        {
+            var content = File.ReadAllText(csprojPath);
+            // Find all <DefineConstants>...</DefineConstants> and pick the longest one
+            var matches = System.Text.RegularExpressions.Regex.Matches(
+                content, @"<DefineConstants>(.*?)</DefineConstants>");
+            string? bestDefines = null;
+            foreach (System.Text.RegularExpressions.Match match in matches)
+            {
+                var defines = match.Groups[1].Value;
+                if (bestDefines == null || defines.Length > bestDefines.Length)
+                    bestDefines = defines;
+            }
+            if (bestDefines != null)
+            {
+                symbols = bestDefines.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                    .Where(s => !s.StartsWith("$("))  // Exclude MSBuild variables
+                    .Select(s => s.Trim())
+                    .Where(s => s.Length > 0)
+                    .ToList();
+            }
+        }
+        catch { /* ignore parse errors */ }
+        return symbols;
     }
 
     static int RunReference(string[] args)

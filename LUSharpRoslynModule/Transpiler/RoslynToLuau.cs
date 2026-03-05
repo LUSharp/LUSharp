@@ -32,6 +32,20 @@ public class RoslynToLuau
     /// </summary>
     private Dictionary<string, SyntaxTree> _syntaxTrees = new();
 
+    /// <summary>
+    /// Preprocessor symbols to define when parsing (e.g., HAVE_ASYNC, HAVE_LINQ).
+    /// Set before calling PreScan() to enable conditional compilation blocks.
+    /// </summary>
+    public List<string> PreprocessorSymbols { get; set; } = new();
+
+    private CSharpParseOptions GetParseOptions()
+    {
+        var options = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Latest);
+        if (PreprocessorSymbols.Count > 0)
+            options = options.WithPreprocessorSymbols(PreprocessorSymbols);
+        return options;
+    }
+
     private static List<MetadataReference> GetBclReferences()
     {
         var refs = new List<MetadataReference>();
@@ -66,7 +80,7 @@ public class RoslynToLuau
 
         foreach (var (sourceCode, fileName) in sourceFiles)
         {
-            var tree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName);
+            var tree = CSharpSyntaxTree.ParseText(sourceCode, GetParseOptions(), path: fileName);
             var root = tree.GetCompilationUnitRoot();
 
             var diagnostics = tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
@@ -174,7 +188,7 @@ public class RoslynToLuau
 
     public TranspileResult Transpile(string sourceCode, string fileName)
     {
-        var tree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName);
+        var tree = CSharpSyntaxTree.ParseText(sourceCode, GetParseOptions(), path: fileName);
         var root = tree.GetCompilationUnitRoot();
 
         var diagnostics = tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
