@@ -102,6 +102,16 @@ public static class MethodMapper
         Register("String", "Format", (r, a, _) => $"string.format({string.Join(", ", a)})");
         Register("String", "Concat", (r, a, _) => string.Join(" .. ", a));
 
+        // StringUtils.FormatWith (Newtonsoft extension on string)
+        // "text {0} {1}".FormatWith(culture, arg0, arg1) → string.format("text %s %s", tostring(arg0), tostring(arg1))
+        Register("StringUtils", "FormatWith", (r, a, _) =>
+        {
+            // a[0] is CultureInfo (skip), a[1..] are the format args
+            var formatArgs = a.Skip(1).Select(arg => $"tostring({arg})");
+            // {%d} matches {0}, {1}, etc. in Lua patterns; %%s is literal %s in gsub replacement
+            return $"string.format(string.gsub({r}, \"{{%d}}\", \"%%s\"), {string.Join(", ", formatArgs)})";
+        });
+
         // === StringBuilder ===
         Register("StringBuilder", "Append", (r, a, _) => $"(function() {r} = {r} .. tostring({a[0]}); return {r} end)()");
         Register("StringBuilder", "AppendLine", (r, a, _) => a.Length > 0
