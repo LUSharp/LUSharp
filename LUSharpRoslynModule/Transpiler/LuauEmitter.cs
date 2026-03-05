@@ -2809,6 +2809,22 @@ public class LuauEmitter
                 if (memberName == "One") return "1";
                 if (memberName == "MinusOne") return "-1";
             }
+            // EqualityComparer.Default → nil (Luau uses == for equality)
+            if (typeStr == "EqualityComparer" && memberName == "Default")
+                return "nil";
+            if (typeStr == "StringComparer")
+            {
+                // StringComparer.Ordinal/OrdinalIgnoreCase → nil (default string comparison in Luau)
+                if (memberName is "Ordinal" or "OrdinalIgnoreCase" or "InvariantCulture"
+                    or "InvariantCultureIgnoreCase" or "CurrentCulture" or "CurrentCultureIgnoreCase")
+                    return "nil";
+            }
+            // EventDescriptorCollection.Empty → {}
+            if (typeStr == "EventDescriptorCollection" && memberName == "Empty")
+                return "{}";
+            // PropertyDescriptorCollection.Empty → {}
+            if (typeStr == "PropertyDescriptorCollection" && memberName == "Empty")
+                return "{}";
 
             // .Length on a string variable → string.len(var) or #var
             if (memberName == "Length")
@@ -3102,6 +3118,25 @@ public class LuauEmitter
             {
                 if (memberName == "Parse" && arguments.Count >= 1)
                     return $"tonumber({EmitExpression(arguments[0].Expression)})";
+            }
+        }
+
+        // ── Handle Comparer<T>.Default.Compare(a, b) → inline ternary comparison ──
+        if (memberAccess.Expression is MemberAccessExpressionSyntax comparerMember
+            && comparerMember.Name.Identifier.Text == "Default"
+            && memberName == "Compare" && arguments.Count == 2)
+        {
+            var comparerName = comparerMember.Expression switch
+            {
+                IdentifierNameSyntax id => id.Identifier.Text,
+                GenericNameSyntax gen => gen.Identifier.Text,
+                _ => null
+            };
+            if (comparerName == "Comparer")
+            {
+                var a = EmitExpression(arguments[0].Expression);
+                var b = EmitExpression(arguments[1].Expression);
+                return $"(if {a} < {b} then -1 elseif {a} > {b} then 1 else 0)";
             }
         }
 

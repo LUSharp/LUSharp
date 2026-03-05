@@ -573,7 +573,8 @@ public class RoslynToLuau
             or "DictionaryEntry" or "FormatterConverter"
             or "TraceEventType" or "TraceEventCache" or "ExpressionType"
             or "UTF8Encoding" or "ExpandoObject" or "BigInteger"
-            or "GC";
+            or "GC" or "EqualityComparer" or "StringComparer"
+            or "EventDescriptorCollection" or "Comparer";
     }
 }
 
