@@ -2696,6 +2696,43 @@ public class LuauEmitter
                 };
                 if (result != null) return result;
             }
+            if (typeStr == "DateTimeStyles")
+            {
+                var result = memberName switch
+                {
+                    "None" => "0",
+                    "AllowLeadingWhite" => "1",
+                    "AllowTrailingWhite" => "2",
+                    "AllowInnerWhite" => "4",
+                    "AllowWhiteSpaces" => "7",
+                    "NoCurrentDateDefault" => "8",
+                    "AdjustToUniversal" => "16",
+                    "AssumeLocal" => "32",
+                    "AssumeUniversal" => "64",
+                    "RoundtripKind" => "128",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "RegexOptions")
+            {
+                var result = memberName switch
+                {
+                    "None" => "0",
+                    "IgnoreCase" => "1",
+                    "Multiline" => "2",
+                    "ExplicitCapture" => "4",
+                    "Compiled" => "8",
+                    "Singleline" => "16",
+                    "IgnorePatternWhitespace" => "32",
+                    "RightToLeft" => "64",
+                    "CultureInvariant" => "512",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            if (typeStr == "CultureInfo" && memberName == "InvariantCulture")
+                return "nil";
 
             // .Length on a string variable → string.len(var) or #var
             if (memberName == "Length")

@@ -553,7 +553,8 @@ public class RoslynToLuau
             or "Array" or "Enumerable" or "Object" or "Task"
             or "StringBuilder" or "Environment" or "Interlocked"
             or "StringComparison" or "TypeCode" or "DateTimeKind"
-            or "MemberTypes" or "BindingFlags";
+            or "MemberTypes" or "BindingFlags"
+            or "DateTimeStyles" or "RegexOptions" or "CultureInfo";
     }
 }
 
