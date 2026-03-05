@@ -2313,6 +2313,20 @@ public class LuauEmitter
             return $"{_currentClassName}.{name}";
         }
 
+        // SemanticModel: resolve inherited instance members (fields/properties) → self.member
+        if (_isInstanceContext && _model != null
+            && !_currentMethodParams.Contains(name)
+            && !_currentMethodLocals.Contains(name))
+        {
+            var symbol = GetSymbol(ident);
+            if (symbol is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst)
+                return $"self.{name}";
+            if (symbol is IPropertySymbol ps && !ps.IsStatic)
+                return $"self.{name}";
+            if (symbol is IMethodSymbol ms && !ms.IsStatic && ms.MethodKind == MethodKind.Ordinary)
+                return $"self.{name}";
+        }
+
         return name;
     }
 
