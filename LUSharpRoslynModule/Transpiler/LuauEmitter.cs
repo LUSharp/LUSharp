@@ -256,16 +256,19 @@ public class LuauEmitter
         AppendLine("})");
         AppendLine();
 
-        // Track as top-level type
-        EmittedTopLevelTypes.Add(name);
-
-        // Return table
-        if (!SuppressReturn)
+        // Only emit return for top-level enums, not nested ones
+        bool isNested = enumDecl.Parent is ClassDeclarationSyntax
+            or StructDeclarationSyntax;
+        if (!isNested)
         {
-            if (isFlags)
-                AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name, {name}_HasFlag = {name}_HasFlag }}");
-            else
-                AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name }}");
+            EmittedTopLevelTypes.Add(name);
+            if (!SuppressReturn)
+            {
+                if (isFlags)
+                    AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name, {name}_HasFlag = {name}_HasFlag }}");
+                else
+                    AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name }}");
+            }
         }
     }
 
@@ -278,6 +281,7 @@ public class LuauEmitter
         var className = classDecl.Identifier.Text;
         _currentClassName = className;
         _isInstanceContext = false;
+        var nestedStaticTypeNames = new List<string>();
 
         AppendLine($"local {className} = {{}}");
         AppendLine();
@@ -372,12 +376,14 @@ public class LuauEmitter
                 }
 
                 case EnumDeclarationSyntax nestedEnum:
+                    nestedStaticTypeNames.Add(nestedEnum.Identifier.Text);
                     EmitEnum(nestedEnum);
                     AppendLine();
                     break;
 
                 case ClassDeclarationSyntax nestedClass:
                 {
+                    nestedStaticTypeNames.Add(nestedClass.Identifier.Text);
                     var savedClassName = _currentClassName;
                     EmitClass(nestedClass);
                     _currentClassName = savedClassName;
@@ -385,6 +391,7 @@ public class LuauEmitter
                 }
 
                 case StructDeclarationSyntax nestedStruct:
+                    nestedStaticTypeNames.Add(nestedStruct.Identifier.Text);
                     EmitStruct(nestedStruct);
                     break;
 
@@ -405,10 +412,21 @@ public class LuauEmitter
             }
         }
 
-        EmittedTopLevelTypes.Add(className);
-        if (!SuppressReturn)
+        // Only emit return for top-level static classes, not nested ones
+        bool isNested = classDecl.Parent is ClassDeclarationSyntax
+            or StructDeclarationSyntax;
+        if (!isNested)
         {
-            AppendLine($"return {{ {className} = {className} }}");
+            EmittedTopLevelTypes.Add(className);
+            foreach (var nested in nestedStaticTypeNames)
+                EmittedTopLevelTypes.Add(nested);
+            if (!SuppressReturn)
+            {
+                var returnEntries = new List<string> { $"{className} = {className}" };
+                foreach (var nested in nestedStaticTypeNames)
+                    returnEntries.Add($"{nested} = {nested}");
+                AppendLine($"return {{ {string.Join(", ", returnEntries)} }}");
+            }
         }
         _currentClassName = null;
     }
@@ -444,7 +462,9 @@ public class LuauEmitter
                 }
             }
 
-            EmitInstanceClass(classDecl.Identifier.Text, classDecl.Members, baseClassName: baseClassName);
+            bool isNested = classDecl.Parent is ClassDeclarationSyntax
+                or StructDeclarationSyntax;
+            EmitInstanceClass(classDecl.Identifier.Text, classDecl.Members, isNested: isNested, baseClassName: baseClassName);
         }
     }
 
@@ -2946,6 +2966,10 @@ public class LuauEmitter
             }
             return "\"\"";
         }
+
+        // new object() → {} (empty table, used as lock objects and generic instances)
+        if (typeName == "object" || typeName == "System.Object")
+            return "{}";
 
         // Strip generic type args for Luau: List<TokenInfo> → just use {}
         if (typeName.StartsWith("List<") || typeName.StartsWith("Dictionary<")
