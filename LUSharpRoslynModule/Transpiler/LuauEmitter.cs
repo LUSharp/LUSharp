@@ -1179,6 +1179,8 @@ public class LuauEmitter
 
     private void EmitIf(IfStatementSyntax ifStmt)
     {
+        // If the condition is an is-pattern with a declaration, emit variable binding first
+        EmitPatternVariableBindings(ifStmt.Condition);
         var condition = EmitExpression(ifStmt.Condition);
         AppendLine($"if {condition} then");
         _indent++;
@@ -1613,11 +1615,8 @@ public class LuauEmitter
 
     private string EmitSwitchPattern(string governing, PatternSyntax pattern)
     {
-        return pattern switch
-        {
-            ConstantPatternSyntax constant => $"{governing} == {EmitExpression(constant.Expression)}",
-            _ => $"--[[TODO: pattern {pattern.Kind()}]] true"
-        };
+        // Delegate to the unified pattern emission
+        return EmitPattern(governing, pattern);
     }
 
     private void EmitExpressionStatement(ExpressionStatementSyntax exprStmt)
@@ -2034,6 +2033,14 @@ public class LuauEmitter
                 if (string.IsNullOrEmpty(argStr))
                     return $"{_currentClassName}.{resolvedName}(self)";
                 return $"{_currentClassName}.{resolvedName}(self, {argStr})";
+            }
+
+            // Check if this is a local function (SemanticModel can tell us)
+            if (_model != null)
+            {
+                var symbol = GetSymbol(methodName);
+                if (symbol is IMethodSymbol ms && ms.MethodKind == MethodKind.LocalFunction)
+                    return $"{resolvedName}({argStr})";
             }
 
             // Calls to static methods in the same class → ClassName.MethodName(...)
@@ -3271,5 +3278,42 @@ public class LuauEmitter
     {
         var items = initExpr.Expressions.Select(e => EmitExpression(e));
         return $"{{ {string.Join(", ", items)} }}";
+    }
+
+    /// <summary>
+    /// Emit variable bindings for pattern variables before the condition is evaluated.
+    /// E.g., `if (obj is string s)` → `local s = obj` before the if condition.
+    /// </summary>
+    private void EmitPatternVariableBindings(ExpressionSyntax condition)
+    {
+        if (condition is IsPatternExpressionSyntax isPattern
+            && isPattern.Pattern is DeclarationPatternSyntax dp
+            && dp.Designation is SingleVariableDesignationSyntax svd)
+        {
+            var subject = EmitExpression(isPattern.Expression);
+            var varName = svd.Identifier.Text;
+            var luauType = MapComplexType(dp.Type.ToString());
+            AppendLine($"local {varName}: {luauType} = {subject}");
+            _currentMethodLocals.Add(varName);
+        }
+        // Handle logical AND chains: `if (x is Type a && y is Type b)`
+        else if (condition is BinaryExpressionSyntax binary
+            && binary.IsKind(SyntaxKind.LogicalAndExpression))
+        {
+            EmitPatternVariableBindings(binary.Left);
+            EmitPatternVariableBindings(binary.Right);
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Relational patterns in switch expressions: > 80, < 0, etc.
+    // ────────────────────────────────────────────────────────────────────
+
+    private string EmitSwitchArm(string subject, SwitchExpressionArmSyntax arm)
+    {
+        if (arm.Pattern is DiscardPatternSyntax)
+            return "true"; // default arm
+
+        return EmitPattern(subject, arm.Pattern);
     }
 }
