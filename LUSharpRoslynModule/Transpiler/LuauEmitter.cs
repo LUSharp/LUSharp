@@ -3565,6 +3565,8 @@ public class LuauEmitter
                 $"{target}.{memberBinding.Name.Identifier.Text}",
             InvocationExpressionSyntax invocation when invocation.Expression is MemberBindingExpressionSyntax methodBinding =>
                 EmitConditionalMethodInvocation(target, methodBinding, invocation.ArgumentList.Arguments),
+            ElementBindingExpressionSyntax elementBinding =>
+                $"{target}[{string.Join(", ", elementBinding.ArgumentList.Arguments.Select(a => EmitExpression(a.Expression)))}]",
             _ => $"{target}.{EmitExpression(whenNotNull)}"
         };
     }
