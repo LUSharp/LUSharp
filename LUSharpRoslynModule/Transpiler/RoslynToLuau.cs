@@ -21,11 +21,49 @@ public class RoslynToLuau
     private Dictionary<string, string> _typeToModuleMap = new();
 
     /// <summary>
+    /// Roslyn CSharpCompilation built from all source files + BCL references.
+    /// Provides SemanticModel per-file for type resolution.
+    /// </summary>
+    private CSharpCompilation? _compilation;
+
+    /// <summary>
+    /// All syntax trees collected during PreScan, keyed by file name.
+    /// Used to retrieve the correct tree for SemanticModel lookup in Transpile().
+    /// </summary>
+    private Dictionary<string, SyntaxTree> _syntaxTrees = new();
+
+    private static List<MetadataReference> GetBclReferences()
+    {
+        var refs = new List<MetadataReference>();
+        var trustedDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        var coreLibs = new[]
+        {
+            "System.Runtime.dll", "System.Collections.dll", "System.Linq.dll",
+            "System.Threading.Tasks.dll", "System.Console.dll", "System.Text.RegularExpressions.dll",
+            "System.Memory.dll", "System.Collections.Concurrent.dll", "System.Collections.Immutable.dll",
+            "System.ComponentModel.dll", "System.ComponentModel.Primitives.dll",
+            "System.ObjectModel.dll", "System.Globalization.dll", "System.IO.dll",
+            "System.Text.Encoding.dll", "System.Threading.dll", "System.Numerics.Vectors.dll",
+            "System.Runtime.Numerics.dll", "System.Runtime.Extensions.dll",
+            "System.Private.CoreLib.dll", "netstandard.dll",
+        };
+        foreach (var lib in coreLibs)
+        {
+            var path = Path.Combine(trustedDir, lib);
+            if (File.Exists(path))
+                refs.Add(MetadataReference.CreateFromFile(path));
+        }
+        return refs;
+    }
+
+    /// <summary>
     /// Pre-scan source files to build a global overload map before emitting any code.
     /// Call this once with all source files before calling Transpile for each file.
     /// </summary>
     public void PreScan(IEnumerable<(string SourceCode, string FileName)> sourceFiles)
     {
+        var allTrees = new List<SyntaxTree>();
+
         foreach (var (sourceCode, fileName) in sourceFiles)
         {
             var tree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName);
@@ -33,6 +71,9 @@ public class RoslynToLuau
 
             var diagnostics = tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
             if (diagnostics.Count > 0) continue;
+
+            allTrees.Add(tree);
+            _syntaxTrees[fileName] = tree;
 
             ScanOverloads(root.Members);
 
@@ -44,6 +85,18 @@ public class RoslynToLuau
             {
                 _typeToModuleMap[typeName] = moduleName;
             }
+        }
+
+        // Build CSharpCompilation from all valid trees + BCL references
+        if (allTrees.Count > 0)
+        {
+            _compilation = CSharpCompilation.Create(
+                "LUSharpTranspilation",
+                syntaxTrees: allTrees,
+                references: GetBclReferences(),
+                options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                    .WithNullableContextOptions(NullableContextOptions.Enable)
+            );
         }
     }
 
@@ -135,7 +188,26 @@ public class RoslynToLuau
             };
         }
 
-        var emitter = new LuauEmitter();
+        // Get SemanticModel from compilation if available
+        SemanticModel? model = null;
+        if (_compilation != null)
+        {
+            // Use the pre-scanned tree if available (same SyntaxTree instance needed for SemanticModel)
+            if (_syntaxTrees.TryGetValue(fileName, out var preScanTree))
+            {
+                model = _compilation.GetSemanticModel(preScanTree);
+                tree = preScanTree; // Use the same tree instance
+                root = tree.GetCompilationUnitRoot();
+            }
+            else
+            {
+                // File wasn't in PreScan — add it to compilation on the fly
+                _compilation = _compilation.AddSyntaxTrees(tree);
+                model = _compilation.GetSemanticModel(tree);
+            }
+        }
+
+        var emitter = new LuauEmitter(model);
         emitter.GlobalOverloadMap = _globalOverloadMap;
         emitter.EmitHeader();
 

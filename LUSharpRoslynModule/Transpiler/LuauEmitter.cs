@@ -99,6 +99,42 @@ public class LuauEmitter
     private Dictionary<string, HashSet<string>> _emittedTypeFields = new();
 
     /// <summary>
+    /// Roslyn SemanticModel for type resolution. Null when running without a compilation.
+    /// </summary>
+    private readonly SemanticModel? _model;
+
+    public LuauEmitter(SemanticModel? model = null)
+    {
+        _model = model;
+    }
+
+    // ── SemanticModel query helpers ──────────────────────────────────────
+
+    private ITypeSymbol? GetExpressionType(ExpressionSyntax expr)
+    {
+        if (_model == null) return null;
+        return _model.GetTypeInfo(expr).Type;
+    }
+
+    private ISymbol? GetSymbol(ExpressionSyntax expr)
+    {
+        if (_model == null) return null;
+        return _model.GetSymbolInfo(expr).Symbol;
+    }
+
+    private bool IsStringType(ExpressionSyntax expr)
+    {
+        var type = GetExpressionType(expr);
+        return type?.SpecialType == SpecialType.System_String;
+    }
+
+    private bool IsEnumType(ExpressionSyntax expr)
+    {
+        var type = GetExpressionType(expr);
+        return type?.TypeKind == TypeKind.Enum;
+    }
+
+    /// <summary>
     /// Global overload registry from pre-scan: (TypeName, MethodName, ArgCount) → DisambiguatedName.
     /// Set by the orchestrator before emission for cross-type overload resolution.
     /// </summary>
@@ -1561,6 +1597,22 @@ public class LuauEmitter
         var left = EmitExpression(assignment.Left);
         var right = EmitExpression(assignment.Right);
 
+        // String += → concat: x = x .. y (Luau has no ..= operator)
+        if (assignment.Kind() == SyntaxKind.AddAssignmentExpression)
+        {
+            bool isString = false;
+            if (_model != null)
+                isString = IsStringType(assignment.Left);
+            else
+                isString = IsLikelyStringAccess(assignment.Left);
+
+            if (isString)
+            {
+                AppendLine($"{left} = {left} .. {right}");
+                return;
+            }
+        }
+
         var op = assignment.Kind() switch
         {
             SyntaxKind.SimpleAssignmentExpression => "=",
@@ -2297,16 +2349,28 @@ public class LuauEmitter
             return $"if {coalLeft} ~= nil then {coalLeft} else {coalRight}";
         }
 
-        // Detect string concatenation: + with a string expression anywhere in the chain → ..
-        // We must detect this BEFORE emitting children, so that inner + nodes in the same
-        // chain also use .. instead of +. The _forceStringConcat flag propagates this.
+        // Detect string concatenation: + with a string expression → ..
         bool isTopLevelStringConcat = false;
         if (binary.Kind() == SyntaxKind.AddExpression && !_forceStringConcat)
         {
-            if (IsStringConcatenation(binary) || IsStringConcatenationChain(binary))
+            if (_model != null)
             {
-                isTopLevelStringConcat = true;
-                _forceStringConcat = true;
+                // SemanticModel: check if the + resolves to string concat
+                var typeInfo = _model.GetTypeInfo(binary);
+                if (typeInfo.Type?.SpecialType == SpecialType.System_String)
+                {
+                    isTopLevelStringConcat = true;
+                    _forceStringConcat = true;
+                }
+            }
+            else
+            {
+                // Fallback: old heuristic (when no SemanticModel)
+                if (IsStringConcatenation(binary) || IsStringConcatenationChain(binary))
+                {
+                    isTopLevelStringConcat = true;
+                    _forceStringConcat = true;
+                }
             }
         }
 
