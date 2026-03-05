@@ -21,6 +21,12 @@ public class RoslynToLuau
     private Dictionary<string, string> _typeToModuleMap = new();
 
     /// <summary>
+    /// Maps class name → base class name, collected across all files during PreScan.
+    /// Handles partial classes where base class is declared in one file but used in another.
+    /// </summary>
+    private Dictionary<string, string> _baseClassMap = new();
+
+    /// <summary>
     /// Roslyn CSharpCompilation built from all source files + BCL references.
     /// Provides SemanticModel per-file for type resolution.
     /// </summary>
@@ -99,6 +105,9 @@ public class RoslynToLuau
             {
                 _typeToModuleMap[typeName] = moduleName;
             }
+
+            // Collect base class info (handles partial classes across files)
+            ScanBaseClasses(root.Members);
         }
 
         // Build CSharpCompilation from all valid trees + BCL references
@@ -111,6 +120,52 @@ public class RoslynToLuau
                 options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
                     .WithNullableContextOptions(NullableContextOptions.Enable)
             );
+        }
+    }
+
+    private void ScanBaseClasses(SyntaxList<MemberDeclarationSyntax> members)
+    {
+        foreach (var member in members)
+        {
+            switch (member)
+            {
+                case NamespaceDeclarationSyntax ns:
+                    ScanBaseClasses(ns.Members);
+                    break;
+                case FileScopedNamespaceDeclarationSyntax ns:
+                    ScanBaseClasses(ns.Members);
+                    break;
+                case ClassDeclarationSyntax classDecl:
+                    if (classDecl.BaseList != null)
+                    {
+                        var firstBase = classDecl.BaseList.Types.FirstOrDefault();
+                        if (firstBase != null)
+                        {
+                            var baseTypeName = firstBase.Type.ToString();
+                            if (baseTypeName.Contains('.'))
+                                baseTypeName = baseTypeName.Substring(baseTypeName.LastIndexOf('.') + 1);
+                            if (baseTypeName.Contains('<'))
+                                baseTypeName = baseTypeName.Substring(0, baseTypeName.IndexOf('<'));
+                            _baseClassMap[classDecl.Identifier.Text] = baseTypeName;
+                        }
+                    }
+                    break;
+                case StructDeclarationSyntax structDecl:
+                    if (structDecl.BaseList != null)
+                    {
+                        var firstBase = structDecl.BaseList.Types.FirstOrDefault();
+                        if (firstBase != null)
+                        {
+                            var baseTypeName = firstBase.Type.ToString();
+                            if (baseTypeName.Contains('.'))
+                                baseTypeName = baseTypeName.Substring(baseTypeName.LastIndexOf('.') + 1);
+                            if (baseTypeName.Contains('<'))
+                                baseTypeName = baseTypeName.Substring(0, baseTypeName.IndexOf('<'));
+                            _baseClassMap[structDecl.Identifier.Text] = baseTypeName;
+                        }
+                    }
+                    break;
+            }
         }
     }
 
@@ -223,6 +278,7 @@ public class RoslynToLuau
 
         var emitter = new LuauEmitter(model);
         emitter.GlobalOverloadMap = _globalOverloadMap;
+        emitter.GlobalBaseClassMap = _baseClassMap;
         emitter.EmitHeader();
 
         // Count top-level type declarations to decide whether to suppress individual returns

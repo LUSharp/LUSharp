@@ -164,6 +164,12 @@ public class LuauEmitter
     public Dictionary<(string TypeName, string MethodName, int ArgCount), string> GlobalOverloadMap { get; set; } = new();
 
     /// <summary>
+    /// Global base class map: ClassName → BaseClassName.
+    /// Populated by PreScan across all files, resolves partial class base types.
+    /// </summary>
+    public Dictionary<string, string> GlobalBaseClassMap { get; set; } = new();
+
+    /// <summary>
     /// When true, individual type emissions will not emit their own return statements.
     /// The orchestrator is responsible for emitting a unified return at the end.
     /// </summary>
@@ -461,6 +467,9 @@ public class LuauEmitter
                     baseClassName = baseTypeName;
                 }
             }
+            // Fallback: check global base class map (for partial classes where BaseList is in another file)
+            if (baseClassName == null)
+                GlobalBaseClassMap.TryGetValue(classDecl.Identifier.Text, out baseClassName);
 
             bool isNested = classDecl.Parent is ClassDeclarationSyntax
                 or StructDeclarationSyntax;
