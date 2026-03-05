@@ -2749,6 +2749,66 @@ public class LuauEmitter
                 };
                 if (result != null) return result;
             }
+            // System.Diagnostics.TraceEventType enum → integer constants
+            if (typeStr == "TraceEventType")
+            {
+                var result = memberName switch
+                {
+                    "Critical" => "1",
+                    "Error" => "2",
+                    "Warning" => "4",
+                    "Information" => "8",
+                    "Verbose" => "16",
+                    "Start" => "256",
+                    "Stop" => "512",
+                    "Suspend" => "1024",
+                    "Resume" => "2048",
+                    "Transfer" => "4096",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            // System.Linq.Expressions.ExpressionType enum → integer constants
+            if (typeStr == "ExpressionType")
+            {
+                var result = memberName switch
+                {
+                    "Add" => "0",
+                    "AddAssign" => "63",
+                    "And" => "2",
+                    "Call" => "6",
+                    "Conditional" => "8",
+                    "Constant" => "9",
+                    "Convert" => "10",
+                    "Divide" => "12",
+                    "DivideAssign" => "65",
+                    "Equal" => "13",
+                    "GreaterThan" => "15",
+                    "GreaterThanOrEqual" => "16",
+                    "Lambda" => "18",
+                    "LessThan" => "20",
+                    "LessThanOrEqual" => "21",
+                    "Multiply" => "26",
+                    "MultiplyAssign" => "69",
+                    "New" => "31",
+                    "NotEqual" => "35",
+                    "Parameter" => "38",
+                    "Subtract" => "42",
+                    "SubtractAssign" => "73",
+                    "Throw" => "60",
+                    "Assign" => "46",
+                    "Block" => "47",
+                    _ => (string?)null,
+                };
+                if (result != null) return result;
+            }
+            // BigInteger static members
+            if (typeStr == "BigInteger")
+            {
+                if (memberName == "Zero") return "0";
+                if (memberName == "One") return "1";
+                if (memberName == "MinusOne") return "-1";
+            }
 
             // .Length on a string variable → string.len(var) or #var
             if (memberName == "Length")
@@ -3030,6 +3090,21 @@ public class LuauEmitter
             }
         }
 
+        // ── Handle 3-level nested: System.Numerics.BigInteger.Parse(...) ──
+        if (memberAccess.Expression is MemberAccessExpressionSyntax nestedMember2
+            && nestedMember2.Expression is MemberAccessExpressionSyntax deepNested
+            && deepNested.Expression is IdentifierNameSyntax deepNsIdent
+            && deepNsIdent.Identifier.Text == "System")
+        {
+            var midNs = deepNested.Name.Identifier.Text;
+            var innerType2 = nestedMember2.Name.Identifier.Text;
+            if (midNs == "Numerics" && innerType2 == "BigInteger")
+            {
+                if (memberName == "Parse" && arguments.Count >= 1)
+                    return $"tonumber({EmitExpression(arguments[0].Expression)})";
+            }
+        }
+
         // ── Handle calls on identifier targets ──
         if (memberAccess.Expression is IdentifierNameSyntax ownerIdent)
         {
@@ -3181,6 +3256,10 @@ public class LuauEmitter
             // Assembly.LoadWithPartialName(name) → nil (no assembly loading in Luau)
             if (ownerName == "Assembly" && memberName == "LoadWithPartialName")
                 return "nil";
+
+            // BigInteger.Parse(str, ...) → tonumber(str)
+            if (ownerName == "BigInteger" && memberName == "Parse" && arguments.Count >= 1)
+                return $"tonumber({EmitExpression(arguments[0].Expression)})";
 
             // object.ReferenceEquals(a, b) → rawequal(a, b)
             if (memberName == "ReferenceEquals" && arguments.Count == 2)
@@ -3661,6 +3740,9 @@ public class LuauEmitter
                 return $"table.concat({EmitExpression(argList.Value[0].Expression)})";
             }
         }
+        // UTF8Encoding, TraceEventCache, ExpandoObject → empty table stubs
+        if (cleanType is "UTF8Encoding" or "TraceEventCache" or "ExpandoObject")
+            return "{}";
         // EventArgs-like types → {} (just data carriers)
         if (cleanType is "NotifyCollectionChangedEventArgs" or "ListChangedEventArgs"
             or "PropertyChangedEventArgs" or "PropertyChangingEventArgs"

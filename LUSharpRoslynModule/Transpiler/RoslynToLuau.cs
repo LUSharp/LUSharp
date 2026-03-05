@@ -570,7 +570,9 @@ public class RoslynToLuau
             or "NotifyCollectionChangedEventArgs" or "ListChangedEventArgs"
             or "PropertyChangedEventArgs" or "PropertyChangingEventArgs"
             or "AddingNewEventArgs" or "StreamingContext" or "SerializationInfo"
-            or "DictionaryEntry" or "FormatterConverter";
+            or "DictionaryEntry" or "FormatterConverter"
+            or "TraceEventType" or "TraceEventCache" or "ExpressionType"
+            or "UTF8Encoding" or "ExpandoObject" or "BigInteger";
     }
 }
 
