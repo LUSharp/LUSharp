@@ -323,7 +323,8 @@ public class RoslynToLuau
         var localTypeNames = CollectTypeNames(root.Members);
 
         // Post-process: insert require() statements for referenced modules
-        InsertRequires(emitter, localTypeNames);
+        var currentModuleName = Path.GetFileNameWithoutExtension(fileName);
+        InsertRequires(emitter, localTypeNames, currentModuleName);
 
         // Insert runtime require if needed
         if (emitter.NeedsRuntime)
@@ -475,7 +476,7 @@ public class RoslynToLuau
     ///   local TypeB = _ModuleName.TypeB
     /// Excludes types defined in the same file (localTypeNames).
     /// </summary>
-    private void InsertRequires(LuauEmitter emitter, HashSet<string>? localTypeNames = null)
+    private void InsertRequires(LuauEmitter emitter, HashSet<string>? localTypeNames = null, string? currentModuleName = null)
     {
         if (emitter.ReferencedModules.Count == 0) return;
 
@@ -508,6 +509,12 @@ public class RoslynToLuau
                 moduleToTypes[moduleName] = new List<string>();
             moduleToTypes[moduleName].Add(typeName);
         }
+
+        // Remove self-references (nested types mapped to the same module file)
+        if (currentModuleName != null)
+            moduleToTypes.Remove(currentModuleName);
+
+        if (moduleToTypes.Count == 0) return;
 
         var requireBlock = new System.Text.StringBuilder();
         foreach (var (moduleName, types) in moduleToTypes.OrderBy(kv => kv.Key))
