@@ -74,6 +74,12 @@ public class LuauEmitter
     private Dictionary<string, string> _currentMethodParamTypes = new();
 
     /// <summary>
+    /// Pattern variable aliases: maps `is` pattern variables to their subject expressions.
+    /// e.g., `m is PropertyInfo p` registers p → m, so references to `p` resolve to `m`.
+    /// </summary>
+    private Dictionary<string, string> _patternVarAliases = new();
+
+    /// <summary>
     /// When true, all + binary expressions should emit as .. (string concatenation).
     /// Set by the top-level string concat detection in EmitBinary, so inner + nodes
     /// in the same chain also use .. instead of +.
@@ -1010,6 +1016,7 @@ public class LuauEmitter
         var paramParts = new List<string>();
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
 
         foreach (var param in parameters)
@@ -1089,6 +1096,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
@@ -1178,6 +1186,7 @@ public class LuauEmitter
         {
             _currentMethodParams = new HashSet<string>();
             _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
             AppendLine($"function {className}.get_{propName}(self: {className}): {propType}");
             _indent++;
             var expr = EmitExpression(prop.ExpressionBody.Expression);
@@ -1197,6 +1206,7 @@ public class LuauEmitter
                 {
                     _currentMethodParams = new HashSet<string>();
                     _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
                     AppendLine($"function {className}.get_{propName}(self: {className}): {propType}");
                     _indent++;
                     if (accessor.Body != null)
@@ -1221,6 +1231,7 @@ public class LuauEmitter
                 {
                     _currentMethodParams = new HashSet<string> { "value" };
                     _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
                     AppendLine($"function {className}.set_{propName}(self: {className}, value: {propType})");
                     _indent++;
                     if (accessor.Body != null)
@@ -1261,6 +1272,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
 
         // Build parameter list: self first, then declared params
@@ -1299,6 +1311,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
@@ -1314,6 +1327,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
 
         // Build parameter list with types
@@ -1351,6 +1365,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
@@ -1380,6 +1395,7 @@ public class LuauEmitter
         _isInstanceContext = false;
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
 
         var parameters = opDecl.ParameterList.Parameters;
@@ -1409,6 +1425,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
@@ -1424,6 +1441,7 @@ public class LuauEmitter
         _isInstanceContext = false;
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
 
         var param = convDecl.ParameterList.Parameters[0];
@@ -1447,6 +1465,7 @@ public class LuauEmitter
 
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
@@ -1466,6 +1485,7 @@ public class LuauEmitter
                     _isInstanceContext = true;
                     _currentMethodParams = new HashSet<string> { paramName };
                     _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
                     _currentMethodParamTypes = new Dictionary<string, string>
                     {
                         [paramName] = indexerDecl.ParameterList.Parameters[0].Type?.ToString() ?? ""
@@ -1485,6 +1505,7 @@ public class LuauEmitter
                     _isInstanceContext = true;
                     _currentMethodParams = new HashSet<string> { paramName, "value" };
                     _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
                     _currentMethodParamTypes = new Dictionary<string, string>
                     {
                         [paramName] = indexerDecl.ParameterList.Parameters[0].Type?.ToString() ?? "",
@@ -1508,6 +1529,7 @@ public class LuauEmitter
             _isInstanceContext = true;
             _currentMethodParams = new HashSet<string> { paramName };
             _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
             _currentMethodParamTypes = new Dictionary<string, string>
             {
                 [paramName] = indexerDecl.ParameterList.Parameters[0].Type?.ToString() ?? ""
@@ -1524,6 +1546,7 @@ public class LuauEmitter
         _isInstanceContext = false;
         _currentMethodParams = new HashSet<string>();
         _currentMethodLocals = new HashSet<string>();
+        _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
     }
 
@@ -2360,6 +2383,10 @@ public class LuauEmitter
     {
         var name = EscapeIdentifier(ident.Identifier.Text);
 
+        // Resolve pattern variable aliases: `m is T p` → p resolves to m
+        if (_patternVarAliases.TryGetValue(name, out var alias))
+            return alias;
+
         // Check for well-known replacements
         if (name == "string") return "string";
 
@@ -2740,8 +2767,8 @@ public class LuauEmitter
     {
         var memberName = memberAccess.Name.Identifier.Text;
 
-        // ── Strip .ConfigureAwait(bool) — no-op in Luau ──
-        if (memberName == "ConfigureAwait")
+        // ── Strip no-op .NET methods — identity in Luau ──
+        if (memberName is "ConfigureAwait" or "Cast" or "AsEnumerable")
             return EmitExpression(memberAccess.Expression);
 
         // ── Nullable<T>.GetValueOrDefault() → (x or 0) / (x or default) ──
@@ -4009,7 +4036,14 @@ public class LuauEmitter
     private string EmitDeclarationPattern(string subject, DeclarationPatternSyntax dp)
     {
         var typeName = dp.Type.ToString();
-        // The variable is declared via the designation — just check the type
+        // Register pattern variable alias: `m is PropertyInfo p` → p aliases m
+        if (dp.Designation is SingleVariableDesignationSyntax svd)
+        {
+            var varName = EscapeIdentifier(svd.Identifier.Text);
+            _patternVarAliases[varName] = subject;
+            _currentMethodLocals.Add(svd.Identifier.Text);
+            if (varName != svd.Identifier.Text) _currentMethodLocals.Add(varName);
+        }
         return EmitTypeCheck(subject, typeName);
     }
 
