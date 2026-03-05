@@ -3434,6 +3434,16 @@ public class LuauEmitter
                 return $"__rt.Expression.{memberName}({argStr})";
             }
 
+            // Debug.Assert → assert()
+            if (ownerName == "Debug" && memberName == "Assert")
+            {
+                if (arguments.Count >= 2)
+                    return $"assert({EmitExpression(arguments[0].Expression)}, {EmitExpression(arguments[1].Expression)})";
+                if (arguments.Count == 1)
+                    return $"assert({EmitExpression(arguments[0].Expression)})";
+                return "-- Debug.Assert()";
+            }
+
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
             {
@@ -3745,12 +3755,14 @@ public class LuauEmitter
             return "{ Key = nil, Value = nil }";
         }
         if (cleanType == "StringWriter")
-            return "\"\"";
+        {
+            NeedsRuntime = true;
+            return $"__rt.StringWriter.new({argStr})";
+        }
         if (cleanType == "StringReader")
         {
-            if (objCreate.ArgumentList?.Arguments.Count > 0)
-                return EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
-            return "\"\"";
+            NeedsRuntime = true;
+            return $"__rt.StringReader.new({argStr})";
         }
         if (cleanType == "StringBuilder")
         {

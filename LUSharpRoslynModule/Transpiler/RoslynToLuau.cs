@@ -575,7 +575,8 @@ public class RoslynToLuau
             or "UTF8Encoding" or "ExpandoObject" or "BigInteger"
             or "GC" or "EqualityComparer" or "StringComparer"
             or "EventDescriptorCollection" or "Comparer"
-            or "Encoding" or "Expression" or "DynamicMethod";
+            or "Encoding" or "Expression" or "DynamicMethod"
+            or "StringReader" or "StringWriter" or "TextReader" or "TextWriter";
     }
 }
 
