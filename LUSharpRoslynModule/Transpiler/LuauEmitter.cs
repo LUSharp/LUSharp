@@ -20,9 +20,13 @@ public class LuauEmitter
         "type", "typeof"
     };
 
-    /// <summary>Escape a C# identifier if it collides with a Luau reserved word.</summary>
+    /// <summary>Escape a C# identifier if it collides with a Luau reserved word.
+    /// Also strips the C# verbatim identifier prefix (@) if present.</summary>
     private static string EscapeIdentifier(string name)
-        => LuauReservedWords.Contains(name) ? name + "_" : name;
+    {
+        if (name.Length > 0 && name[0] == '@') name = name.Substring(1);
+        return LuauReservedWords.Contains(name) ? name + "_" : name;
+    }
 
     /// <summary>
     /// The class name currently being emitted (used to qualify static method calls).
@@ -218,7 +222,7 @@ public class LuauEmitter
             var memberName = member.Identifier.Text;
             if (member.EqualsValue != null)
             {
-                var explicitValue = member.EqualsValue.Value.ToString();
+                var explicitValue = EmitExpression(member.EqualsValue.Value);
                 // Try to parse for auto-increment tracking
                 if (int.TryParse(explicitValue, out var parsed))
                     nextAutoValue = parsed + 1;
@@ -1291,8 +1295,17 @@ public class LuauEmitter
                     }
                     else if (accessor.ExpressionBody != null)
                     {
-                        var expr = EmitExpression(accessor.ExpressionBody.Expression);
-                        AppendLine(expr);
+                        // Expression-bodied setter: set => _field = value;
+                        // Must emit as assignment statement, not expression (which strips to RHS)
+                        if (accessor.ExpressionBody.Expression is AssignmentExpressionSyntax setAssign)
+                        {
+                            EmitAssignmentStatement(setAssign);
+                        }
+                        else
+                        {
+                            var expr = EmitExpression(accessor.ExpressionBody.Expression);
+                            AppendLine(expr);
+                        }
                     }
                     else
                     {
@@ -2232,7 +2245,36 @@ public class LuauEmitter
         }
 
         var expr = EmitExpression(exprStmt.Expression);
-        AppendLine(expr);
+        // Only invocations and await expressions are valid as bare statements in Luau.
+        // Conditional access expressions like obj?.Method() that resolve to invocations are also valid.
+        // Everything else (bare identifiers, ternary expressions, etc.) would be incomplete statements.
+        if (exprStmt.Expression is InvocationExpressionSyntax
+            || exprStmt.Expression is AwaitExpressionSyntax
+            || exprStmt.Expression is ConditionalAccessExpressionSyntax)
+        {
+            // Unwrap IIFE patterns like (function() sb = sb .. x; return sb end)()
+            // These cause "ambiguous syntax" in Luau when preceded by another statement.
+            // Extract the body and emit as direct statements instead.
+            if (expr.StartsWith("(function() ") && expr.EndsWith(" end)()"))
+            {
+                var body = expr.Substring("(function() ".Length, expr.Length - "(function() ".Length - " end)()".Length);
+                // Split on '; ' to get individual statements, skip 'return ...' parts
+                foreach (var stmt in body.Split(new[] { "; " }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var trimmed = stmt.Trim();
+                    if (!trimmed.StartsWith("return "))
+                        AppendLine(trimmed);
+                }
+            }
+            else
+            {
+                AppendLine(expr);
+            }
+        }
+        else
+        {
+            AppendLine($"-- {expr}");
+        }
     }
 
     /// <summary>

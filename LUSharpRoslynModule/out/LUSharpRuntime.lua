@@ -1012,4 +1012,106 @@ function RT.DynamicMethod.CreateDelegate(self: any, delegateType: any): any
 	return function() end
 end
 
+-- ── IO stubs: StringReader / StringWriter ──
+
+RT.StringReader = {}
+RT.StringReader.__index = RT.StringReader
+
+function RT.StringReader.new(s: string): any
+	return setmetatable({ _s = s, _pos = 0, _length = #s }, RT.StringReader)
+end
+
+function RT.StringReader.Read(self: any, buffer: { number }, index: number, count: number): number
+	local remaining = self._length - self._pos
+	if remaining <= 0 then return 0 end
+	if count > remaining then count = remaining end
+	local i = 0
+	while i < count do
+		buffer[index + i + 1] = string.byte(self._s, self._pos + i + 1)
+		i += 1
+	end
+	self._pos += count
+	return count
+end
+
+function RT.StringReader.Peek(self: any): number
+	if self._pos >= self._length then return -1 end
+	return string.byte(self._s, self._pos + 1)
+end
+
+function RT.StringReader.ReadLine(self: any): string?
+	if self._pos >= self._length then return nil end
+	local start = self._pos
+	while self._pos < self._length do
+		local ch = string.byte(self._s, self._pos + 1)
+		if ch == 13 or ch == 10 then
+			local line = string.sub(self._s, start + 1, self._pos)
+			self._pos += 1
+			if ch == 13 and self._pos < self._length and string.byte(self._s, self._pos + 1) == 10 then
+				self._pos += 1
+			end
+			return line
+		end
+		self._pos += 1
+	end
+	return string.sub(self._s, start + 1)
+end
+
+function RT.StringReader.Close(self: any) end
+
+RT.StringWriter = {}
+RT.StringWriter.__index = RT.StringWriter
+
+function RT.StringWriter.__tostring(self: any): string
+	return table.concat(self._parts)
+end
+
+function RT.StringWriter.new(...: any): any
+	return setmetatable({ _parts = {}, _length = 0 }, RT.StringWriter)
+end
+
+function RT.StringWriter.Write(self: any, value: any, index: number?, count: number?): ()
+	if type(value) == "string" then
+		table.insert(self._parts, value)
+		self._length += #value
+	elseif type(value) == "number" then
+		if index ~= nil and count ~= nil then
+			-- Write(chars: {number}, index, count) - but first arg is table; see Write_chars below
+			error("Use Write_chars for buffer writes")
+		end
+		-- Single char code
+		local s = string.char(value)
+		table.insert(self._parts, s)
+		self._length += 1
+	elseif type(value) == "table" and index ~= nil and count ~= nil then
+		-- Write(chars: {number}, index: number, count: number)
+		local parts = {}
+		local i = 0
+		while i < count do
+			table.insert(parts, string.char(value[index + i + 1]))
+			i += 1
+		end
+		local s = table.concat(parts)
+		table.insert(self._parts, s)
+		self._length += count
+	elseif value ~= nil then
+		local s = tostring(value)
+		table.insert(self._parts, s)
+		self._length += #s
+	end
+end
+
+function RT.StringWriter.WriteLine(self: any, s: string?): ()
+	if s then table.insert(self._parts, s) self._length += #s end
+	table.insert(self._parts, "\n")
+	self._length += 1
+end
+
+function RT.StringWriter.ToString(self: any): string
+	return table.concat(self._parts)
+end
+
+function RT.StringWriter.Close(self: any) end
+function RT.StringWriter.Flush(self: any) end
+
 return RT
