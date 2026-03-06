@@ -137,6 +137,8 @@ public class LuauEmitter
     /// Counter for generating unique temp variable names for evaluation order hoisting.
     /// </summary>
     private int _evalTempCounter = 0;
+    private int _switchDepth = 0;
+    private int _loopDepthInSwitch = 0;
 
     public LuauEmitter(SemanticModel? model = null)
     {
@@ -343,7 +345,7 @@ public class LuauEmitter
                             var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
                             // Clean up the suffix for Luau identifier; preserve nullable
                             var isNullableSuffix = suffix.EndsWith("?");
-                            suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                            suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
                             if (isNullableSuffix) suffix += "_nullable";
                             emitName = $"{name}_{suffix}";
                         }
@@ -869,7 +871,7 @@ public class LuauEmitter
                     var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
                     // Preserve nullable distinction: bool? → bool_nullable
                     var isNullableSuffix = suffix.EndsWith("?");
-                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
                     if (isNullableSuffix) suffix += "_nullable";
                     emitName = $"{name}_{suffix}";
                 }
@@ -889,7 +891,7 @@ public class LuauEmitter
             var fpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
             // Preserve nullable distinction in the overload key
             var isNullableFpt = fpt.EndsWith("?");
-            fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+            fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
             if (isNullableFpt) fpt += "_nullable";
             _overloadMap[(name, paramCount, fpt)] = emitName;
         }
@@ -1658,7 +1660,9 @@ public class LuauEmitter
                 EmitThrow(throwStmt);
                 break;
             case BreakStatementSyntax:
-                AppendLine("break");
+                // Suppress break inside switch-as-if/elseif, but allow it inside loops within switches
+                if (_switchDepth == 0 || _loopDepthInSwitch > 0)
+                    AppendLine("break");
                 break;
             case ContinueStatementSyntax:
                 AppendLine("continue");
@@ -1809,7 +1813,9 @@ public class LuauEmitter
         var condition = EmitExpression(whileStmt.Condition);
         AppendLine($"while {condition} do");
         _indent++;
+        if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(whileStmt.Statement);
+        if (_switchDepth > 0) _loopDepthInSwitch--;
         _indent--;
         AppendLine("end");
     }
@@ -1819,7 +1825,9 @@ public class LuauEmitter
         var condition = EmitExpression(doStmt.Condition);
         AppendLine("repeat");
         _indent++;
+        if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(doStmt.Statement);
+        if (_switchDepth > 0) _loopDepthInSwitch--;
         _indent--;
         AppendLine($"until not ({condition})");
     }
@@ -1929,6 +1937,7 @@ public class LuauEmitter
         var condition = forStmt.Condition != null ? EmitExpression(forStmt.Condition) : "true";
         AppendLine($"while {condition} do");
         _indent++;
+        if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(forStmt.Statement);
 
         // Emit incrementors
@@ -1937,6 +1946,7 @@ public class LuauEmitter
             EmitIncrementorStatement(incrementor);
         }
 
+        if (_switchDepth > 0) _loopDepthInSwitch--;
         _indent--;
         AppendLine("end");
     }
@@ -1973,6 +1983,13 @@ public class LuauEmitter
             }
         }
 
+        // Handle compound assignments: i += step, i -= step, etc.
+        else if (expr is AssignmentExpressionSyntax assignment)
+        {
+            EmitAssignmentStatement(assignment);
+            return;
+        }
+
         // Fallback: emit as expression statement
         var exprStr = EmitExpression(expr);
         AppendLine(exprStr);
@@ -1987,7 +2004,9 @@ public class LuauEmitter
 
         AppendLine($"for _, {varName} in {collection} do");
         _indent++;
+        if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(foreachStmt.Statement);
+        if (_switchDepth > 0) _loopDepthInSwitch--;
         _indent--;
         AppendLine("end");
     }
@@ -2076,7 +2095,8 @@ public class LuauEmitter
         var governing = EmitExpression(switchStmt.Expression);
 
         // Gather sections. Each section can have multiple labels and multiple statements.
-        // We convert to if/elseif chains.
+        // We convert to if/elseif chains. Track switch depth to suppress break statements.
+        _switchDepth++;
         bool isFirst = true;
         SwitchSectionSyntax? defaultSection = null;
 
@@ -2134,6 +2154,7 @@ public class LuauEmitter
         {
             AppendLine("end");
         }
+        _switchDepth--;
     }
 
     private void EmitSwitchSectionStatements(SyntaxList<StatementSyntax> statements)
@@ -2244,13 +2265,31 @@ public class LuauEmitter
             return;
         }
 
+        // Conditional access as statement: obj?.Method() → if obj ~= nil then obj:Method() end
+        if (exprStmt.Expression is ConditionalAccessExpressionSyntax conditionalAccess)
+        {
+            var target = EmitExpression(conditionalAccess.Expression);
+            var binding = EmitConditionalBinding(target, conditionalAccess.WhenNotNull);
+            AppendLine($"if {target} ~= nil then {binding} end");
+            return;
+        }
+
+        // await <expr> as statement: if emitted form is not a call, comment it out
+        if (exprStmt.Expression is AwaitExpressionSyntax awaitStmt)
+        {
+            var awaitedExpr = EmitExpression(awaitStmt.Expression);
+            // If it's a function call it's a valid statement; if it's just a variable, comment it out
+            if (awaitedExpr.Contains("("))
+                AppendLine(awaitedExpr);
+            else
+                AppendLine($"-- await {awaitedExpr}");
+            return;
+        }
+
         var expr = EmitExpression(exprStmt.Expression);
-        // Only invocations and await expressions are valid as bare statements in Luau.
-        // Conditional access expressions like obj?.Method() that resolve to invocations are also valid.
+        // Only invocations are valid as bare statements in Luau.
         // Everything else (bare identifiers, ternary expressions, etc.) would be incomplete statements.
-        if (exprStmt.Expression is InvocationExpressionSyntax
-            || exprStmt.Expression is AwaitExpressionSyntax
-            || exprStmt.Expression is ConditionalAccessExpressionSyntax)
+        if (exprStmt.Expression is InvocationExpressionSyntax)
         {
             // Unwrap IIFE patterns like (function() sb = sb .. x; return sb end)()
             // These cause "ambiguous syntax" in Luau when preceded by another statement.
@@ -2284,6 +2323,14 @@ public class LuauEmitter
     {
         var left = EmitExpression(assignment.Left);
         var right = EmitExpression(assignment.Right);
+
+        // #var (from .Length/.Count) can't be an assignment target in Luau → use .Length property
+        if (left.StartsWith("#"))
+        {
+            var varName = left.Substring(1);
+            AppendLine($"{varName}.Length = {right}");
+            return;
+        }
 
         // String += → concat: x = x .. y (Luau has no ..= operator)
         if (assignment.Kind() == SyntaxKind.AddAssignmentExpression)
@@ -3151,8 +3198,33 @@ public class LuauEmitter
         var memberName = memberAccess.Name.Identifier.Text;
 
         // ── Strip no-op .NET methods — identity in Luau ──
-        if (memberName is "ConfigureAwait" or "Cast" or "AsEnumerable")
+        if (memberName is "ConfigureAwait" or "Cast" or "AsEnumerable"
+            or "ToLocalTime" or "ToUniversalTime")
             return EmitExpression(memberAccess.Expression);
+
+        // ── typeof(T).Method() / "T".Method() — reflection methods on type objects ──
+        // In Luau there's no runtime type system, so these are best-effort constants
+        if (memberAccess.Expression is TypeOfExpressionSyntax typeOfExpr)
+        {
+            var typeStr = typeOfExpr.Type.ToString().Replace(",", "").Replace(" ", "").Replace("<", "_").Replace(">", "");
+            if (memberName is "IsAssignableFrom" or "IsSubclassOf" or "IsInstanceOfType")
+                return "true --[[typeof reflection]]";
+            if (memberName is "MakeGenericType" or "GetGenericTypeDefinition")
+                return $"\"{typeStr}\" --[[typeof reflection]]";
+            if (memberName is "GetMethod" or "GetField" or "GetProperty" or "GetMember"
+                or "GetConstructor" or "GetMethods" or "GetFields" or "GetProperties"
+                or "GetInterfaces" or "GetElementType" or "GetGenericArguments"
+                or "GetCustomAttributes" or "GetCustomAttribute")
+                return $"nil --[[typeof({typeStr}).{memberName}]]";
+            if (memberName is "Equals")
+            {
+                if (arguments.Count == 1)
+                    return $"(\"{typeStr}\" == {EmitExpression(arguments[0].Expression)})";
+                return "false";
+            }
+            // Fallback: emit as string (type name) — better than broken method call
+            return $"\"{typeStr}\"";
+        }
 
         // ── Nullable<T>.GetValueOrDefault() → (x or 0) / (x or default) ──
         if (memberName == "GetValueOrDefault")
@@ -3169,6 +3241,18 @@ public class LuauEmitter
             return $"string.lower({EmitExpression(memberAccess.Expression)})";
         if (memberName is "ToUpper" or "ToUpperInvariant" && arguments.Count == 0)
             return $"string.upper({EmitExpression(memberAccess.Expression)})";
+
+        // String.CopyTo(srcIdx, dest, destIdx, count) → inline char copy loop
+        // Emits as a statement via helper: __rt.stringCopyTo(src, srcIdx, dest, destIdx, count)
+        if (memberName == "CopyTo" && arguments.Count == 4)
+        {
+            var src = EmitExpression(memberAccess.Expression);
+            var srcIdx = EmitExpression(arguments[0].Expression);
+            var dest = EmitExpression(arguments[1].Expression);
+            var destIdx = EmitExpression(arguments[2].Expression);
+            var count = EmitExpression(arguments[3].Expression);
+            return $"__rt.stringCopyTo({src}, {srcIdx}, {dest}, {destIdx}, {count})";
+        }
 
         var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
         var argStr = string.Join(", ", args);
@@ -4277,27 +4361,23 @@ public class LuauEmitter
 
     private string EmitParenthesized(ParenthesizedExpressionSyntax paren)
     {
+        // If inner is a cast (erased in Luau), unwrap the redundant parens
+        // to avoid "Ambiguous syntax" when result is used as method receiver: (o).Method()
+        if (paren.Expression is CastExpressionSyntax)
+            return EmitExpression(paren.Expression);
         var inner = EmitExpression(paren.Expression);
         return $"({inner})";
     }
 
     private string EmitCast(CastExpressionSyntax cast)
     {
-        var inner = EmitExpression(cast.Expression);
-        var targetType = cast.Type.ToString();
-
-        // Enum casts: (int)kind → kind, (SyntaxKind)7 → 7
-        // Numeric casts: (int)x → x, (char)x → x
-        // These are all no-ops in Luau since everything is number
-        if (targetType is "int" or "uint" or "long" or "ulong"
-            or "short" or "ushort" or "byte" or "sbyte"
-            or "float" or "double" or "char"
-            || IsLikelyEnumOrExternalType(targetType))
-        {
-            return inner;
-        }
-
-        return inner; // Default: drop the cast
+        // Cast is erased in Luau — just emit the inner expression.
+        // If the inner expression is parenthesized (e.g. ((Array)o) → (o)),
+        // unwrap the redundant parens to avoid "Ambiguous syntax" errors
+        // when the result is used as a method call receiver like (o).Method().
+        if (cast.Expression is ParenthesizedExpressionSyntax innerParen)
+            return EmitExpression(innerParen.Expression);
+        return EmitExpression(cast.Expression);
     }
 
     private string EmitConditional(ConditionalExpressionSyntax conditional)
