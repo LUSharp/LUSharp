@@ -324,6 +324,11 @@ public class RoslynToLuau
         {
             emitter.EmitUnifiedReturn();
         }
+        else if (emitter.EmittedTopLevelTypes.Count == 0)
+        {
+            // Interface-only files have no runtime values but still need a return for require()
+            emitter.AppendLine("return {}");
+        }
 
         // Collect type names defined in this file to exclude from requires
         var localTypeNames = CollectTypeNames(root.Members);

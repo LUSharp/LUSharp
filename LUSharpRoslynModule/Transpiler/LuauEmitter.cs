@@ -218,6 +218,7 @@ public class LuauEmitter
 
         // Compute enum member values (auto-increment when no explicit = value)
         var memberValues = new List<(string Name, string Value)>();
+        var resolvedNumericValues = new Dictionary<string, int>();
         int nextAutoValue = 0;
         foreach (var member in enumDecl.Members)
         {
@@ -227,13 +228,32 @@ public class LuauEmitter
                 var explicitValue = EmitExpression(member.EqualsValue.Value);
                 // Try to parse for auto-increment tracking
                 if (int.TryParse(explicitValue, out var parsed))
+                {
                     nextAutoValue = parsed + 1;
+                    resolvedNumericValues[memberName] = parsed;
+                }
                 else
-                    nextAutoValue++; // expression-based (e.g., 1 << 3), can't track — just bump
+                {
+                    // For flags enums, try to resolve references to other members
+                    // e.g., IgnoreAndPopulate = Ignore | Populate → bit32.bor(1, 2) → 3
+                    int? resolved = TryResolveEnumExpression(member.EqualsValue.Value, resolvedNumericValues);
+                    if (resolved != null)
+                    {
+                        explicitValue = resolved.Value.ToString();
+                        resolvedNumericValues[memberName] = resolved.Value;
+                        nextAutoValue = resolved.Value + 1;
+                    }
+                    else
+                    {
+                        nextAutoValue++;
+                    }
+
+                }
                 memberValues.Add((memberName, explicitValue));
             }
             else
             {
+                resolvedNumericValues[memberName] = nextAutoValue;
                 memberValues.Add((memberName, nextAutoValue.ToString()));
                 nextAutoValue++;
             }
@@ -290,6 +310,48 @@ public class LuauEmitter
                     AppendLine($"return {{ {name} = {name}, {name}_Name = {name}_Name }}");
             }
         }
+    }
+
+    /// <summary>
+    /// Try to resolve an enum member expression to a numeric value by substituting
+    /// known member names. Handles patterns like: Ignore | Populate, A | B | C.
+    /// </summary>
+    private int? TryResolveEnumExpression(ExpressionSyntax expr, Dictionary<string, int> known)
+    {
+        if (expr is LiteralExpressionSyntax literal && literal.Kind() == SyntaxKind.NumericLiteralExpression)
+        {
+            if (int.TryParse(literal.Token.ValueText, out var val))
+                return val;
+        }
+        if (expr is IdentifierNameSyntax ident && known.TryGetValue(ident.Identifier.Text, out var identVal))
+            return identVal;
+        if (expr is BinaryExpressionSyntax binary)
+        {
+            var leftVal = TryResolveEnumExpression(binary.Left, known);
+            var rightVal = TryResolveEnumExpression(binary.Right, known);
+            if (leftVal != null && rightVal != null)
+            {
+                return binary.Kind() switch
+                {
+                    SyntaxKind.BitwiseOrExpression => leftVal.Value | rightVal.Value,
+                    SyntaxKind.BitwiseAndExpression => leftVal.Value & rightVal.Value,
+                    SyntaxKind.AddExpression => leftVal.Value + rightVal.Value,
+                    SyntaxKind.LeftShiftExpression => leftVal.Value << rightVal.Value,
+                    _ => null
+                };
+            }
+        }
+        // Unary: ~expr (bitwise NOT)
+        if (expr is PrefixUnaryExpressionSyntax prefix && prefix.Kind() == SyntaxKind.BitwiseNotExpression)
+        {
+            var operandVal = TryResolveEnumExpression(prefix.Operand, known);
+            if (operandVal != null)
+                return ~operandVal.Value;
+        }
+        // MemberAccess like TypeNameHandling.Objects → look up "Objects"
+        if (expr is MemberAccessExpressionSyntax ma && known.TryGetValue(ma.Name.Identifier.Text, out var maVal))
+            return maVal;
+        return null;
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -578,9 +640,7 @@ public class LuauEmitter
         _indent--;
         AppendLine("}");
         AppendLine();
-
-        // Track for unified return
-        EmittedTopLevelTypes.Add(name);
+        // Interfaces are type-only (export type) — no runtime value to return
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -936,10 +996,18 @@ public class LuauEmitter
                 AppendLine($"{className}.{field.Name} = nil");
         }
 
-        // ── Phase 3.6: static fields ──
+        // ── Phase 3.6: static fields (simple initializers only) ──
+        // Defer fields with function calls (IIFE, .new(), etc.) to after methods are defined
+        var deferredStaticFields = new List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)>();
         foreach (var field in staticFields)
         {
-            if (field.DefaultValue != null)
+            if (field.DefaultValue != null && field.DefaultValue.Contains("("))
+            {
+                // Complex initializer — defer to after constructor/methods
+                AppendLine($"{className}.{field.Name} = nil");
+                deferredStaticFields.Add(field);
+            }
+            else if (field.DefaultValue != null)
                 AppendLine($"{className}.{field.Name} = {field.DefaultValue}");
             else
                 AppendLine($"{className}.{field.Name} = nil");
@@ -1013,6 +1081,16 @@ public class LuauEmitter
                 case IndexerDeclarationSyntax indexerDecl:
                     EmitIndexer(className, indexerDecl);
                     break;
+            }
+        }
+
+        // ── Phase 6.6: deferred static field initializers ──
+        if (deferredStaticFields.Count > 0)
+        {
+            AppendLine();
+            foreach (var field in deferredStaticFields)
+            {
+                AppendLine($"{className}.{field.Name} = {field.DefaultValue}");
             }
         }
 
@@ -1628,8 +1706,17 @@ public class LuauEmitter
 
     private void EmitBlock(BlockSyntax block)
     {
+        // Hoist local functions to the top of the block (C# allows them anywhere,
+        // but Luau requires local functions to be declared before first use).
         foreach (var statement in block.Statements)
         {
+            if (statement is LocalFunctionStatementSyntax localFunc)
+                EmitLocalFunction(localFunc);
+        }
+        foreach (var statement in block.Statements)
+        {
+            if (statement is LocalFunctionStatementSyntax)
+                continue; // already emitted above
             EmitStatement(statement);
         }
     }
@@ -2103,17 +2190,32 @@ public class LuauEmitter
         foreach (var section in switchStmt.Sections)
         {
             var caseLabels = section.Labels.OfType<CaseSwitchLabelSyntax>().ToList();
+            var patternLabels = section.Labels.OfType<CasePatternSwitchLabelSyntax>().ToList();
             var hasDefault = section.Labels.Any(l => l is DefaultSwitchLabelSyntax);
 
-            if (caseLabels.Count == 0 && hasDefault)
+            if (caseLabels.Count == 0 && patternLabels.Count == 0 && hasDefault)
             {
                 defaultSection = section;
                 continue;
             }
 
-            // Build condition: governing == val1 or governing == val2 ...
-            var conditions = caseLabels.Select(c => $"{governing} == {EmitExpression(c.Value)}");
-            var condStr = string.Join(" or ", conditions);
+            // Build condition from value labels: governing == val1 or governing == val2 ...
+            var condParts = new List<string>();
+            foreach (var c in caseLabels)
+                condParts.Add($"{governing} == {EmitExpression(c.Value)}");
+
+            // Build condition from pattern labels: case Type varName: / case var x when ...:
+            foreach (var pl in patternLabels)
+            {
+                var patternCond = EmitPattern(governing, pl.Pattern);
+                if (pl.WhenClause != null)
+                    patternCond = $"({patternCond} and {EmitExpression(pl.WhenClause.Condition)})";
+                condParts.Add(patternCond);
+            }
+
+            var condStr = string.Join(" or ", condParts);
+            if (condStr.Length == 0)
+                condStr = "true"; // fallback — should not happen
 
             if (isFirst)
             {
