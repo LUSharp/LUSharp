@@ -139,6 +139,9 @@ public class LuauEmitter
     private int _evalTempCounter = 0;
     private int _switchDepth = 0;
     private int _loopDepthInSwitch = 0;
+    private bool _insidePcallLambda = false;
+    private bool _pcallHasContinue = false;
+    private bool _pcallHasBreak = false;
 
     public LuauEmitter(SemanticModel? model = null)
     {
@@ -1023,9 +1026,9 @@ public class LuauEmitter
             var ctor = constructors[0]; // Use first constructor
             EmitConstructor(className, ctor, instanceFields, baseClassName);
         }
-        else if (instanceFields.Count > 0 || baseClassName != null)
+        else
         {
-            // Auto-generate parameterless constructor
+            // Auto-generate parameterless constructor (always emit so derived classes can call Base.new())
             EmitAutoConstructor(className, instanceFields, baseClassName);
         }
 
@@ -1749,10 +1752,30 @@ public class LuauEmitter
             case BreakStatementSyntax:
                 // Suppress break inside switch-as-if/elseif, but allow it inside loops within switches
                 if (_switchDepth == 0 || _loopDepthInSwitch > 0)
-                    AppendLine("break");
+                {
+                    if (_insidePcallLambda)
+                    {
+                        _pcallHasBreak = true;
+                        AppendLine("__pcall_break = true");
+                        AppendLine("return");
+                    }
+                    else
+                    {
+                        AppendLine("break");
+                    }
+                }
                 break;
             case ContinueStatementSyntax:
-                AppendLine("continue");
+                if (_insidePcallLambda)
+                {
+                    _pcallHasContinue = true;
+                    AppendLine("__pcall_continue = true");
+                    AppendLine("return");
+                }
+                else
+                {
+                    AppendLine("continue");
+                }
                 break;
             case DoStatementSyntax doStmt:
                 EmitDoWhile(doStmt);
@@ -1934,12 +1957,32 @@ public class LuauEmitter
         // Check if the try block contains any return statements
         bool tryHasReturn = tryStmt.Block.DescendantNodes().OfType<ReturnStatementSyntax>().Any();
 
+        // Check if the try block contains continue/break that would cross the pcall boundary.
+        // Only count continue/break that are NOT inside a nested loop within the try block.
+        bool tryHasContinue = tryStmt.Block.DescendantNodes().OfType<ContinueStatementSyntax>()
+            .Any(c => !c.Ancestors().TakeWhile(a => a != tryStmt.Block)
+                .Any(a => a is WhileStatementSyntax or ForStatementSyntax or ForEachStatementSyntax or DoStatementSyntax));
+        bool tryHasBreak = tryStmt.Block.DescendantNodes().OfType<BreakStatementSyntax>()
+            .Any(b => !b.Ancestors().TakeWhile(a => a != tryStmt.Block)
+                .Any(a => a is WhileStatementSyntax or ForStatementSyntax or ForEachStatementSyntax or DoStatementSyntax));
+
+        // Emit flag declarations before pcall if needed
+        if (tryHasContinue)
+            AppendLine("local __pcall_continue = false");
+        if (tryHasBreak)
+            AppendLine("local __pcall_break = false");
+
         // Emit pcall wrapper for the try block
+        bool savedInsidePcall = _insidePcallLambda;
+        _insidePcallLambda = true;
+        _pcallHasContinue = false;
+        _pcallHasBreak = false;
         AppendLine("local __ok, __pcall_ret = pcall(function()");
         _indent++;
         EmitBlock(tryStmt.Block);
         _indent--;
         AppendLine("end)");
+        _insidePcallLambda = savedInsidePcall;
 
         // Emit catch clauses
         if (tryStmt.Catches.Count > 0)
@@ -1984,6 +2027,17 @@ public class LuauEmitter
         if (tryHasReturn)
         {
             AppendLine("if __ok then return __pcall_ret end");
+        }
+
+        // Emit continue/break flag checks after pcall completes
+        // These handle C# continue/break inside try blocks (which become pcall lambdas in Luau)
+        if (tryHasContinue)
+        {
+            AppendLine("if __pcall_continue then continue end");
+        }
+        if (tryHasBreak)
+        {
+            AppendLine("if __pcall_break then break end");
         }
     }
 
