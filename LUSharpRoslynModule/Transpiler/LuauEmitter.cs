@@ -4674,10 +4674,51 @@ public class LuauEmitter
                 $"{target}.{memberBinding.Name.Identifier.Text}",
             InvocationExpressionSyntax invocation when invocation.Expression is MemberBindingExpressionSyntax methodBinding =>
                 EmitConditionalMethodInvocation(target, methodBinding, invocation.ArgumentList.Arguments),
+            // Handle chained access: ?.Prop.Method(args) — MemberAccess on a MemberBinding
+            InvocationExpressionSyntax invocation when invocation.Expression is MemberAccessExpressionSyntax chainedAccess =>
+                ResolveConditionalChainedInvocation(target, chainedAccess, invocation.ArgumentList.Arguments),
             ElementBindingExpressionSyntax elementBinding =>
                 $"{target}[{string.Join(", ", elementBinding.ArgumentList.Arguments.Select(a => EmitExpression(a.Expression)))}]",
             _ => $"{target}.{EmitExpression(whenNotNull)}"
         };
+    }
+
+    /// <summary>
+    /// Resolve a chained invocation inside conditional access: obj?.Prop.Method(args)
+    /// Replaces the MemberBindingExpression root with the target expression.
+    /// </summary>
+    private string ResolveConditionalChainedInvocation(string target, MemberAccessExpressionSyntax memberAccess, SeparatedSyntaxList<ArgumentSyntax> arguments)
+    {
+        // Build the full owner by walking up the chain and replacing MemberBinding with target
+        var owner = ResolveConditionalChain(target, memberAccess.Expression);
+        var methodName = memberAccess.Name.Identifier.Text;
+        var args = arguments.Select(a => EmitExpression(a.Expression));
+        var argStr = string.Join(", ", args);
+
+        // Apply known method rewrites (Add → table.insert, etc.)
+        if (methodName == "Add" && arguments.Count == 1)
+            return $"table.insert({owner}, {argStr})";
+        if (methodName == "Add" && arguments.Count == 2)
+        {
+            var key = EmitExpression(arguments[0].Expression);
+            var val = EmitExpression(arguments[1].Expression);
+            return $"{owner}[{key}] = {val}";
+        }
+
+        return $"{owner}:{methodName}({argStr})";
+    }
+
+    /// <summary>
+    /// Walk a member access chain inside conditional access and replace the MemberBinding root with target.
+    /// e.g., .Expressions → target.Expressions
+    /// </summary>
+    private string ResolveConditionalChain(string target, ExpressionSyntax expr)
+    {
+        if (expr is MemberBindingExpressionSyntax binding)
+            return $"{target}.{binding.Name.Identifier.Text}";
+        if (expr is MemberAccessExpressionSyntax access)
+            return $"{ResolveConditionalChain(target, access.Expression)}.{access.Name.Identifier.Text}";
+        return EmitExpression(expr);
     }
 
     /// <summary>
