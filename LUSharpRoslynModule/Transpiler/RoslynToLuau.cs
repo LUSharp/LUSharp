@@ -27,6 +27,18 @@ public class RoslynToLuau
     private Dictionary<string, string> _baseClassMap = new();
 
     /// <summary>
+    /// Set of (FromModule, ToModule) edges that should use lazy requires to break cycles.
+    /// Built by DetectCycles() after PreScan + a quick dependency scan pass.
+    /// </summary>
+    private HashSet<(string From, string To)> _lazyRequireEdges = new();
+
+    /// <summary>
+    /// Per-module dependency map: module name → set of modules it depends on.
+    /// Built during TranspileProject-level processing for cycle detection.
+    /// </summary>
+    private Dictionary<string, HashSet<string>> _moduleDeps = new();
+
+    /// <summary>
     /// Roslyn CSharpCompilation built from all source files + BCL references.
     /// Provides SemanticModel per-file for type resolution.
     /// </summary>
@@ -531,16 +543,64 @@ public class RoslynToLuau
 
         if (moduleToTypes.Count == 0) return;
 
+        // Record this module's dependencies for cycle detection
+        if (currentModuleName != null)
+        {
+            if (!_moduleDeps.ContainsKey(currentModuleName))
+                _moduleDeps[currentModuleName] = new HashSet<string>();
+            foreach (var depModule in moduleToTypes.Keys)
+                _moduleDeps[currentModuleName].Add(depModule);
+
+            // Detect cycles: if any dependency already depends on us, it's a cycle
+            foreach (var depModule in moduleToTypes.Keys.ToList())
+            {
+                if (_moduleDeps.ContainsKey(depModule) && _moduleDeps[depModule].Contains(currentModuleName))
+                {
+                    _lazyRequireEdges.Add((currentModuleName, depModule));
+                }
+            }
+        }
+
         var requireBlock = new System.Text.StringBuilder();
+        var lazyBlock = new System.Text.StringBuilder();
         foreach (var (moduleName, types) in moduleToTypes.OrderBy(kv => kv.Key))
         {
-            requireBlock.AppendLine($"local _{moduleName} = require(script.Parent.{moduleName})");
-            foreach (var typeName in types.OrderBy(t => t))
+            bool isLazy = currentModuleName != null && _lazyRequireEdges.Contains((currentModuleName, moduleName));
+
+            if (isLazy)
             {
-                requireBlock.AppendLine($"local {typeName} = _{moduleName}.{typeName}");
+                // Emit lazy require pattern to break circular dependency
+                requireBlock.AppendLine($"local _{moduleName}");
+                foreach (var typeName in types.OrderBy(t => t))
+                {
+                    requireBlock.AppendLine($"local {typeName}");
+                }
+                // Emit a lazy initializer that runs on first access via task.defer
+                // This allows the current module to return first, breaking the cycle
+                lazyBlock.AppendLine($"task.defer(function() _{moduleName} = require(script.Parent.{moduleName})");
+                foreach (var typeName in types.OrderBy(t => t))
+                {
+                    lazyBlock.AppendLine($"\t{typeName} = _{moduleName}.{typeName}");
+                }
+                lazyBlock.AppendLine("end)");
+            }
+            else
+            {
+                requireBlock.AppendLine($"local _{moduleName} = require(script.Parent.{moduleName})");
+                foreach (var typeName in types.OrderBy(t => t))
+                {
+                    requireBlock.AppendLine($"local {typeName} = _{moduleName}.{typeName}");
+                }
             }
         }
         requireBlock.AppendLine();
+
+        // Append lazy initializers after the regular requires
+        if (lazyBlock.Length > 0)
+        {
+            requireBlock.Append(lazyBlock);
+            requireBlock.AppendLine();
+        }
 
         emitter.InsertAfterHeader(requireBlock.ToString());
     }
