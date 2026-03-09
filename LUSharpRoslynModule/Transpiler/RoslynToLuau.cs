@@ -901,6 +901,24 @@ public class RoslynToLuau
                     requireBlock.AppendLine($"local {typeName} = _{moduleName}.{typeName}");
                 }
             }
+
+            // Emit type aliases so --!strict mode recognizes imported types in annotations.
+            foreach (var typeName in types.OrderBy(t => t))
+            {
+                // Only alias names that look like type names (PascalCase)
+                if (typeName.Length > 0 && char.IsUpper(typeName[0]))
+                {
+                    if (isLazy)
+                    {
+                        // Lazy imports are nil at declaration time — use 'any' as placeholder type
+                        requireBlock.AppendLine($"type {typeName} = any");
+                    }
+                    else
+                    {
+                        requireBlock.AppendLine($"type {typeName} = typeof({typeName})");
+                    }
+                }
+            }
         }
         requireBlock.AppendLine();
 
@@ -909,6 +927,98 @@ public class RoslynToLuau
         {
             requireBlock.Append(lazyBlock);
             requireBlock.AppendLine();
+        }
+
+        // Emit type aliases for external .NET types not in the project.
+        // These are referenced in type annotations but have no Luau equivalent.
+        var importedTypes = new HashSet<string>(moduleToTypes.Values.SelectMany(v => v));
+        var externalTypes = typesToRequire
+            .Where(t => !_typeToModuleMap.ContainsKey(t))
+            .Where(t => t.Length > 0 && char.IsUpper(t[0]))
+            .Where(t => !importedTypes.Contains(t))
+            .OrderBy(t => t)
+            .ToList();
+        if (externalTypes.Count > 0)
+        {
+            foreach (var typeName in externalTypes)
+            {
+                requireBlock.AppendLine($"type {typeName} = any");
+            }
+            requireBlock.AppendLine();
+        }
+
+        // Scan emitted output for type names used in annotations but never declared.
+        // This catches .NET framework types (TextReader, DateTime, etc.) that MapComplexType
+        // passes through unchanged and TrackTypeReferences doesn't track.
+        var output = emitter.GetOutput();
+        var declaredTypes = new HashSet<string>();
+
+        // Collect all type declarations in the output
+        foreach (var line in output.Split('\n'))
+        {
+            var trimmed = line.TrimStart();
+            // Match: type X = ..., export type X = ...
+            if (trimmed.StartsWith("type ") || trimmed.StartsWith("export type "))
+            {
+                var afterType = trimmed.StartsWith("export type ") ? trimmed.Substring(12) : trimmed.Substring(5);
+                var eqIdx = afterType.IndexOf(' ');
+                if (eqIdx > 0)
+                    declaredTypes.Add(afterType.Substring(0, eqIdx));
+            }
+        }
+
+        // Add imported value names as declared (they're usable as types via typeof)
+        foreach (var types in moduleToTypes.Values)
+            foreach (var t in types)
+                declaredTypes.Add(t);
+
+        // Add current class names
+        if (localTypeNames != null)
+            foreach (var t in localTypeNames)
+                declaredTypes.Add(t);
+
+        // Add external types already emitted as stubs above
+        foreach (var t in externalTypes)
+            declaredTypes.Add(t);
+
+        // Luau built-in types
+        var luauBuiltins = new HashSet<string> {
+            "string", "number", "boolean", "any", "nil", "never", "unknown", "thread", "buffer"
+        };
+
+        // Find undefined type names in function signatures and field annotations
+        var undefinedTypes = new HashSet<string>();
+        var typeRefRegex = new System.Text.RegularExpressions.Regex(@":\s*([A-Z][A-Za-z0-9_]*)(?:\s*[,\)\?]|\s*$)");
+        var selfTypeRegex = new System.Text.RegularExpressions.Regex(@":\s*\{\s*([A-Z][A-Za-z0-9_]*)");
+        foreach (var line in output.Split('\n'))
+        {
+            var trimmed = line.TrimStart();
+            if (trimmed.StartsWith("function ") || trimmed.Contains(":: ") || trimmed.Contains(": "))
+            {
+                foreach (System.Text.RegularExpressions.Match match in typeRefRegex.Matches(line))
+                {
+                    var typeName = match.Groups[1].Value;
+                    if (!luauBuiltins.Contains(typeName) && !declaredTypes.Contains(typeName))
+                        undefinedTypes.Add(typeName);
+                }
+                foreach (System.Text.RegularExpressions.Match match in selfTypeRegex.Matches(line))
+                {
+                    var typeName = match.Groups[1].Value;
+                    if (!luauBuiltins.Contains(typeName) && !declaredTypes.Contains(typeName))
+                        undefinedTypes.Add(typeName);
+                }
+            }
+        }
+
+        if (undefinedTypes.Count > 0)
+        {
+            var stubBlock = new System.Text.StringBuilder();
+            foreach (var typeName in undefinedTypes.OrderBy(t => t))
+            {
+                stubBlock.AppendLine($"type {typeName} = any");
+            }
+            stubBlock.AppendLine();
+            requireBlock.Append(stubBlock);
         }
 
         emitter.InsertAfterHeader(requireBlock.ToString());

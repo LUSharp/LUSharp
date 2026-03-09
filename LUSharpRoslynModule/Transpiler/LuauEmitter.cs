@@ -117,6 +117,12 @@ public class LuauEmitter
     public HashSet<string> ReferencedModules { get; } = new();
 
     /// <summary>
+    /// Type names used in annotations that are not Luau built-ins and may need 'type X = any' stubs.
+    /// Populated by MapComplexType when it returns an unmapped type name.
+    /// </summary>
+    public HashSet<string> AnnotationTypeNames { get; } = new();
+
+    /// <summary>
     /// Whether this file requires the LUSharpRuntime module (set when LINQ, dictionary helpers, etc. are used).
     /// </summary>
     public bool NeedsRuntime { get; private set; }
