@@ -139,9 +139,18 @@ public class LuauEmitter
     private int _evalTempCounter = 0;
     private int _switchDepth = 0;
     private int _loopDepthInSwitch = 0;
+    private int _loopDepth = 0;
     private bool _insidePcallLambda = false;
     private bool _pcallHasContinue = false;
     private bool _pcallHasBreak = false;
+
+    /// <summary>
+    /// Module-level deferred static field initializers. Collected from all classes
+    /// (including nested) and emitted at the end of the module, just before the return
+    /// statement. This ensures all methods from all classes are defined before any
+    /// static initializer that references them runs.
+    /// </summary>
+    private List<(string ClassName, string FieldName, string Value)> _moduleDeferredStatics = new();
 
     public LuauEmitter(SemanticModel? model = null)
     {
@@ -440,7 +449,17 @@ public class LuauEmitter
                         if (variable.Initializer != null)
                         {
                             var value = EmitExpression(variable.Initializer.Value);
-                            AppendLine($"{className}.{fieldName} = {value}");
+                            // Defer complex initializers (function calls) to end of module
+                            // to avoid forward references to methods not yet defined
+                            if (value.Contains("("))
+                            {
+                                AppendLine($"{className}.{fieldName} = nil");
+                                _moduleDeferredStatics.Add((className, fieldName, value));
+                            }
+                            else
+                            {
+                                AppendLine($"{className}.{fieldName} = {value}");
+                            }
                         }
                         else
                         {
@@ -522,6 +541,21 @@ public class LuauEmitter
             EmittedTopLevelTypes.Add(className);
             foreach (var nested in nestedStaticTypeNames)
                 EmittedTopLevelTypes.Add(nested);
+
+            // Emit module-level deferred static initializers wrapped in task.defer
+            // so they run after lazy requires have resolved
+            if (_moduleDeferredStatics.Count > 0)
+            {
+                AppendLine();
+                AppendLine("task.defer(function()");
+                foreach (var (cls, fieldName, value) in _moduleDeferredStatics)
+                {
+                    AppendLine($"\t{cls}.{fieldName} = {value}");
+                }
+                AppendLine("end)");
+                _moduleDeferredStatics.Clear();
+            }
+
             if (!SuppressReturn)
             {
                 var returnEntries = new List<string> { $"{className} = {className}" };
@@ -1088,13 +1122,12 @@ public class LuauEmitter
         }
 
         // ── Phase 6.6: deferred static field initializers ──
-        if (deferredStaticFields.Count > 0)
+        // Collect into module-level list instead of emitting inline.
+        // This ensures all methods (including from outer/sibling classes) are defined
+        // before any static initializer runs — fixing nested class forward references.
+        foreach (var field in deferredStaticFields)
         {
-            AppendLine();
-            foreach (var field in deferredStaticFields)
-            {
-                AppendLine($"{className}.{field.Name} = {field.DefaultValue}");
-            }
+            _moduleDeferredStatics.Add((className, field.Name, field.DefaultValue!));
         }
 
         // Register this type's instance fields for child class inheritance resolution
@@ -1108,6 +1141,20 @@ public class LuauEmitter
             foreach (var nested in _nestedTypeNames)
             {
                 EmittedTopLevelTypes.Add(nested);
+            }
+
+            // ── Phase 7.5: emit all module-level deferred static initializers ──
+            // Wrapped in task.defer so they run after lazy requires have resolved.
+            if (_moduleDeferredStatics.Count > 0)
+            {
+                AppendLine();
+                AppendLine("task.defer(function()");
+                foreach (var (cls, fieldName, value) in _moduleDeferredStatics)
+                {
+                    AppendLine($"\t{cls}.{fieldName} = {value}");
+                }
+                AppendLine("end)");
+                _moduleDeferredStatics.Clear();
             }
 
             if (!SuppressReturn)
@@ -1923,9 +1970,11 @@ public class LuauEmitter
         var condition = EmitExpression(whileStmt.Condition);
         AppendLine($"while {condition} do");
         _indent++;
+        _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(whileStmt.Statement);
         if (_switchDepth > 0) _loopDepthInSwitch--;
+        _loopDepth--;
         _indent--;
         AppendLine("end");
     }
@@ -1935,9 +1984,11 @@ public class LuauEmitter
         var condition = EmitExpression(doStmt.Condition);
         AppendLine("repeat");
         _indent++;
+        _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(doStmt.Statement);
         if (_switchDepth > 0) _loopDepthInSwitch--;
+        _loopDepth--;
         _indent--;
         AppendLine($"until not ({condition})");
     }
@@ -1966,6 +2017,14 @@ public class LuauEmitter
             .Any(b => !b.Ancestors().TakeWhile(a => a != tryStmt.Block)
                 .Any(a => a is WhileStatementSyntax or ForStatementSyntax or ForEachStatementSyntax or DoStatementSyntax));
 
+        // Only emit break/continue flags when the try-catch is inside a loop
+        // (break/continue outside loops is invalid Luau)
+        if (_loopDepth == 0)
+        {
+            tryHasContinue = false;
+            tryHasBreak = false;
+        }
+
         // Emit flag declarations before pcall if needed
         if (tryHasContinue)
             AppendLine("local __pcall_continue = false");
@@ -1973,8 +2032,12 @@ public class LuauEmitter
             AppendLine("local __pcall_break = false");
 
         // Emit pcall wrapper for the try block
+        // Save/restore loop depth: Luau function boundaries hide loops,
+        // so break/continue inside pcall lambda are not "inside a loop"
         bool savedInsidePcall = _insidePcallLambda;
+        int savedLoopDepth = _loopDepth;
         _insidePcallLambda = true;
+        _loopDepth = 0;
         _pcallHasContinue = false;
         _pcallHasBreak = false;
         AppendLine("local __ok, __pcall_ret = pcall(function()");
@@ -1983,6 +2046,7 @@ public class LuauEmitter
         _indent--;
         AppendLine("end)");
         _insidePcallLambda = savedInsidePcall;
+        _loopDepth = savedLoopDepth;
 
         // Emit catch clauses
         if (tryStmt.Catches.Count > 0)
@@ -2078,6 +2142,7 @@ public class LuauEmitter
         var condition = forStmt.Condition != null ? EmitExpression(forStmt.Condition) : "true";
         AppendLine($"while {condition} do");
         _indent++;
+        _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(forStmt.Statement);
 
@@ -2088,6 +2153,7 @@ public class LuauEmitter
         }
 
         if (_switchDepth > 0) _loopDepthInSwitch--;
+        _loopDepth--;
         _indent--;
         AppendLine("end");
     }
@@ -2145,9 +2211,11 @@ public class LuauEmitter
 
         AppendLine($"for _, {varName} in {collection} do");
         _indent++;
+        _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(foreachStmt.Statement);
         if (_switchDepth > 0) _loopDepthInSwitch--;
+        _loopDepth--;
         _indent--;
         AppendLine("end");
     }
@@ -2434,8 +2502,30 @@ public class LuauEmitter
         if (exprStmt.Expression is AwaitExpressionSyntax awaitStmt)
         {
             var awaitedExpr = EmitExpression(awaitStmt.Expression);
+            // Ternary as statement → convert to if/else statement
+            if (awaitedExpr.StartsWith("(if ") || awaitedExpr.StartsWith("((if "))
+            {
+                // Strip exactly one layer of wrapping parens at a time
+                var inner = awaitedExpr;
+                while (inner.StartsWith("(") && inner.EndsWith(")"))
+                {
+                    var candidate = inner.Substring(1, inner.Length - 2);
+                    // Verify the stripped parens were a matching pair (balanced inside)
+                    int depth = 0;
+                    bool balanced = true;
+                    foreach (var ch in candidate)
+                    {
+                        if (ch == '(') depth++;
+                        else if (ch == ')') { depth--; if (depth < 0) { balanced = false; break; } }
+                    }
+                    if (!balanced || depth != 0) break;
+                    inner = candidate;
+                    if (inner.StartsWith("if ")) break; // found the if
+                }
+                AppendLine($"{inner} end");
+            }
             // If it's a function call it's a valid statement; if it's just a variable, comment it out
-            if (awaitedExpr.Contains("("))
+            else if (awaitedExpr.Contains("("))
                 AppendLine(awaitedExpr);
             else
                 AppendLine($"-- await {awaitedExpr}");
@@ -2662,14 +2752,32 @@ public class LuauEmitter
         // Use the C# string value and re-escape for Lua
         if (literal.Token.Value is string strVal)
         {
-            // Escape for Lua string
-            var escaped = strVal
-                .Replace("\\", "\\\\")
-                .Replace("\"", "\\\"")
-                .Replace("\n", "\\n")
-                .Replace("\r", "\\r")
-                .Replace("\t", "\\t");
-            return $"\"{escaped}\"";
+            // Escape for Lua string, handling all non-printable and non-ASCII chars
+            var sb = new System.Text.StringBuilder(strVal.Length + 8);
+            foreach (var ch in strVal)
+            {
+                switch (ch)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    case '\0': sb.Append("\\0"); break;
+                    default:
+                        if (ch < ' ' || ch > '~')
+                        {
+                            // Non-printable or non-ASCII → Luau \u{XXXX} escape
+                            sb.Append($"\\u{{{(int)ch:X4}}}");
+                        }
+                        else
+                        {
+                            sb.Append(ch);
+                        }
+                        break;
+                }
+            }
+            return $"\"{sb}\"";
         }
         return literal.Token.Text;
     }
@@ -2705,7 +2813,7 @@ public class LuauEmitter
         }
 
         // Const/static fields accessed as bare identifiers → ClassName.Field
-        if (_isInstanceContext && _constFields.Contains(name)
+        if (_constFields.Contains(name)
             && !_currentMethodParams.Contains(name)
             && !_currentMethodLocals.Contains(name)
             && _currentClassName != null)
@@ -2713,18 +2821,36 @@ public class LuauEmitter
             return $"{_currentClassName}.{name}";
         }
 
-        // SemanticModel: resolve inherited instance members (fields/properties) → self.member
-        if (_isInstanceContext && _model != null
+        // SemanticModel: resolve bare identifiers to qualified names
+        if (_model != null
             && !_currentMethodParams.Contains(name)
             && !_currentMethodLocals.Contains(name))
         {
             var symbol = GetSymbol(ident);
-            if (symbol is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst)
-                return $"self.{name}";
-            if (symbol is IPropertySymbol ps && !ps.IsStatic)
-                return $"self.{name}";
-            if (symbol is IMethodSymbol ms && !ms.IsStatic && ms.MethodKind == MethodKind.Ordinary)
-                return $"self.{name}";
+            if (_isInstanceContext)
+            {
+                if (symbol is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst)
+                    return $"self.{name}";
+                if (symbol is IPropertySymbol ps && !ps.IsStatic)
+                    return $"self.{name}";
+                if (symbol is IMethodSymbol ms && !ms.IsStatic && ms.MethodKind == MethodKind.Ordinary)
+                    return $"self.{name}";
+            }
+            // Static methods used as bare identifiers (method group → delegate) → ClassName.Method
+            if (symbol is IMethodSymbol staticMs && staticMs.IsStatic
+                && staticMs.MethodKind == MethodKind.Ordinary)
+            {
+                var containingName = staticMs.ContainingType?.Name;
+                if (containingName != null)
+                    return $"{containingName}.{name}";
+            }
+            // Static/const fields accessed as bare identifiers → ClassName.Field
+            if (symbol is IFieldSymbol sfs && (sfs.IsStatic || sfs.IsConst))
+            {
+                var containingName = sfs.ContainingType?.Name;
+                if (containingName != null)
+                    return $"{containingName}.{name}";
+            }
         }
 
         return name;
@@ -5061,12 +5187,16 @@ public class LuauEmitter
     private static bool IsNetFrameworkBaseClass(string name)
     {
         return name is "Attribute" or "Exception" or "EventArgs"
-            or "IDisposable" or "IComparable" or "IEquatable"
+            or "IDisposable" or "IAsyncDisposable" or "IComparable" or "IEquatable"
             or "IFormattable" or "IConvertible" or "ICloneable"
             or "MarshalByRefObject" or "ValueType"
             or "ICollection" or "IList" or "IEnumerable" or "IDictionary"
             or "ISerializable" or "IDeserializationCallback"
-            or "Collection" or "ReadOnlyCollection" or "KeyedCollection";
+            or "IFormatterConverter" or "IEqualityComparer"
+            or "Collection" or "ReadOnlyCollection" or "KeyedCollection"
+            or "SerializationBinder" or "PropertyDescriptor"
+            or "DynamicMetaObject" or "GetMemberBinder" or "SetMemberBinder"
+            or "ExpressionVisitor" or "IXmlNode";
     }
 
     /// <summary>

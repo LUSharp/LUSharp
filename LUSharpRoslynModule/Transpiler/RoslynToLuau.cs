@@ -133,6 +133,330 @@ public class RoslynToLuau
                     .WithNullableContextOptions(NullableContextOptions.Enable)
             );
         }
+
+        // Build dependency graph and detect cycles upfront
+        DetectCycles();
+    }
+
+    /// <summary>
+    /// Builds the full module dependency graph from identifier references in all source files,
+    /// then detects cycles via DFS and selects edges to break with lazy requires.
+    /// Must be called after PreScan populates _typeToModuleMap and _syntaxTrees.
+    /// </summary>
+    private void DetectCycles()
+    {
+        // Build dependency graph: for each module, find which other modules it references
+        var depGraph = new Dictionary<string, HashSet<string>>();
+
+        foreach (var (fileName, tree) in _syntaxTrees)
+        {
+            var moduleName = Path.GetFileNameWithoutExtension(fileName);
+            var deps = new HashSet<string>();
+
+            // Walk all identifier names in the syntax tree
+            var root = tree.GetCompilationUnitRoot();
+            foreach (var identifier in root.DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                var name = identifier.Identifier.Text;
+                if (_typeToModuleMap.TryGetValue(name, out var depModule) && depModule != moduleName)
+                {
+                    deps.Add(depModule);
+                }
+            }
+
+            depGraph[moduleName] = deps;
+        }
+
+        // Store in _moduleDeps for use by InsertRequires
+        _moduleDeps = depGraph;
+
+        // Build module-level inheritance map: childModule → baseModule
+        var moduleInheritance = new Dictionary<string, string>();
+        foreach (var (childType, baseType) in _baseClassMap)
+        {
+            if (_typeToModuleMap.TryGetValue(childType, out var childMod) &&
+                _typeToModuleMap.TryGetValue(baseType, out var baseMod) &&
+                childMod != baseMod)
+            {
+                moduleInheritance[childMod] = baseMod;
+            }
+        }
+
+        // Build set of inheritance edges that MUST remain non-deferred
+        var inheritanceEdges = new HashSet<(string, string)>();
+        foreach (var (child, baseMod) in moduleInheritance)
+        {
+            if (depGraph.ContainsKey(child) && depGraph[child].Contains(baseMod))
+                inheritanceEdges.Add((child, baseMod));
+        }
+
+        // Use Tarjan's SCC to find all strongly connected components,
+        // then break cycles within each SCC by deferring edges.
+        // This is O(V+E) and handles all cycles in one pass.
+        var lazyEdges = new HashSet<(string, string)>();
+
+        // Tarjan's SCC
+        var index = 0;
+        var stack = new List<string>();
+        var onStack = new HashSet<string>();
+        var indices = new Dictionary<string, int>();
+        var lowlinks = new Dictionary<string, int>();
+        var sccs = new List<List<string>>();
+
+        void Strongconnect(string v)
+        {
+            indices[v] = index;
+            lowlinks[v] = index;
+            index++;
+            stack.Add(v);
+            onStack.Add(v);
+
+            if (depGraph.TryGetValue(v, out var neighbors))
+            {
+                foreach (var w in neighbors)
+                {
+                    if (!depGraph.ContainsKey(w)) continue; // skip external modules
+                    if (!indices.ContainsKey(w))
+                    {
+                        Strongconnect(w);
+                        lowlinks[v] = Math.Min(lowlinks[v], lowlinks[w]);
+                    }
+                    else if (onStack.Contains(w))
+                    {
+                        lowlinks[v] = Math.Min(lowlinks[v], indices[w]);
+                    }
+                }
+            }
+
+            if (lowlinks[v] == indices[v])
+            {
+                var scc = new List<string>();
+                while (true)
+                {
+                    var w = stack[stack.Count - 1];
+                    stack.RemoveAt(stack.Count - 1);
+                    onStack.Remove(w);
+                    scc.Add(w);
+                    if (w == v) break;
+                }
+                if (scc.Count > 1)
+                    sccs.Add(scc);
+            }
+        }
+
+        foreach (var module in depGraph.Keys.OrderBy(k => k))
+        {
+            if (!indices.ContainsKey(module))
+                Strongconnect(module);
+        }
+
+        // For each SCC, find the minimum set of back edges to defer using DFS.
+        // Prefer deferring non-inheritance edges; only defer inheritance edges as last resort.
+        foreach (var scc in sccs)
+        {
+            var sccSet = new HashSet<string>(scc);
+
+            // Build the SCC-internal subgraph
+            var sccGraph = new Dictionary<string, HashSet<string>>();
+            var internalEdgeCount = 0;
+            foreach (var mod in scc)
+            {
+                var sccDeps = new HashSet<string>();
+                if (depGraph.TryGetValue(mod, out var deps))
+                {
+                    foreach (var dep in deps)
+                    {
+                        if (sccSet.Contains(dep))
+                        {
+                            sccDeps.Add(dep);
+                            internalEdgeCount++;
+                        }
+                    }
+                }
+                sccGraph[mod] = sccDeps;
+            }
+
+            // DFS on the SCC subgraph to find back edges (these are the edges to defer).
+            // We use iterative DFS to avoid stack overflow on large SCCs.
+            var sccWhite = new HashSet<string>(scc);
+            var sccGray = new HashSet<string>();
+            var sccBlack = new HashSet<string>();
+            var backEdges = new List<(string From, string To)>();
+
+            // Use explicit stack for iterative DFS
+            var dfsStack = new Stack<(string Node, IEnumerator<string> Neighbors)>();
+
+            foreach (var startNode in scc.OrderBy(k => k))
+            {
+                if (!sccWhite.Contains(startNode)) continue;
+
+                sccWhite.Remove(startNode);
+                sccGray.Add(startNode);
+                dfsStack.Push((startNode, sccGraph[startNode].GetEnumerator()));
+
+                while (dfsStack.Count > 0)
+                {
+                    var (node, neighbors) = dfsStack.Peek();
+                    var advanced = false;
+
+                    while (neighbors.MoveNext())
+                    {
+                        var dep = neighbors.Current;
+                        if (lazyEdges.Contains((node, dep))) continue; // already deferred
+
+                        if (sccGray.Contains(dep))
+                        {
+                            // Back edge found — this creates a cycle
+                            backEdges.Add((node, dep));
+                        }
+                        else if (sccWhite.Contains(dep))
+                        {
+                            sccWhite.Remove(dep);
+                            sccGray.Add(dep);
+                            dfsStack.Push((dep, sccGraph[dep].GetEnumerator()));
+                            advanced = true;
+                            break;
+                        }
+                        // If black, it's a cross/forward edge — ignore
+                    }
+
+                    if (!advanced)
+                    {
+                        dfsStack.Pop();
+                        sccGray.Remove(node);
+                        sccBlack.Add(node);
+                    }
+                }
+            }
+
+            // Defer back edges, preferring non-inheritance edges.
+            // For inheritance back edges, try to defer a different edge in the cycle instead.
+            var deferredCount = 0;
+            foreach (var (from, to) in backEdges)
+            {
+                if (inheritanceEdges.Contains((from, to)))
+                {
+                    // This is an inheritance edge — try to flip: defer (to, from) if that edge exists
+                    if (sccGraph.ContainsKey(to) && sccGraph[to].Contains(from) && !inheritanceEdges.Contains((to, from)))
+                    {
+                        lazyEdges.Add((to, from));
+                        deferredCount++;
+                    }
+                    else
+                    {
+                        // No good alternative — defer the inheritance edge as last resort
+                        lazyEdges.Add((from, to));
+                        deferredCount++;
+                    }
+                }
+                else
+                {
+                    lazyEdges.Add((from, to));
+                    deferredCount++;
+                }
+            }
+
+            if (internalEdgeCount > 0)
+            {
+                Console.Error.WriteLine($"  SCC ({scc.Count} modules): {string.Join(", ", scc.Take(8))}{(scc.Count > 8 ? "..." : "")}");
+                Console.Error.WriteLine($"    Edges: {internalEdgeCount} total, {backEdges.Count} back edges found, {deferredCount} deferred");
+            }
+        }
+
+        // Verify: check remaining graph is acyclic
+        var remainingCycles = false;
+        {
+            var visited = new HashSet<string>();
+            var inProgress = new HashSet<string>();
+
+            bool HasCycle(string node)
+            {
+                if (inProgress.Contains(node)) return true;
+                if (visited.Contains(node)) return false;
+                inProgress.Add(node);
+
+                if (depGraph.TryGetValue(node, out var deps))
+                {
+                    foreach (var dep in deps)
+                    {
+                        if (!depGraph.ContainsKey(dep)) continue;
+                        if (lazyEdges.Contains((node, dep))) continue;
+                        if (HasCycle(dep)) return true;
+                    }
+                }
+
+                inProgress.Remove(node);
+                visited.Add(node);
+                return false;
+            }
+
+            foreach (var mod in depGraph.Keys)
+            {
+                if (HasCycle(mod))
+                {
+                    remainingCycles = true;
+                    break;
+                }
+            }
+        }
+
+        if (remainingCycles)
+        {
+            Console.Error.WriteLine("  WARNING: Remaining cycles detected after SCC-based edge breaking.");
+            Console.Error.WriteLine("  Falling back to iterative DFS to break remaining cycles.");
+
+            // Iterative fallback: keep breaking one back edge at a time
+            for (int iteration = 0; iteration < 500; iteration++)
+            {
+                var white = new HashSet<string>(depGraph.Keys);
+                var gray = new HashSet<string>();
+                (string From, string To)? foundBackEdge = null;
+
+                void FallbackDfs(string node)
+                {
+                    if (foundBackEdge != null) return;
+                    white.Remove(node);
+                    gray.Add(node);
+
+                    if (depGraph.TryGetValue(node, out var neighbors))
+                    {
+                        foreach (var dep in neighbors)
+                        {
+                            if (foundBackEdge != null) return;
+                            if (lazyEdges.Contains((node, dep))) continue;
+                            if (!depGraph.ContainsKey(dep)) continue;
+                            if (gray.Contains(dep))
+                            {
+                                foundBackEdge = (node, dep);
+                                return;
+                            }
+                            else if (white.Contains(dep))
+                            {
+                                FallbackDfs(dep);
+                            }
+                        }
+                    }
+
+                    gray.Remove(node);
+                }
+
+                foreach (var module in depGraph.Keys.OrderBy(k => k))
+                {
+                    if (foundBackEdge != null) break;
+                    if (white.Contains(module))
+                        FallbackDfs(module);
+                }
+
+                if (foundBackEdge == null) break;
+
+                var (from, to) = foundBackEdge.Value;
+                Console.Error.WriteLine($"  Fallback cycle {iteration}: ({from} -> {to})");
+                lazyEdges.Add((from, to));
+            }
+        }
+
+        Console.Error.WriteLine($"  Total deferred edges: {lazyEdges.Count}");
+        _lazyRequireEdges = lazyEdges;
     }
 
     private void ScanBaseClasses(SyntaxList<MemberDeclarationSyntax> members)
@@ -543,23 +867,8 @@ public class RoslynToLuau
 
         if (moduleToTypes.Count == 0) return;
 
-        // Record this module's dependencies for cycle detection
-        if (currentModuleName != null)
-        {
-            if (!_moduleDeps.ContainsKey(currentModuleName))
-                _moduleDeps[currentModuleName] = new HashSet<string>();
-            foreach (var depModule in moduleToTypes.Keys)
-                _moduleDeps[currentModuleName].Add(depModule);
-
-            // Detect cycles: if any dependency already depends on us, it's a cycle
-            foreach (var depModule in moduleToTypes.Keys.ToList())
-            {
-                if (_moduleDeps.ContainsKey(depModule) && _moduleDeps[depModule].Contains(currentModuleName))
-                {
-                    _lazyRequireEdges.Add((currentModuleName, depModule));
-                }
-            }
-        }
+        // Cycle detection is handled upfront by DetectCycles() during PreScan.
+        // _lazyRequireEdges is already populated with all cycle-breaking edges.
 
         var requireBlock = new System.Text.StringBuilder();
         var lazyBlock = new System.Text.StringBuilder();

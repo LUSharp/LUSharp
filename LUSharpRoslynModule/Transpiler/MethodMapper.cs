@@ -154,12 +154,12 @@ public static class MethodMapper
         Register("List", "Remove", (r, a, _) =>
             $"(function() local __i = table.find({r}, {a[0]}); if __i then table.remove({r}, __i) end end)()");
         Register("List", "Exists", (r, a, _) =>
-            $"(function() for _, v in {r} do if {a[0]}(v) then return true end end; return false end)()");
+            $"(function() local __pred = {a[0]}; for _, v in {r} do if __pred(v) then return true end end; return false end)()");
         Register("List", "Find", (r, a, _) =>
-            $"(function() for _, v in {r} do if {a[0]}(v) then return v end end; return nil end)()");
+            $"(function() local __pred = {a[0]}; for _, v in {r} do if __pred(v) then return v end end; return nil end)()");
         Register("List", "FindIndex", (r, a, _) =>
-            $"(function() for i, v in {r} do if {a[0]}(v) then return i - 1 end end; return -1 end)()");
-        Register("List", "ForEach", (r, a, _) => $"(function() for _, v in {r} do {a[0]}(v) end end)()");
+            $"(function() local __pred = {a[0]}; for i, v in {r} do if __pred(v) then return i - 1 end end; return -1 end)()");
+        Register("List", "ForEach", (r, a, _) => $"(function() for _, v in {r} do ({a[0]})(v) end end)()");
 
         // === Dictionary<K,V> ===
         Register("Dictionary", "ContainsKey", (r, a, _) => $"({r}[{a[0]}] ~= nil)");
