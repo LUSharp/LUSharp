@@ -332,6 +332,7 @@ public class RoslynToLuau
             // Defer back edges, preferring non-inheritance edges.
             // For inheritance back edges, try to defer a different edge in the cycle instead.
             var deferredCount = 0;
+            var inheritanceDeferred = 0;
             foreach (var (from, to) in backEdges)
             {
                 if (inheritanceEdges.Contains((from, to)))
@@ -344,9 +345,10 @@ public class RoslynToLuau
                     }
                     else
                     {
-                        // No good alternative — defer the inheritance edge as last resort
+                        // No good alternative — defer the inheritance edge temporarily (post-pass will un-defer)
                         lazyEdges.Add((from, to));
                         deferredCount++;
+                        inheritanceDeferred++;
                     }
                 }
                 else
@@ -361,6 +363,22 @@ public class RoslynToLuau
                 Console.Error.WriteLine($"  SCC ({scc.Count} modules): {string.Join(", ", scc.Take(8))}{(scc.Count > 8 ? "..." : "")}");
                 Console.Error.WriteLine($"    Edges: {internalEdgeCount} total, {backEdges.Count} back edges found, {deferredCount} deferred");
             }
+        }
+
+        // Post-process: un-defer any inheritance edges that got deferred in the SCC pass.
+        // The fallback DFS below will find alternative edges to break the reintroduced cycles.
+        var undeferredInheritance = new List<(string, string)>();
+        foreach (var edge in lazyEdges.ToList())
+        {
+            if (inheritanceEdges.Contains(edge))
+            {
+                lazyEdges.Remove(edge);
+                undeferredInheritance.Add(edge);
+            }
+        }
+        if (undeferredInheritance.Count > 0)
+        {
+            Console.Error.WriteLine($"  Un-deferred {undeferredInheritance.Count} inheritance edges for fallback resolution");
         }
 
         // Verify: check remaining graph is acyclic
@@ -406,10 +424,12 @@ public class RoslynToLuau
             Console.Error.WriteLine("  Falling back to iterative DFS to break remaining cycles.");
 
             // Iterative fallback: keep breaking one back edge at a time
+            // Track the DFS path so we can find the cycle and pick a non-inheritance edge to defer
             for (int iteration = 0; iteration < 500; iteration++)
             {
                 var white = new HashSet<string>(depGraph.Keys);
                 var gray = new HashSet<string>();
+                var dfsPath = new List<string>();
                 (string From, string To)? foundBackEdge = null;
 
                 void FallbackDfs(string node)
@@ -417,6 +437,7 @@ public class RoslynToLuau
                     if (foundBackEdge != null) return;
                     white.Remove(node);
                     gray.Add(node);
+                    dfsPath.Add(node);
 
                     if (depGraph.TryGetValue(node, out var neighbors))
                     {
@@ -437,7 +458,11 @@ public class RoslynToLuau
                         }
                     }
 
-                    gray.Remove(node);
+                    if (foundBackEdge == null)
+                    {
+                        dfsPath.RemoveAt(dfsPath.Count - 1);
+                        gray.Remove(node);
+                    }
                 }
 
                 foreach (var module in depGraph.Keys.OrderBy(k => k))
@@ -450,8 +475,38 @@ public class RoslynToLuau
                 if (foundBackEdge == null) break;
 
                 var (from, to) = foundBackEdge.Value;
-                Console.Error.WriteLine($"  Fallback cycle {iteration}: ({from} -> {to})");
-                lazyEdges.Add((from, to));
+
+                // Extract the cycle from the DFS path
+                // The cycle is: to → ... → from → to
+                var cycleStart = dfsPath.IndexOf(to);
+                var edgeToDefer = (from, to); // default: defer the back edge
+
+                if (inheritanceEdges.Contains((from, to)) && cycleStart >= 0)
+                {
+                    // This is an inheritance edge — find a non-inheritance edge in the cycle to defer instead
+                    bool foundAlternative = false;
+                    for (int ci = cycleStart; ci < dfsPath.Count - 1; ci++)
+                    {
+                        var edgeFrom = dfsPath[ci];
+                        var edgeTo = dfsPath[ci + 1];
+                        if (!inheritanceEdges.Contains((edgeFrom, edgeTo)))
+                        {
+                            edgeToDefer = (edgeFrom, edgeTo);
+                            foundAlternative = true;
+                            break;
+                        }
+                    }
+                    if (foundAlternative)
+                        Console.Error.WriteLine($"  Fallback cycle {iteration}: protected inheritance ({from} -> {to}), deferred ({edgeToDefer.Item1} -> {edgeToDefer.Item2})");
+                    else
+                        Console.Error.WriteLine($"  Fallback cycle {iteration}: ({from} -> {to}) [inheritance, no alternative]");
+                }
+                else
+                {
+                    Console.Error.WriteLine($"  Fallback cycle {iteration}: ({from} -> {to})");
+                }
+
+                lazyEdges.Add(edgeToDefer);
             }
         }
 

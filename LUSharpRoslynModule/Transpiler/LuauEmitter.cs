@@ -399,6 +399,53 @@ public class LuauEmitter
             }
         }
 
+        // Pre-compute overload map for call-site resolution (same logic as EmitInstanceClass)
+        _overloadMap = new Dictionary<(string Name, int ParamCount, string FirstParamType), string>();
+        foreach (var member in classDecl.Members)
+        {
+            if (member is MethodDeclarationSyntax method && method.ExplicitInterfaceSpecifier == null)
+            {
+                var name = method.Identifier.Text;
+                int paramCount = method.ParameterList.Parameters.Count;
+                string emitName = name;
+
+                if (methodNameCounts.GetValueOrDefault(name) > 1)
+                {
+                    var overloadIndex = methodNameSeen.GetValueOrDefault(name);
+                    methodNameSeen[name] = overloadIndex + 1;
+
+                    if (overloadIndex > 0)
+                    {
+                        var firstParam = method.ParameterList.Parameters.FirstOrDefault();
+                        var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
+                        var isNullableSuffix = suffix.EndsWith("?");
+                        suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                        if (isNullableSuffix) suffix += "_nullable";
+                        emitName = $"{name}_{suffix}";
+                    }
+                }
+
+                if (emitNamesUsed.Contains(emitName))
+                {
+                    int counter = 2;
+                    while (emitNamesUsed.Contains($"{emitName}__{counter}"))
+                        counter++;
+                    emitName = $"{emitName}__{counter}";
+                }
+                emitNamesUsed.Add(emitName);
+
+                var fpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+                var isNullableFpt = fpt.EndsWith("?");
+                fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                if (isNullableFpt) fpt += "_nullable";
+                _overloadMap[(name, paramCount, fpt)] = emitName;
+            }
+        }
+
+        // Reset counters for actual emission pass
+        methodNameSeen = new Dictionary<string, int>();
+        emitNamesUsed = new HashSet<string>();
+
         foreach (var member in classDecl.Members)
         {
             switch (member)
@@ -3419,8 +3466,26 @@ public class LuauEmitter
             if (name == "ReferenceEquals" && invocation.ArgumentList.Arguments.Count == 2)
                 return $"rawequal({EmitExpression(invocation.ArgumentList.Arguments[0].Expression)}, {EmitExpression(invocation.ArgumentList.Arguments[1].Expression)})";
 
+            // GetType() → typeof(self) — bare call to Object.GetType() in instance context
+            if (name == "GetType" && argCount == 0 && _isInstanceContext)
+                return "typeof(self)";
+
             // Resolve overloaded name via the overload map
-            var resolvedName = ResolveOverloadedName(name, argCount);
+            // Use semantic model to determine target overload's first param type for precise resolution
+            var firstParamType = "";
+            if (_model != null)
+            {
+                var symbol = GetSymbol(invocation);
+                if (symbol is IMethodSymbol targetMethod && targetMethod.Parameters.Length > 0)
+                {
+                    var fpt = targetMethod.Parameters[0].Type.ToDisplayString(Microsoft.CodeAnalysis.SymbolDisplayFormat.MinimallyQualifiedFormat);
+                    var isNullableFpt = fpt.EndsWith("?");
+                    fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                    if (isNullableFpt) fpt += "_nullable";
+                    firstParamType = fpt;
+                }
+            }
+            var resolvedName = ResolveOverloadedName(name, argCount, firstParamType);
 
             // In instance context, calling an instance method by bare name → self dispatch
             if (_isInstanceContext && _instanceMethods.Contains(name)
@@ -3573,6 +3638,9 @@ public class LuauEmitter
         // ── Handle base.Method(args) → ParentClass.Method(self, args) ──
         if (memberAccess.Expression is BaseExpressionSyntax && _baseClassName != null)
         {
+            // base.GetType() → typeof(self)
+            if (memberName == "GetType" && arguments.Count == 0)
+                return $"typeof(self)";
             if (string.IsNullOrEmpty(argStr))
                 return $"{_baseClassName}.{memberName}(self)";
             return $"{_baseClassName}.{memberName}(self, {argStr})";
@@ -3581,6 +3649,10 @@ public class LuauEmitter
         // ── Handle this.Method(args) → ClassName.Method(self, args) ──
         if (memberAccess.Expression is ThisExpressionSyntax)
         {
+            // this.GetType() → typeof(self) (must intercept before instance dispatch)
+            if (memberName == "GetType" && arguments.Count == 0)
+                return $"typeof(self)";
+
             if (_instanceMethods.Contains(memberName))
             {
                 if (string.IsNullOrEmpty(argStr))
