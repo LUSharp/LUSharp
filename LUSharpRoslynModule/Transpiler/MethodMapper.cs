@@ -270,7 +270,16 @@ public static class MethodMapper
         Register("Object", "ToString", (r, a, _) => $"tostring({r})");
         Register("Object", "Equals", (r, a, _) => $"({r} == {a[0]})");
         Register("Object", "GetHashCode", (r, a, _) => $"tostring({r})");
-        Register("Object", "GetType", (r, a, _) => $"typeof({r})");
+        Register("Object", "GetType", (r, a, _) =>
+        {
+            if (a.Length > 0) throw new IndexOutOfRangeException(); // not parameterless .GetType()
+            return $"typeof({r})";
+        });
+
+        // === Type / Assembly (reflection) ===
+        // Type.GetType(name) and Assembly.GetType(name) are reflection calls — emit as the name argument
+        Register("Type", "GetType", (r, a, _) => a.Length >= 1 ? a[0] : $"typeof({r})");
+        Register("Assembly", "GetType", (r, a, _) => a.Length >= 1 ? a[0] : $"typeof({r})");
 
         // === Task ===
         Register("Task", "Run", (r, a, _) => $"task.spawn({a[0]})");
