@@ -474,30 +474,37 @@ public class RoslynToLuau
                 case ClassDeclarationSyntax classDecl:
                     if (classDecl.BaseList != null)
                     {
-                        var firstBase = classDecl.BaseList.Types.FirstOrDefault();
-                        if (firstBase != null)
+                        foreach (var bt in classDecl.BaseList.Types)
                         {
-                            var baseTypeName = firstBase.Type.ToString();
+                            var baseTypeName = bt.Type.ToString();
                             if (baseTypeName.Contains('.'))
                                 baseTypeName = baseTypeName.Substring(baseTypeName.LastIndexOf('.') + 1);
                             if (baseTypeName.Contains('<'))
                                 baseTypeName = baseTypeName.Substring(0, baseTypeName.IndexOf('<'));
+                            // Skip interfaces (I + uppercase convention) and self-references (generic stripping)
+                            if (baseTypeName.Length > 1 && baseTypeName[0] == 'I' && char.IsUpper(baseTypeName[1]))
+                                continue;
+                            if (baseTypeName == classDecl.Identifier.Text)
+                                continue;
                             _baseClassMap[classDecl.Identifier.Text] = baseTypeName;
+                            break;
                         }
                     }
                     break;
                 case StructDeclarationSyntax structDecl:
                     if (structDecl.BaseList != null)
                     {
-                        var firstBase = structDecl.BaseList.Types.FirstOrDefault();
-                        if (firstBase != null)
+                        foreach (var bt in structDecl.BaseList.Types)
                         {
-                            var baseTypeName = firstBase.Type.ToString();
+                            var baseTypeName = bt.Type.ToString();
                             if (baseTypeName.Contains('.'))
                                 baseTypeName = baseTypeName.Substring(baseTypeName.LastIndexOf('.') + 1);
                             if (baseTypeName.Contains('<'))
                                 baseTypeName = baseTypeName.Substring(0, baseTypeName.IndexOf('<'));
+                            if (baseTypeName.Length > 1 && baseTypeName[0] == 'I' && char.IsUpper(baseTypeName[1]))
+                                continue;
                             _baseClassMap[structDecl.Identifier.Text] = baseTypeName;
+                            break;
                         }
                     }
                     break;

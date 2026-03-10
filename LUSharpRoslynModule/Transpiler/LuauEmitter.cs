@@ -548,12 +548,12 @@ public class LuauEmitter
             foreach (var nested in nestedStaticTypeNames)
                 EmittedTopLevelTypes.Add(nested);
 
-            // Emit module-level deferred static initializers wrapped in task.defer
-            // so they run after lazy requires have resolved
+            // Emit module-level deferred static initializers wrapped in task.delay(0, ...)
+            // so they run AFTER task.defer lazy requires have resolved
             if (_moduleDeferredStatics.Count > 0)
             {
                 AppendLine();
-                AppendLine("task.defer(function()");
+                AppendLine("task.delay(0, function()");
                 foreach (var (cls, fieldName, value) in _moduleDeferredStatics)
                 {
                     AppendLine($"\t{cls}.{fieldName} = {value}");
@@ -586,21 +586,42 @@ public class LuauEmitter
         else
         {
             // Extract base class name from BaseList (if any)
+            // Skip interfaces — only use concrete/abstract class inheritance
             string? baseClassName = null;
             if (classDecl.BaseList != null)
             {
-                // Take the first base type (C# single inheritance — interfaces come later)
-                var firstBase = classDecl.BaseList.Types.FirstOrDefault();
-                if (firstBase != null)
+                foreach (var baseType in classDecl.BaseList.Types)
                 {
-                    var baseTypeName = firstBase.Type.ToString();
+                    var baseTypeName = baseType.Type.ToString();
                     // Strip namespace qualifiers
                     if (baseTypeName.Contains('.'))
                         baseTypeName = baseTypeName.Substring(baseTypeName.LastIndexOf('.') + 1);
                     // Strip generic args
                     if (baseTypeName.Contains('<'))
                         baseTypeName = baseTypeName.Substring(0, baseTypeName.IndexOf('<'));
-                    baseClassName = baseTypeName;
+
+                    // Check if this is an interface — skip it for base class inheritance
+                    bool isInterface = false;
+                    if (_model != null)
+                    {
+                        var symbolInfo = _model.GetSymbolInfo(baseType.Type);
+                        if (symbolInfo.Symbol is INamedTypeSymbol namedSym && namedSym.TypeKind == TypeKind.Interface)
+                            isInterface = true;
+                        var typeInfo = _model.GetTypeInfo(baseType.Type);
+                        if (typeInfo.Type is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Interface)
+                            isInterface = true;
+                    }
+                    // Always apply heuristic as fallback (I + uppercase = interface convention)
+                    if (!isInterface && baseTypeName.Length > 1 && baseTypeName[0] == 'I' && char.IsUpper(baseTypeName[1]))
+                    {
+                        isInterface = true;
+                    }
+
+                    if (!isInterface && baseTypeName != classDecl.Identifier.Text)
+                    {
+                        baseClassName = baseTypeName;
+                        break;
+                    }
                 }
             }
             // Fallback: check global base class map (for partial classes where BaseList is in another file)
@@ -1150,11 +1171,11 @@ public class LuauEmitter
             }
 
             // ── Phase 7.5: emit all module-level deferred static initializers ──
-            // Wrapped in task.defer so they run after lazy requires have resolved.
+            // Wrapped in task.delay(0, ...) so they run AFTER task.defer lazy requires.
             if (_moduleDeferredStatics.Count > 0)
             {
                 AppendLine();
-                AppendLine("task.defer(function()");
+                AppendLine("task.delay(0, function()");
                 foreach (var (cls, fieldName, value) in _moduleDeferredStatics)
                 {
                     AppendLine($"\t{cls}.{fieldName} = {value}");
@@ -3023,6 +3044,10 @@ public class LuauEmitter
             // Environment.NewLine → "\n"
             if (typeStr == "Environment" && memberName == "NewLine")
                 return "\"\\n\"";
+
+            // Environment.TickCount → math.floor(os.clock() * 1000)
+            if (typeStr == "Environment" && memberName == "TickCount")
+                return "math.floor(os.clock() * 1000)";
 
             // Predefined type constants accessed via .NET type names (Int32.MaxValue, Double.NaN, etc.)
             if (typeStr is "Int32" or "UInt32" or "Int64" or "Int16" or "UInt16" or "Byte" or "SByte")
