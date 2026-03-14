@@ -146,9 +146,24 @@ public class LuauEmitter
     private int _switchDepth = 0;
     private int _loopDepthInSwitch = 0;
     private int _loopDepth = 0;
+    private int _hoistCounter = 0;
+    private int _tempVarCounter = 0;
     private bool _insidePcallLambda = false;
     private bool _pcallHasContinue = false;
     private bool _pcallHasBreak = false;
+
+    /// <summary>
+    /// Out parameters of the current method. When non-empty, return statements
+    /// append these as additional return values to emulate C# out parameter semantics.
+    /// </summary>
+    private List<string> _currentMethodOutParams = new();
+
+    /// <summary>
+    /// Incrementor expressions for the enclosing C# for loop, if any.
+    /// Must be emitted before every `continue` to match C# for-loop semantics
+    /// where the incrementor always runs before re-checking the condition.
+    /// </summary>
+    private SeparatedSyntaxList<ExpressionSyntax>? _forLoopIncrementors;
 
     /// <summary>
     /// Module-level deferred static field initializers. Collected from all classes
@@ -157,6 +172,7 @@ public class LuauEmitter
     /// static initializer that references them runs.
     /// </summary>
     private List<(string ClassName, string FieldName, string Value)> _moduleDeferredStatics = new();
+    private List<ConstructorDeclarationSyntax> _moduleDeferredStaticCtors = new();
 
     public LuauEmitter(SemanticModel? model = null)
     {
@@ -174,7 +190,24 @@ public class LuauEmitter
     private ISymbol? GetSymbol(ExpressionSyntax expr)
     {
         if (_model == null) return null;
-        return _model.GetSymbolInfo(expr).Symbol;
+        var info = _model.GetSymbolInfo(expr);
+        if (info.Symbol != null) return info.Symbol;
+        // If resolution failed, try to pick the best candidate by matching argument count
+        if (info.CandidateSymbols.Length > 0
+            && expr.Parent is InvocationExpressionSyntax invExpr)
+        {
+            var argCount = invExpr.ArgumentList.Arguments.Count;
+            // Prefer exact match, then params match
+            var exactMatch = info.CandidateSymbols.OfType<IMethodSymbol>()
+                .FirstOrDefault(m => m.Parameters.Length == argCount && !m.Parameters.Any(p => p.IsParams));
+            if (exactMatch != null) return exactMatch;
+            var paramsMatch = info.CandidateSymbols.OfType<IMethodSymbol>()
+                .FirstOrDefault(m => m.Parameters.Length > 0
+                    && m.Parameters[^1].IsParams
+                    && argCount >= m.Parameters.Length - 1);
+            if (paramsMatch != null) return paramsMatch;
+        }
+        return info.CandidateSymbols.FirstOrDefault();
     }
 
     private bool IsStringType(ExpressionSyntax expr)
@@ -196,10 +229,29 @@ public class LuauEmitter
     public Dictionary<(string TypeName, string MethodName, int ArgCount, string FirstParamType), string> GlobalOverloadMap { get; set; } = new();
 
     /// <summary>
+    /// Full-signature overload map for precise resolution when 4-tuple key is ambiguous.
+    /// Key: (TypeName, MethodName, AllParamTypes comma-separated).
+    /// </summary>
+    public Dictionary<(string TypeName, string MethodName, string AllParamTypes), string> FullSignatureOverloadMap { get; set; } = new();
+
+    /// <summary>
     /// Global base class map: ClassName → BaseClassName.
     /// Populated by PreScan across all files, resolves partial class base types.
     /// </summary>
     public Dictionary<string, string> GlobalBaseClassMap { get; set; } = new();
+
+    /// <summary>
+    /// Global set of struct type names (value types with parameterized constructors).
+    /// Used to detect default struct construction (new StructType()) which should
+    /// zero-initialize instead of calling .new() with nil params.
+    /// </summary>
+    public HashSet<string> GlobalStructTypes { get; set; } = new();
+
+    /// <summary>
+    /// Types known to have a ToString() method (directly or inherited).
+    /// Shared across emitter instances so cross-file inheritance chains can propagate __tostring.
+    /// </summary>
+    public HashSet<string> GlobalTypesWithToString { get; set; } = new();
 
     /// <summary>
     /// When true, individual type emissions will not emit their own return statements.
@@ -442,6 +494,22 @@ public class LuauEmitter
             }
         }
 
+        // Track static/const fields for bare identifier resolution (same as EmitClass)
+        _constFields = new HashSet<string>();
+        foreach (var member in classDecl.Members)
+        {
+            if (member is FieldDeclarationSyntax fieldDecl)
+            {
+                bool isStatic = fieldDecl.Modifiers.Any(SyntaxKind.StaticKeyword);
+                bool isConst = fieldDecl.Modifiers.Any(SyntaxKind.ConstKeyword);
+                if (isStatic || isConst)
+                {
+                    foreach (var variable in fieldDecl.Declaration.Variables)
+                        _constFields.Add(variable.Identifier.Text);
+                }
+            }
+        }
+
         // Reset counters for actual emission pass
         methodNameSeen = new Dictionary<string, int>();
         emitNamesUsed = new HashSet<string>();
@@ -575,9 +643,14 @@ public class LuauEmitter
 
                 case OperatorDeclarationSyntax:
                 case ConversionOperatorDeclarationSyntax:
-                case ConstructorDeclarationSyntax:
                 case EventFieldDeclarationSyntax:
                     // Static class operators/ctors/events — skip silently
+                    break;
+
+                case ConstructorDeclarationSyntax ctorDecl:
+                    // Static constructors → defer body to after methods
+                    if (ctorDecl.Modifiers.Any(SyntaxKind.StaticKeyword) && ctorDecl.Body != null)
+                        _moduleDeferredStaticCtors.Add(ctorDecl);
                     break;
 
                 default:
@@ -595,18 +668,36 @@ public class LuauEmitter
             foreach (var nested in nestedStaticTypeNames)
                 EmittedTopLevelTypes.Add(nested);
 
-            // Emit module-level deferred static initializers wrapped in task.delay(0, ...)
-            // so they run AFTER task.defer lazy requires have resolved
+            // Emit module-level static initializers inline (no task.delay wrapper).
+            // Deferred imports now use lazy metatable proxies, so they resolve on access.
             if (_moduleDeferredStatics.Count > 0)
             {
                 AppendLine();
-                AppendLine("task.delay(0, function()");
                 foreach (var (cls, fieldName, value) in _moduleDeferredStatics)
                 {
-                    AppendLine($"\t{cls}.{fieldName} = {value}");
+                    AppendLine($"{cls}.{fieldName} = {value}");
                 }
-                AppendLine("end)");
                 _moduleDeferredStatics.Clear();
+            }
+
+            // Deferred static constructor bodies
+            if (_moduleDeferredStaticCtors.Count > 0)
+            {
+                _isInstanceContext = false;
+                _currentMethodParams = new HashSet<string>();
+                _currentMethodLocals = new HashSet<string>();
+                _patternVarAliases.Clear();
+                foreach (var staticCtor in _moduleDeferredStaticCtors)
+                {
+                    if (staticCtor.Body != null)
+                    {
+                        foreach (var statement in staticCtor.Body.Statements)
+                            EmitStatement(statement);
+                    }
+                }
+                _isInstanceContext = true;
+                _moduleDeferredStaticCtors.Clear();
+                AppendLine();
             }
 
             if (!SuppressReturn)
@@ -774,10 +865,37 @@ public class LuauEmitter
     private void EmitInstanceClass(string className, SyntaxList<MemberDeclarationSyntax> members, bool isNested = false, string? baseClassName = null)
     {
         _currentClassName = className;
-        _baseClassName = baseClassName;
+        // For BCL runtime base classes, remap _baseClassName to __rt.X so that
+        // `base.Method()` calls and class table __index both use the runtime reference.
+        if (baseClassName != null && IsNetFrameworkBaseClass(baseClassName))
+        {
+            if (baseClassName is "Collection" or "ReadOnlyCollection")
+            {
+                _baseClassName = "__rt.Collection";
+                NeedsRuntime = true;
+            }
+            else if (baseClassName is "KeyedCollection")
+            {
+                _baseClassName = "__rt.KeyedCollection";
+                NeedsRuntime = true;
+            }
+            else
+            {
+                // Other BCL base classes (e.g. DynamicMetaObject, ExpressionVisitor) don't have
+                // runtime equivalents. Keep the raw name so base.Method() calls don't generate
+                // nil.Method() (which is a Luau parse error). The raw name will be nil at runtime
+                // but won't prevent the module from loading.
+                _baseClassName = baseClassName;
+            }
+        }
+        else
+        {
+            _baseClassName = baseClassName;
+        }
 
         // Track the base class as a referenced module (so it gets a require())
-        if (baseClassName != null)
+        // Skip BCL runtime types — they live in __rt, not as project modules
+        if (baseClassName != null && !IsNetFrameworkBaseClass(baseClassName))
         {
             ReferencedModules.Add(baseClassName);
         }
@@ -787,6 +905,7 @@ public class LuauEmitter
         var fields = new List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)>();
         var properties = new List<PropertyDeclarationSyntax>();
         var constructors = new List<ConstructorDeclarationSyntax>();
+        ConstructorDeclarationSyntax? staticConstructor = null;
         var methods = new List<MethodDeclarationSyntax>();
         var nestedTypes = new List<MemberDeclarationSyntax>(); // nested struct/class
 
@@ -819,6 +938,26 @@ public class LuauEmitter
                         {
                             defaultValue = EmitExpression(variable.Initializer.Value);
                         }
+
+                        // Struct-typed fields with no explicit initializer: generate zero-initialized table
+                        // to match C# value-type zero-initialization (prevents "attempt to index nil")
+                        if (defaultValue == null && _model != null)
+                        {
+                            var typeSymbol = _model.GetTypeInfo(fieldDecl.Declaration.Type).Type;
+                            if (typeSymbol?.IsValueType == true
+                                && typeSymbol.TypeKind != TypeKind.Enum
+                                && typeSymbol.SpecialType == SpecialType.None
+                                && typeSymbol.OriginalDefinition?.SpecialType != SpecialType.System_Nullable_T)
+                            {
+                                defaultValue = BuildStructDefault(typeSymbol as INamedTypeSymbol);
+                            }
+                            // Enum-typed fields default to 0 in C# (first enum value)
+                            else if (typeSymbol?.TypeKind == TypeKind.Enum)
+                            {
+                                defaultValue = "0";
+                            }
+                        }
+
                         fields.Add((name, luauType, defaultValue, isConst, isStatic || isConst));
 
                         if (!isStatic && !isConst)
@@ -840,7 +979,9 @@ public class LuauEmitter
                     // Track auto-properties as instance fields for bare identifier → self.field resolution
                     if (!propDecl.Modifiers.Any(SyntaxKind.StaticKeyword))
                     {
-                        bool isAutoProperty = propDecl.AccessorList != null
+                        bool isAbstract = propDecl.Modifiers.Any(SyntaxKind.AbstractKeyword);
+                        bool isAutoProperty = !isAbstract
+                            && propDecl.AccessorList != null
                             && propDecl.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null);
                         if (isAutoProperty)
                         {
@@ -861,7 +1002,10 @@ public class LuauEmitter
                     }
                     break;
                 case ConstructorDeclarationSyntax ctorDecl:
-                    constructors.Add(ctorDecl);
+                    if (ctorDecl.Modifiers.Any(SyntaxKind.StaticKeyword))
+                        staticConstructor = ctorDecl;
+                    else
+                        constructors.Add(ctorDecl);
                     break;
                 case MethodDeclarationSyntax methodDecl:
                     // Skip explicit interface implementation methods — they duplicate the class method
@@ -1048,6 +1192,21 @@ public class LuauEmitter
                 }
             }
 
+            // Override methods must use the same emit name as their base class declaration.
+            // Check GlobalOverloadMap (already fixed by FixOverrideNames) for the correct name.
+            if (method.Modifiers.Any(SyntaxKind.OverrideKeyword) && _currentClassName != null)
+            {
+                var curFpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+                var isNullableOverrideFpt = curFpt.EndsWith("?");
+                curFpt = curFpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                if (isNullableOverrideFpt) curFpt += "_nullable";
+                var globalKey = (_currentClassName, name, paramCount, curFpt);
+                if (GlobalOverloadMap.TryGetValue(globalKey, out var overrideEmitName))
+                {
+                    emitName = overrideEmitName;
+                }
+            }
+
             // If this emit name collides with an already-used name, append __N
             if (emitNamesUsed.Contains(emitName))
             {
@@ -1082,15 +1241,18 @@ public class LuauEmitter
         }
 
         // ── Phase 3: class table + __index + export type ──
-        if (baseClassName != null)
+        // Use _baseClassName (which may be __rt.X for BCL types) for the __index chain
+        var classTableBase = _baseClassName ?? baseClassName;
+        if (classTableBase != null)
         {
-            AppendLine($"local {className} = setmetatable({{}}, {{__index = {baseClassName}}})");
+            AppendLine($"local {className} = setmetatable({{}}, {{__index = {classTableBase}}})");
         }
         else
         {
             AppendLine($"local {className} = {{}}");
         }
         AppendLine($"{className}.__index = {className}");
+        AppendLine($"{className}.__className = \"{className}\"");
 
         if (instanceFields.Count > 0)
             AppendLine($"export type {className} = typeof(setmetatable({{}} :: {className}_self, {className}))");
@@ -1127,12 +1289,51 @@ public class LuauEmitter
         if (constFields.Count > 0 || staticFields.Count > 0)
             AppendLine();
 
-        // ── Phase 4: constructor ──
+        // ── Phase 4: constructor(s) ──
         _isInstanceContext = true;
         if (constructors.Count > 0)
         {
-            var ctor = constructors[0]; // Use first constructor
-            EmitConstructor(className, ctor, instanceFields, baseClassName);
+            if (constructors.Count == 1)
+            {
+                EmitConstructor(className, constructors[0], instanceFields, baseClassName);
+            }
+            else
+            {
+                // Multiple constructors — emit all with disambiguated names
+                var ctorNamesUsed = new HashSet<string> { "new" };
+                for (int ci = 0; ci < constructors.Count; ci++)
+                {
+                    var ctor = constructors[ci];
+                    string ctorEmitName = "new";
+                    if (ci > 0)
+                    {
+                        var firstParam = ctor.ParameterList.Parameters.FirstOrDefault();
+                        var suffix = firstParam?.Type?.ToString() ?? $"_{ci}";
+                        var isNullableSuffix = suffix.EndsWith("?");
+                        suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                        if (isNullableSuffix) suffix += "_nullable";
+                        ctorEmitName = $"new_{suffix}";
+                        // Avoid name collisions (e.g., multiple ctors with same first param type)
+                        if (ctorNamesUsed.Contains(ctorEmitName))
+                        {
+                            int counter = 2;
+                            while (ctorNamesUsed.Contains($"{ctorEmitName}__{counter}"))
+                                counter++;
+                            ctorEmitName = $"{ctorEmitName}__{counter}";
+                        }
+                    }
+                    ctorNamesUsed.Add(ctorEmitName);
+                    EmitConstructor(className, ctor, instanceFields, baseClassName, ctorEmitName);
+
+                    // Register in local overload map for call-site resolution
+                    var paramCount = ctor.ParameterList.Parameters.Count;
+                    var fpt = ctor.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+                    var isNullableFpt = fpt.EndsWith("?");
+                    fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                    if (isNullableFpt) fpt += "_nullable";
+                    _overloadMap[("new", paramCount, fpt)] = ctorEmitName;
+                }
+            }
         }
         else
         {
@@ -1195,6 +1396,35 @@ public class LuauEmitter
             }
         }
 
+        // ── Phase 6.55: wire __tostring metamethod if class has ToString() ──
+        // Metamethods don't chain through __index in Luau, so we must explicitly set __tostring
+        // on every class that has ToString — either directly or inherited from a base with it.
+        bool hasOwnToString = methods.Any(m =>
+            m.Identifier.Text == "ToString"
+            && !m.Modifiers.Any(SyntaxKind.StaticKeyword)
+            && m.ParameterList.Parameters.Count == 0);
+        bool baseHasToString = false;
+        if (!hasOwnToString)
+        {
+            // Walk the base class chain (may span files) to check for ToString
+            var cur = baseClassName;
+            while (cur != null)
+            {
+                if (GlobalTypesWithToString.Contains(cur))
+                {
+                    baseHasToString = true;
+                    break;
+                }
+                GlobalBaseClassMap.TryGetValue(cur, out cur);
+            }
+        }
+        if (hasOwnToString || baseHasToString)
+        {
+            // Delegate through the class table so __index resolution finds the right ToString
+            AppendLine($"{className}.__tostring = function(self) return {className}.ToString(self) end");
+            GlobalTypesWithToString.Add(className);
+        }
+
         // ── Phase 6.6: deferred static field initializers ──
         // Collect into module-level list instead of emitting inline.
         // This ensures all methods (including from outer/sibling classes) are defined
@@ -1202,6 +1432,12 @@ public class LuauEmitter
         foreach (var field in deferredStaticFields)
         {
             _moduleDeferredStatics.Add((className, field.Name, field.DefaultValue!));
+        }
+
+        // ── Phase 6.7: static constructor body (after all methods defined) ──
+        if (staticConstructor?.Body != null)
+        {
+            _moduleDeferredStaticCtors.Add(staticConstructor);
         }
 
         // Register this type's instance fields for child class inheritance resolution
@@ -1217,18 +1453,36 @@ public class LuauEmitter
                 EmittedTopLevelTypes.Add(nested);
             }
 
-            // ── Phase 7.5: emit all module-level deferred static initializers ──
-            // Wrapped in task.delay(0, ...) so they run AFTER task.defer lazy requires.
+            // ── Phase 7.5: emit all module-level static initializers inline ──
+            // Deferred imports now use lazy metatable proxies, so they resolve on access.
             if (_moduleDeferredStatics.Count > 0)
             {
                 AppendLine();
-                AppendLine("task.delay(0, function()");
                 foreach (var (cls, fieldName, value) in _moduleDeferredStatics)
                 {
-                    AppendLine($"\t{cls}.{fieldName} = {value}");
+                    AppendLine($"{cls}.{fieldName} = {value}");
                 }
-                AppendLine("end)");
                 _moduleDeferredStatics.Clear();
+            }
+
+            // ── Phase 7.6: deferred static constructor bodies ──
+            if (_moduleDeferredStaticCtors.Count > 0)
+            {
+                _isInstanceContext = false;
+                _currentMethodParams = new HashSet<string>();
+                _currentMethodLocals = new HashSet<string>();
+                _patternVarAliases.Clear();
+                foreach (var staticCtor in _moduleDeferredStaticCtors)
+                {
+                    if (staticCtor.Body != null)
+                    {
+                        foreach (var statement in staticCtor.Body.Statements)
+                            EmitStatement(statement);
+                    }
+                }
+                _isInstanceContext = true;
+                _moduleDeferredStaticCtors.Clear();
+                AppendLine();
             }
 
             if (!SuppressReturn)
@@ -1262,7 +1516,8 @@ public class LuauEmitter
         string className,
         ConstructorDeclarationSyntax ctor,
         List<(string Name, string LuauType, string? DefaultValue, bool IsConst, bool IsStatic)> instanceFields,
-        string? baseClassName = null)
+        string? baseClassName = null,
+        string emitName = "new")
     {
         var parameters = ctor.ParameterList.Parameters;
         var paramParts = new List<string>();
@@ -1282,8 +1537,51 @@ public class LuauEmitter
         }
 
         var paramStr = string.Join(", ", paramParts);
-        AppendLine($"function {className}.new({paramStr}): {className}");
+        AppendLine($"function {className}.{emitName}({paramStr}): {className}");
         _indent++;
+
+        // Handle this() constructor chaining: `: this(args)`
+        if (ctor.Initializer != null
+            && ctor.Initializer.IsKind(SyntaxKind.ThisConstructorInitializer))
+        {
+            var thisArgs = ctor.Initializer.ArgumentList.Arguments
+                .Select(a => EmitExpression(a.Expression));
+            var thisArgStr = string.Join(", ", thisArgs);
+            // Find the matching constructor overload name
+            var targetArgCount = ctor.Initializer.ArgumentList.Arguments.Count;
+            string targetName = "new";
+            var firstArgType = "";
+            if (targetArgCount > 0)
+            {
+                var firstArg = ctor.Initializer.ArgumentList.Arguments[0].Expression;
+                firstArgType = GetExpressionType(firstArg)?.Name ?? firstArg.ToString();
+            }
+            // Look up overloaded name from GlobalOverloadMap
+            foreach (var key in GlobalOverloadMap.Keys)
+            {
+                if (key.TypeName == className && key.MethodName == "new" && key.ArgCount == targetArgCount)
+                {
+                    targetName = GlobalOverloadMap[key];
+                    break;
+                }
+            }
+            AppendLine($"local self = {className}.{targetName}({thisArgStr})");
+            // Emit the constructor body (additional assignments)
+            if (ctor.Body != null)
+            {
+                foreach (var statement in ctor.Body.Statements)
+                    EmitStatement(statement);
+            }
+            else if (ctor.ExpressionBody != null)
+            {
+                var expr = EmitExpression(ctor.ExpressionBody.Expression);
+                AppendLine(expr);
+            }
+            AppendLine("return self");
+            _indent--;
+            AppendLine("end");
+            return;
+        }
 
         // Handle base constructor initializer: `: base(args)`
         if (baseClassName != null && ctor.Initializer != null
@@ -1293,8 +1591,20 @@ public class LuauEmitter
             var baseArgs = ctor.Initializer.ArgumentList.Arguments
                 .Select(a => EmitExpression(a.Expression));
             var baseArgStr = string.Join(", ", baseArgs);
-            var baseCall = IsNetFrameworkBaseClass(baseClassName) ? "{}" : $"{baseClassName}.new({baseArgStr})";
+            var baseCall = IsNetFrameworkBaseClass(baseClassName)
+                ? (baseClassName is "KeyedCollection" ? "__rt.KeyedCollection.new()" : baseClassName is "Collection" or "ReadOnlyCollection" ? "__rt.Collection.new()" : "{}")
+                : $"{baseClassName}.new({baseArgStr})";
             AppendLine($"local self = setmetatable({baseCall} :: any, {className})");
+
+            // Exception-derived: store base constructor args as Message/InnerException
+            if (IsExceptionBaseClass(baseClassName))
+            {
+                var baseArgList = ctor.Initializer.ArgumentList.Arguments;
+                if (baseArgList.Count >= 1)
+                    AppendLine($"self.Message = {EmitExpression(baseArgList[0].Expression)}");
+                if (baseArgList.Count >= 2)
+                    AppendLine($"self.InnerException = {EmitExpression(baseArgList[1].Expression)}");
+            }
 
             // Set child-specific field defaults
             foreach (var field in instanceFields)
@@ -1306,7 +1616,9 @@ public class LuauEmitter
         else if (baseClassName != null)
         {
             // Inheritance but no explicit base() call — call parameterless parent constructor
-            var baseCall = IsNetFrameworkBaseClass(baseClassName) ? "{}" : $"{baseClassName}.new()";
+            var baseCall = IsNetFrameworkBaseClass(baseClassName)
+                ? (baseClassName is "KeyedCollection" ? "__rt.KeyedCollection.new()" : baseClassName is "Collection" or "ReadOnlyCollection" ? "__rt.Collection.new()" : "{}")
+                : $"{baseClassName}.new()";
             AppendLine($"local self = setmetatable({baseCall} :: any, {className})");
 
             // Set child-specific field defaults
@@ -1335,6 +1647,16 @@ public class LuauEmitter
             {
                 AppendLine($"local self = setmetatable({{}}, {className})");
             }
+        }
+
+        // For struct constructors with parameters: add nil guard for default construction.
+        // In C#, `new StructType()` zero-initializes all fields without calling the parameterized ctor.
+        // In our Luau emit, .new() is always called, so we need to return early with defaults when
+        // the first param is nil (indicating parameterless/default construction).
+        if (parameters.Count > 0 && GlobalStructTypes.Contains(className))
+        {
+            var firstParam = EscapeIdentifier(parameters[0].Identifier.Text);
+            AppendLine($"if {firstParam} == nil then return self end");
         }
 
         // Emit constructor body (assignments, etc.)
@@ -1369,7 +1691,9 @@ public class LuauEmitter
         if (baseClassName != null)
         {
             // Inheritance: call parent constructor and re-set metatable to child
-            var baseCall = IsNetFrameworkBaseClass(baseClassName) ? "{}" : $"{baseClassName}.new()";
+            var baseCall = IsNetFrameworkBaseClass(baseClassName)
+                ? (baseClassName is "KeyedCollection" ? "__rt.KeyedCollection.new()" : baseClassName is "Collection" or "ReadOnlyCollection" ? "__rt.Collection.new()" : "{}")
+                : $"{baseClassName}.new()";
             AppendLine($"local self = setmetatable({baseCall} :: any, {className})");
 
             // Set child-specific field defaults
@@ -1408,6 +1732,9 @@ public class LuauEmitter
     /// </summary>
     private static string GetDefaultValueForType(string luauType)
     {
+        // Nullable types always default to nil (matches C# null semantics)
+        if (luauType.EndsWith("?"))
+            return "nil :: any";
         return luauType switch
         {
             "number" => "0",
@@ -1416,6 +1743,74 @@ public class LuauEmitter
             _ when luauType.StartsWith("{") => "{}", // table types
             _ => "nil :: any"
         };
+    }
+
+    /// <summary>
+    /// Build a zero-initialized struct default by inspecting the struct's fields.
+    /// e.g., JsonPosition → {Type = 0, Position = 0, HasIndex = false, PropertyName = nil}
+    /// Falls back to {} if the struct has no inspectable fields.
+    /// </summary>
+    private string BuildStructDefault(INamedTypeSymbol? structType)
+    {
+        if (structType == null)
+            return "{}";
+
+        // If the struct is defined in the project, check if it has a parameterless constructor.
+        // If so, call .new(). If not, build a default table with metatable to avoid calling
+        // a parameterized constructor with nil args.
+        var structName = structType.Name;
+        if (GlobalStructTypes.Contains(structName))
+        {
+            // Check if there's a parameterless constructor
+            bool hasParameterlessCtor = structType.InstanceConstructors
+                .Any(c => c.Parameters.Length == 0 && !c.IsImplicitlyDeclared);
+            if (hasParameterlessCtor)
+                return $"{structName}.new()";
+            // No parameterless ctor — fall through to build default table with metatable
+        }
+
+
+        var fieldDefaults = new List<string>();
+        foreach (var member in structType.GetMembers())
+        {
+            if (member is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst && fs.AssociatedSymbol == null)
+            {
+                var val = fs.Type.SpecialType switch
+                {
+                    SpecialType.System_Int32 or SpecialType.System_Int64 or SpecialType.System_Single
+                        or SpecialType.System_Double or SpecialType.System_Byte or SpecialType.System_Int16
+                        or SpecialType.System_UInt16 or SpecialType.System_UInt32 or SpecialType.System_UInt64 => "0",
+                    SpecialType.System_Boolean => "false",
+                    SpecialType.System_String => "nil",
+                    _ when fs.Type.TypeKind == TypeKind.Enum => "0",
+                    _ => "nil"
+                };
+                fieldDefaults.Add($"{fs.Name} = {val}");
+            }
+            // Auto-properties (backing field has associated property symbol; use the property instead)
+            else if (member is IPropertySymbol ps && !ps.IsStatic && !ps.IsIndexer
+                     && ps.GetMethod != null)
+            {
+                var val = ps.Type.SpecialType switch
+                {
+                    SpecialType.System_Int32 or SpecialType.System_Int64 or SpecialType.System_Single
+                        or SpecialType.System_Double or SpecialType.System_Byte or SpecialType.System_Int16
+                        or SpecialType.System_UInt16 or SpecialType.System_UInt32 or SpecialType.System_UInt64 => "0",
+                    SpecialType.System_Boolean => "false",
+                    SpecialType.System_String => "nil",
+                    _ when ps.Type.TypeKind == TypeKind.Enum => "0",
+                    _ => "nil"
+                };
+                fieldDefaults.Add($"{ps.Name} = {val}");
+            }
+        }
+
+        var fields = fieldDefaults.Count > 0 ? string.Join(", ", fieldDefaults) : "";
+        if (GlobalStructTypes.Contains(structName))
+            return $"setmetatable({{ {fields} }}, {structName})";
+        if (fieldDefaults.Count == 0)
+            return "{}";
+        return $"{{ {fields} }}";
     }
 
     /// <summary>
@@ -1542,8 +1937,10 @@ public class LuauEmitter
         _currentMethodLocals = new HashSet<string>();
         _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
+        _currentMethodOutParams = new List<string>();
 
         // Build parameter list: self first, then declared params
+        // Track out parameters for multi-return emulation
         var paramParts = new List<string>();
         paramParts.Add($"self: {className}");
         foreach (var param in parameters)
@@ -1554,6 +1951,9 @@ public class LuauEmitter
             _currentMethodParams.Add(param.Identifier.Text);
             if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
             _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
+            // Track out/ref parameters
+            if (param.Modifiers.Any(SyntaxKind.OutKeyword) || param.Modifiers.Any(SyntaxKind.RefKeyword))
+                _currentMethodOutParams.Add(paramName);
         }
 
         var paramStr = string.Join(", ", paramParts);
@@ -1581,6 +1981,7 @@ public class LuauEmitter
         _currentMethodLocals = new HashSet<string>();
         _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
+        _currentMethodOutParams = new List<string>();
     }
 
     /// <summary>
@@ -1597,6 +1998,7 @@ public class LuauEmitter
         _currentMethodLocals = new HashSet<string>();
         _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
+        _currentMethodOutParams = new List<string>();
 
         // Build parameter list with types
         var paramParts = new List<string>();
@@ -1608,6 +2010,8 @@ public class LuauEmitter
             _currentMethodParams.Add(param.Identifier.Text);
             if (paramName != param.Identifier.Text) _currentMethodParams.Add(paramName);
             _currentMethodParamTypes[paramName] = param.Type?.ToString() ?? "";
+            if (param.Modifiers.Any(SyntaxKind.OutKeyword) || param.Modifiers.Any(SyntaxKind.RefKeyword))
+                _currentMethodOutParams.Add(paramName);
         }
 
         var paramStr = string.Join(", ", paramParts);
@@ -1635,6 +2039,7 @@ public class LuauEmitter
         _currentMethodLocals = new HashSet<string>();
         _patternVarAliases.Clear();
         _currentMethodParamTypes = new Dictionary<string, string>();
+        _currentMethodOutParams = new List<string>();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -1895,6 +2300,9 @@ public class LuauEmitter
                 }
                 else
                 {
+                    // Emit for-loop incrementors before continue so C# semantics are preserved
+                    // (C# for-loop continue runs the incrementor before re-checking condition)
+                    EmitForLoopIncrementorsBeforeContinue();
                     AppendLine("continue");
                 }
                 break;
@@ -1947,9 +2355,16 @@ public class LuauEmitter
 
     private void EmitReturn(ReturnStatementSyntax ret)
     {
+        var outSuffix = _currentMethodOutParams.Count > 0
+            ? ", " + string.Join(", ", _currentMethodOutParams)
+            : "";
+
         if (ret.Expression == null)
         {
-            AppendLine("return");
+            if (_currentMethodOutParams.Count > 0)
+                AppendLine($"return nil{outSuffix}");
+            else
+                AppendLine("return");
         }
         else if (ret.Expression is SwitchExpressionSyntax switchExpr)
         {
@@ -1959,7 +2374,7 @@ public class LuauEmitter
         else
         {
             var expr = EmitExpression(ret.Expression);
-            AppendLine($"return {expr}");
+            AppendLine($"return {expr}{outSuffix}");
         }
     }
 
@@ -1997,6 +2412,19 @@ public class LuauEmitter
 
     private void EmitElseIf(IfStatementSyntax ifStmt)
     {
+        // Check if condition contains out-param invocations that need hoisting.
+        // Hoisting emits local declarations before the expression, which would break
+        // the elseif chain. Convert to else + nested if to allow the declarations.
+        if (ConditionHasOutParams(ifStmt.Condition))
+        {
+            AppendLine("else");
+            _indent++;
+            EmitIf(ifStmt);
+            _indent--;
+            AppendLine("end");
+            return;
+        }
+
         var condition = EmitExpression(ifStmt.Condition);
         AppendLine($"elseif {condition} then");
         _indent++;
@@ -2025,6 +2453,26 @@ public class LuauEmitter
     }
 
     /// <summary>
+    /// Check if an expression contains any invocations with out arguments,
+    /// which would require hoisting that is incompatible with elseif syntax.
+    /// </summary>
+    private bool ConditionHasOutParams(ExpressionSyntax condition)
+    {
+        foreach (var node in condition.DescendantNodesAndSelf())
+        {
+            if (node is InvocationExpressionSyntax invocation)
+            {
+                foreach (var arg in invocation.ArgumentList.Arguments)
+                {
+                    if (arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Emit the body of an if/else/switch — which may be a block or a single statement.
     /// </summary>
     private void EmitStatementBody(StatementSyntax statement)
@@ -2041,12 +2489,23 @@ public class LuauEmitter
 
     private void EmitWhile(WhileStatementSyntax whileStmt)
     {
+        _pendingAssignmentStatements.Clear();
         var condition = EmitExpression(whileStmt.Condition);
+        var hoisted = new List<string>(_pendingAssignmentStatements);
+        _pendingAssignmentStatements.Clear();
+
+        // Emit hoisted assignments before the while (first iteration)
+        foreach (var stmt in hoisted)
+            AppendLine(stmt);
+
         AppendLine($"while {condition} do");
         _indent++;
         _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(whileStmt.Statement);
+        // Re-emit hoisted assignments at end of loop body (subsequent iterations)
+        foreach (var stmt in hoisted)
+            AppendLine(stmt);
         if (_switchDepth > 0) _loopDepthInSwitch--;
         _loopDepth--;
         _indent--;
@@ -2055,12 +2514,19 @@ public class LuauEmitter
 
     private void EmitDoWhile(DoStatementSyntax doStmt)
     {
+        _pendingAssignmentStatements.Clear();
         var condition = EmitExpression(doStmt.Condition);
+        var hoisted = new List<string>(_pendingAssignmentStatements);
+        _pendingAssignmentStatements.Clear();
+
         AppendLine("repeat");
         _indent++;
         _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
         EmitStatementBody(doStmt.Statement);
+        // Emit hoisted assignments before the condition check at end of loop
+        foreach (var stmt in hoisted)
+            AppendLine(stmt);
         if (_switchDepth > 0) _loopDepthInSwitch--;
         _loopDepth--;
         _indent--;
@@ -2171,7 +2637,20 @@ public class LuauEmitter
         // These handle C# continue/break inside try blocks (which become pcall lambdas in Luau)
         if (tryHasContinue)
         {
-            AppendLine("if __pcall_continue then continue end");
+            // Emit for-loop incrementors before continue so C# semantics are preserved
+            if (_forLoopIncrementors != null)
+            {
+                AppendLine("if __pcall_continue then");
+                _indent++;
+                EmitForLoopIncrementorsBeforeContinue();
+                AppendLine("continue");
+                _indent--;
+                AppendLine("end");
+            }
+            else
+            {
+                AppendLine("if __pcall_continue then continue end");
+            }
         }
         if (tryHasBreak)
         {
@@ -2218,14 +2697,21 @@ public class LuauEmitter
         _indent++;
         _loopDepth++;
         if (_switchDepth > 0) _loopDepthInSwitch++;
+
+        // Track incrementors so continue statements can emit them first
+        // (C# for-loop continue executes the incrementor before re-checking condition)
+        var previousIncrementors = _forLoopIncrementors;
+        _forLoopIncrementors = forStmt.Incrementors.Count > 0 ? forStmt.Incrementors : null;
+
         EmitStatementBody(forStmt.Statement);
 
-        // Emit incrementors
+        // Emit incrementors at end of loop body (normal path)
         foreach (var incrementor in forStmt.Incrementors)
         {
             EmitIncrementorStatement(incrementor);
         }
 
+        _forLoopIncrementors = previousIncrementors;
         if (_switchDepth > 0) _loopDepthInSwitch--;
         _loopDepth--;
         _indent--;
@@ -2274,6 +2760,21 @@ public class LuauEmitter
         // Fallback: emit as expression statement
         var exprStr = EmitExpression(expr);
         AppendLine(exprStr);
+    }
+
+    /// <summary>
+    /// Emit the current for-loop incrementors before a continue statement.
+    /// In C#, continue in a for loop still executes the incrementor before
+    /// re-checking the condition. In Luau's while loop, continue skips to
+    /// the condition directly, so we must emit the incrementor explicitly.
+    /// </summary>
+    private void EmitForLoopIncrementorsBeforeContinue()
+    {
+        if (_forLoopIncrementors == null) return;
+        foreach (var inc in _forLoopIncrementors)
+        {
+            EmitIncrementorStatement(inc);
+        }
     }
 
     private void EmitForEach(ForEachStatementSyntax foreachStmt)
@@ -2375,7 +2876,20 @@ public class LuauEmitter
 
     private void EmitSwitch(SwitchStatementSyntax switchStmt)
     {
+        _pendingAssignmentStatements.Clear();
         var governing = EmitExpression(switchStmt.Expression);
+        // If the governing expression produced pending side-effects (e.g., charPos++ in switch(_chars[charPos++])),
+        // we must capture the governing value in a temp before draining them, because the drain modifies
+        // variables that appear in the governing expression string.
+        if (_pendingAssignmentStatements.Count > 0)
+        {
+            var tmpName = $"__switchVal_{_tempVarCounter++}";
+            AppendLine($"local {tmpName} = {governing}");
+            foreach (var stmt in _pendingAssignmentStatements)
+                AppendLine(stmt);
+            _pendingAssignmentStatements.Clear();
+            governing = tmpName;
+        }
 
         // Gather sections. Each section can have multiple labels and multiple statements.
         // We convert to if/elseif chains. Track switch depth to suppress break statements.
@@ -2627,7 +3141,9 @@ public class LuauEmitter
             }
             else
             {
-                AppendLine(expr);
+                // Suppress bare hoisted variables from TryHoistOutParams — already emitted
+                if (!expr.StartsWith("__tryOk_"))
+                    AppendLine(expr);
             }
         }
         else
@@ -2641,6 +3157,121 @@ public class LuauEmitter
     /// </summary>
     private void EmitAssignmentStatement(AssignmentExpressionSyntax assignment)
     {
+        // Property write via bare identifier: Prop = value → self:set_Prop(value) or self.Prop = value
+        if (_model != null && assignment.Left is IdentifierNameSyntax identLeft
+            && assignment.Kind() == SyntaxKind.SimpleAssignmentExpression
+            && _isInstanceContext
+            && !_currentMethodParams.Contains(identLeft.Identifier.Text)
+            && !_currentMethodLocals.Contains(identLeft.Identifier.Text))
+        {
+            var sym = GetSymbol(identLeft);
+            // Get-only property assigned in constructor → direct field write (self.Prop = value)
+            if (sym is IPropertySymbol getOnlyPs && getOnlyPs.SetMethod == null && getOnlyPs.GetMethod != null
+                && _instanceFields.Contains(identLeft.Identifier.Text))
+            {
+                var value = EmitExpression(assignment.Right);
+                AppendLine($"self.{identLeft.Identifier.Text} = {value}");
+                return;
+            }
+            if (sym is IPropertySymbol ips && ips.SetMethod != null)
+            {
+                bool needsSetter = ips.IsAbstract;
+                if (!needsSetter)
+                {
+                    var dr = ips.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (dr?.GetSyntax() is PropertyDeclarationSyntax pds)
+                    {
+                        bool hasBody = pds.ExpressionBody != null
+                            || (pds.AccessorList?.Accessors.Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+                        if (hasBody) needsSetter = true;
+                    }
+                }
+                if (needsSetter)
+                {
+                    var value = EmitExpression(assignment.Right);
+                    var propName = identLeft.Identifier.Text;
+                    if (ips.IsStatic)
+                    {
+                        var ct = ips.ContainingType?.Name;
+                        if (ct != null) { AppendLine($"{ct}.set_{propName}({value})"); return; }
+                    }
+                    else
+                    {
+                        AppendLine($"self:set_{propName}({value})");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Property write → setter call: obj.Prop = value → Type.set_Prop(obj, value)
+        if (_model != null && assignment.Left is MemberAccessExpressionSyntax propAccess
+            && assignment.Kind() == SyntaxKind.SimpleAssignmentExpression)
+        {
+            var propSymbol = GetSymbol(propAccess);
+            if (propSymbol is IPropertySymbol ps && ps.SetMethod != null)
+            {
+                bool isAuto = !ps.IsAbstract;
+                if (isAuto)
+                {
+                    var declRef = ps.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (declRef?.GetSyntax() is PropertyDeclarationSyntax propSyntax)
+                    {
+                        bool hasExprBody = propSyntax.ExpressionBody != null;
+                        bool hasAccessorBody = propSyntax.AccessorList?.Accessors
+                            .Any(a => a.Body != null || a.ExpressionBody != null) ?? false;
+                        if (hasExprBody || hasAccessorBody)
+                            isAuto = false;
+                    }
+                }
+                if (!isAuto)
+                {
+                    var receiver = EmitExpression(propAccess.Expression);
+                    var value = EmitExpression(assignment.Right);
+                    var propName = propAccess.Name.Identifier.Text;
+                    if (ps.IsStatic)
+                    {
+                        var containingType = ps.ContainingType?.Name;
+                        if (containingType != null)
+                        {
+                            AppendLine($"{containingType}.set_{propName}({value})");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        AppendLine($"{receiver}:set_{propName}({value})");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // IList<T> interface/implementation indexer assignment: children[index] = value → __rt.ilistSet(children, index, value)
+        if (_model != null && assignment.Left is ElementAccessExpressionSyntax ilistElem
+            && assignment.Kind() == SyntaxKind.SimpleAssignmentExpression)
+        {
+            var elemReceiverType = GetExpressionType(ilistElem.Expression);
+            bool isIListAssign = false;
+            if (elemReceiverType != null && ilistElem.ArgumentList.Arguments.Count == 1)
+            {
+                isIListAssign = (elemReceiverType.TypeKind == TypeKind.Interface
+                    && elemReceiverType.Name is "IList" or "IReadOnlyList")
+                    || (elemReceiverType.Name is not "List" and not "Array" and not "Queue" and not "Stack"
+                        && elemReceiverType is not IArrayTypeSymbol
+                        && elemReceiverType.AllInterfaces.Any(i => i.Name == "IList"));
+            }
+            if (isIListAssign)
+            {
+                NeedsRuntime = true;
+                var obj = EmitExpression(ilistElem.Expression);
+                var idx = EmitExpression(ilistElem.ArgumentList.Arguments[0].Expression);
+                var val = EmitExpression(assignment.Right);
+                AppendLine($"__rt.ilistSet({obj}, {idx}, {val})");
+                return;
+            }
+        }
+
         var left = EmitExpression(assignment.Left);
         var right = EmitExpression(assignment.Right);
 
@@ -2776,7 +3407,7 @@ public class LuauEmitter
             InterpolatedStringExpressionSyntax interp => EmitInterpolatedString(interp),
             IsPatternExpressionSyntax isPattern => EmitIsPattern(isPattern),
             AwaitExpressionSyntax awaitExpr => EmitAwait(awaitExpr),
-            TypeOfExpressionSyntax typeOf => $"\"{typeOf.Type}\"",
+            TypeOfExpressionSyntax typeOf => EmitTypeOf(typeOf),
             InitializerExpressionSyntax initExpr => EmitInitializerExpression(initExpr),
             DeclarationExpressionSyntax declExpr => EmitDeclarationExpression(declExpr),
             ImplicitArrayCreationExpressionSyntax implicitArray => EmitImplicitArrayCreation(implicitArray),
@@ -2872,17 +3503,40 @@ public class LuauEmitter
         var name = EscapeIdentifier(ident.Identifier.Text);
 
         // Resolve pattern variable aliases: `m is T p` → p resolves to m
-        if (_patternVarAliases.TryGetValue(name, out var alias))
+        // But only when the variable doesn't have its own local declaration (EmitPatternVariableBindings
+        // creates a local for `is` pattern vars, so they can be reassigned independently)
+        if (_patternVarAliases.TryGetValue(name, out var alias) && !_currentMethodLocals.Contains(name)
+            && !_currentMethodLocals.Contains(ident.Identifier.Text))
             return alias;
 
         // Check for well-known replacements
         if (name == "string") return "string";
 
         // In instance context, bare identifiers that are instance fields → self.field
+        // But non-auto properties need self:get_Name() instead of self.Name
         if (_isInstanceContext && _instanceFields.Contains(name)
             && !_currentMethodParams.Contains(name)
             && !_currentMethodLocals.Contains(name))
         {
+            // Check if this is a non-auto property that needs a getter call
+            if (_model != null)
+            {
+                var fieldSym = GetSymbol(ident);
+                if (fieldSym is IPropertySymbol fps && !fps.IsStatic && fps.GetMethod != null)
+                {
+                    if (fps.IsAbstract || fps.IsVirtual || fps.IsOverride)
+                        return $"self:get_{name}()";
+                    var fpsDeclRef = fps.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (fpsDeclRef?.GetSyntax() is PropertyDeclarationSyntax fpsPropSyn)
+                    {
+                        bool fpsHasBody = fpsPropSyn.ExpressionBody != null
+                            || (fpsPropSyn.AccessorList?.Accessors
+                                .Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+                        if (fpsHasBody)
+                            return $"self:get_{name}()";
+                    }
+                }
+            }
             return $"self.{name}";
         }
 
@@ -2906,9 +3560,34 @@ public class LuauEmitter
                 if (symbol is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst)
                     return $"self.{name}";
                 if (symbol is IPropertySymbol ps && !ps.IsStatic)
+                {
+                    // Abstract/non-auto properties need getter call, not direct field access
+                    if (ps.IsAbstract)
+                        return $"self:get_{name}()";
+                    if (ps.GetMethod != null)
+                    {
+                        var declRef = ps.DeclaringSyntaxReferences.FirstOrDefault();
+                        if (declRef?.GetSyntax() is PropertyDeclarationSyntax propSyn)
+                        {
+                            bool hasBody = propSyn.ExpressionBody != null
+                                || (propSyn.AccessorList?.Accessors
+                                    .Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+                            if (hasBody)
+                                return $"self:get_{name}()";
+                        }
+                    }
                     return $"self.{name}";
+                }
                 if (symbol is IMethodSymbol ms && !ms.IsStatic && ms.MethodKind == MethodKind.Ordinary)
+                {
+                    // If used as a value (delegate/method group), wrap in closure to capture self
+                    if (ident.Parent is not InvocationExpressionSyntax)
+                    {
+                        var className = ms.ContainingType?.Name ?? _currentClassName;
+                        return $"function(...) return {className}.{name}(self, ...) end";
+                    }
                     return $"self.{name}";
+                }
             }
             // Static methods used as bare identifiers (method group → delegate) → ClassName.Method
             if (symbol is IMethodSymbol staticMs && staticMs.IsStatic
@@ -2934,15 +3613,52 @@ public class LuauEmitter
     {
         var memberName = memberAccess.Name.Identifier.Text;
 
-        // Handle `base.field` → `self.field` (metatable chain handles lookup)
+        // Handle `base.field` → `self.field`, `base.Property` → `self:get_Property()`
         if (memberAccess.Expression is BaseExpressionSyntax)
         {
+            if (_model != null)
+            {
+                var baseSym = GetSymbol(memberAccess);
+                if (baseSym is IPropertySymbol basePs && !basePs.IsStatic && basePs.GetMethod != null)
+                {
+                    if (basePs.IsAbstract || basePs.IsVirtual || basePs.IsOverride)
+                        return $"self:get_{memberName}()";
+                    var baseDeclRef = basePs.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (baseDeclRef?.GetSyntax() is PropertyDeclarationSyntax basePropSyn)
+                    {
+                        bool hasBody = basePropSyn.ExpressionBody != null
+                            || (basePropSyn.AccessorList?.Accessors
+                                .Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+                        if (hasBody)
+                            return $"self:get_{memberName}()";
+                    }
+                }
+            }
             return $"self.{memberName}";
         }
 
-        // Handle `this.field` → `self.field`
+        // Handle `this.field` → `self.field`, `this.Property` → `self:get_Property()`
         if (memberAccess.Expression is ThisExpressionSyntax)
         {
+            // Check if it's a non-auto property requiring getter call
+            if (_model != null)
+            {
+                var thisSym = GetSymbol(memberAccess);
+                if (thisSym is IPropertySymbol thisPs && !thisPs.IsStatic && thisPs.GetMethod != null)
+                {
+                    if (thisPs.IsAbstract || thisPs.IsVirtual || thisPs.IsOverride)
+                        return $"self:get_{memberName}()";
+                    var thisDeclRef = thisPs.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (thisDeclRef?.GetSyntax() is PropertyDeclarationSyntax thisPropSyn)
+                    {
+                        bool hasBody = thisPropSyn.ExpressionBody != null
+                            || (thisPropSyn.AccessorList?.Accessors
+                                .Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+                        if (hasBody)
+                            return $"self:get_{memberName}()";
+                    }
+                }
+            }
             return $"self.{memberName}";
         }
 
@@ -2979,6 +3695,47 @@ public class LuauEmitter
                 if (memberName is "IsClass")
                     return "true";
                 return typeStr2;
+            }
+            // Fallback: Type reflection properties on arbitrary expressions (e.g., field.IsEnum)
+            // Only apply when the expression is actually a System.Type value
+            bool isTypeExpr = false;
+            if (_model != null)
+            {
+                var exprType = _model.GetTypeInfo(memberAccess.Expression).Type;
+                if (exprType != null)
+                {
+                    var typeName = exprType.ToDisplayString();
+                    isTypeExpr = typeName is "System.Type" or "System.Reflection.MemberInfo"
+                        || typeName.StartsWith("System.Reflection.")
+                        || typeName.EndsWith("Type");
+                }
+            }
+            else
+            {
+                // No semantic model — check syntactically if it looks like a Type expression
+                isTypeExpr = memberAccess.Expression is IdentifierNameSyntax id
+                    && (id.Identifier.Text.EndsWith("Type") || id.Identifier.Text == "type");
+            }
+            if (isTypeExpr)
+            {
+                var left0 = EmitExpression(memberAccess.Expression);
+                if (memberName == "IsEnum")
+                {
+                    NeedsRuntime = true;
+                    return $"__rt.Type_IsEnum({left0})";
+                }
+                if (memberName is "IsByRef" or "HasElementType")
+                    return "false";
+                if (memberName is "IsValueType" or "IsPrimitive")
+                    return "false";
+                if (memberName is "IsClass")
+                    return "true";
+                if (memberName is "IsInterface" or "IsAbstract" or "IsGenericType" or "IsArray")
+                    return "false";
+                if (memberName is "Name" or "FullName")
+                    return left0;
+                if (memberName is "BaseType" or "Namespace")
+                    return "nil";
             }
         }
         // typeof(x).IsSubclassOf(T) / IsAssignableFrom(T) → true (can't check at runtime)
@@ -3069,9 +3826,16 @@ public class LuauEmitter
         }
 
         // Handle enum member access: SyntaxKind.TrueKeyword → SyntaxKind.TrueKeyword
-        if (memberAccess.Expression is IdentifierNameSyntax typeName)
+        // Also handle generic type names: CachedAttributeGetter<T>.Method → CachedAttributeGetter.Method
+        string? _extractedTypeStr = memberAccess.Expression switch
         {
-            var typeStr = typeName.Identifier.Text;
+            IdentifierNameSyntax id => id.Identifier.Text,
+            GenericNameSyntax gen => gen.Identifier.Text,
+            _ => null
+        };
+        if (_extractedTypeStr != null)
+        {
+            var typeStr = _extractedTypeStr;
 
             // Track external module references (not our own class, not a nested type)
             if (typeStr != _currentClassName
@@ -3092,9 +3856,17 @@ public class LuauEmitter
             if (typeStr == "Environment" && memberName == "NewLine")
                 return "\"\\n\"";
 
+            // DBNull.Value → nil (database null singleton)
+            if (typeStr == "DBNull" && memberName == "Value")
+                return "nil";
+
             // Environment.TickCount → math.floor(os.clock() * 1000)
             if (typeStr == "Environment" && memberName == "TickCount")
                 return "math.floor(os.clock() * 1000)";
+
+            // Type.EmptyTypes → {} (System.Type.EmptyTypes is an empty Type[] array)
+            if (typeStr == "Type" && memberName == "EmptyTypes")
+                return "{}";
 
             // Predefined type constants accessed via .NET type names (Int32.MaxValue, Double.NaN, etc.)
             if (typeStr is "Int32" or "UInt32" or "Int64" or "Int16" or "UInt16" or "Byte" or "SByte")
@@ -3364,45 +4136,156 @@ public class LuauEmitter
                 return "{}";
 
             // .Length on a string variable → string.len(var) or #var
+            // Only use # for types where it works (string, array, List, etc.)
+            // Custom structs/classes with a .Length property must fall through to getter logic.
             if (memberName == "Length")
             {
-                // If typeStr is an instance field, prefix with self
-                if (_isInstanceContext && _instanceFields.Contains(typeStr)
-                    && !_currentMethodParams.Contains(typeStr)
-                    && !_currentMethodLocals.Contains(typeStr))
+                bool isLengthSafeForHash = true;
+                if (_model != null)
                 {
-                    return $"#self.{typeStr}";
+                    var lengthOwner = GetExpressionType(memberAccess.Expression);
+                    if (lengthOwner != null
+                        && lengthOwner.SpecialType != SpecialType.System_String
+                        && lengthOwner is not IArrayTypeSymbol
+                        && lengthOwner.Name is not "List" and not "Array" and not "Queue" and not "Stack" and not "StringBuilder")
+                    {
+                        isLengthSafeForHash = false;
+                    }
                 }
-                // Generic .Length → #var (works for strings and tables)
-                if (!IsLikelyEnumOrExternalType(typeStr) || _currentMethodParams.Contains(typeStr) || _currentMethodLocals.Contains(typeStr))
+
+                if (isLengthSafeForHash)
                 {
-                    return $"#{typeStr}";
+                    // If typeStr is an instance field, prefix with self
+                    if (_isInstanceContext && IsInstanceFieldRef(typeStr, memberAccess.Expression))
+                    {
+                        return $"#self.{typeStr}";
+                    }
+                    // Generic .Length → #var (works for strings and tables)
+                    if (!IsLikelyEnumOrExternalType(typeStr) || _currentMethodParams.Contains(typeStr) || _currentMethodLocals.Contains(typeStr))
+                    {
+                        return $"#{typeStr}";
+                    }
                 }
             }
 
-            // .Count on a List/collection → #var
+            // .Count on a List/collection → #var (but IList interface/custom → runtime helper)
             if (memberName == "Count")
             {
-                if (_isInstanceContext && _instanceFields.Contains(typeStr)
-                    && !_currentMethodParams.Contains(typeStr)
-                    && !_currentMethodLocals.Contains(typeStr))
+                // First resolve the correct receiver expression, handling abstract property getters
+                string resolvedReceiver = typeStr;
+                if (_model != null && memberAccess.Expression is IdentifierNameSyntax countIdent)
                 {
-                    return $"#self.{typeStr}";
+                    var countSym = GetSymbol(countIdent);
+                    if (countSym is IPropertySymbol countPs && !countPs.IsStatic
+                        && (countPs.IsAbstract || HasPropertyBody(countPs)))
+                    {
+                        resolvedReceiver = $"self:get_{typeStr}()";
+                    }
+                    else if (_isInstanceContext && IsInstanceFieldRef(typeStr, memberAccess.Expression))
+                    {
+                        resolvedReceiver = $"self.{typeStr}";
+                    }
                 }
-                if (!IsLikelyEnumOrExternalType(typeStr) || _currentMethodParams.Contains(typeStr) || _currentMethodLocals.Contains(typeStr))
+                else if (_isInstanceContext && IsInstanceFieldRef(typeStr, memberAccess.Expression))
                 {
-                    return $"#{typeStr}";
+                    resolvedReceiver = $"self.{typeStr}";
                 }
+
+                // Check if the receiver is an IList interface or custom IList implementation
+                if (_model != null)
+                {
+                    var countOwnerType = GetExpressionType(memberAccess.Expression);
+                    if (countOwnerType != null)
+                    {
+                        bool isIListIface = countOwnerType.TypeKind == TypeKind.Interface
+                            && countOwnerType.Name is "IList" or "ICollection" or "IReadOnlyList" or "IReadOnlyCollection";
+                        bool implIList = !isIListIface
+                            && countOwnerType.Name is not "List" and not "Array" and not "Queue" and not "Stack"
+                            && (countOwnerType.AllInterfaces.Any(i => i.Name is "IList" or "ICollection"));
+                        if (isIListIface || implIList)
+                        {
+                            NeedsRuntime = true;
+                            return $"__rt.ilistCount({resolvedReceiver})";
+                        }
+                    }
+                }
+                // Fallback for non-IList: use # with the resolved receiver
+                return $"#{resolvedReceiver}";
             }
 
             // .Position, .Width etc. on instance fields → getter or direct access
             // If accessing a member of an instance field (e.g., _window.Position),
-            // and we're in instance context, prefix with self
-            if (_isInstanceContext && _instanceFields.Contains(typeStr)
-                && !_currentMethodParams.Contains(typeStr)
-                && !_currentMethodLocals.Contains(typeStr))
+            // and we're in instance context, prefix with self.
+            // But if the field is actually a non-auto/virtual property, use getter call.
+            if (IsInstanceFieldRef(typeStr, memberAccess.Expression))
             {
-                return $"self.{typeStr}.{memberName}";
+                string receiverExpr = $"self.{typeStr}";
+                if (_model != null && memberAccess.Expression is IdentifierNameSyntax fieldIdent)
+                {
+                    var fieldSym = GetSymbol(fieldIdent);
+                    if (fieldSym is IPropertySymbol fieldPs && !fieldPs.IsStatic && fieldPs.GetMethod != null)
+                    {
+                        if (fieldPs.IsAbstract || fieldPs.IsVirtual || fieldPs.IsOverride
+                            || HasPropertyBody(fieldPs))
+                            receiverExpr = $"self:get_{typeStr}()";
+                    }
+                }
+                // Check if the accessed member is a non-auto property requiring a getter call
+                if (_model != null)
+                {
+                    var memberSym = GetSymbol(memberAccess);
+                    if (memberSym is IPropertySymbol memberPs && memberPs.GetMethod != null)
+                    {
+                        bool memberIsAuto = !memberPs.IsAbstract;
+                        var memberDeclRef = memberPs.DeclaringSyntaxReferences.FirstOrDefault();
+                        if (memberDeclRef?.GetSyntax() is PropertyDeclarationSyntax memberPropSyn)
+                        {
+                            bool memberHasBody = memberPropSyn.ExpressionBody != null
+                                || (memberPropSyn.AccessorList?.Accessors
+                                    .Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+                            if (memberHasBody)
+                                memberIsAuto = false;
+                        }
+                        if (!memberIsAuto)
+                            return $"{receiverExpr}:get_{memberName}()";
+                    }
+                }
+                return $"{receiverExpr}.{memberName}";
+            }
+
+            // Property access → getter call for non-auto properties (IdentifierNameSyntax path)
+            if (_model != null)
+            {
+                var memberSymbol = GetSymbol(memberAccess);
+                if (memberSymbol is IPropertySymbol ps2 && ps2.GetMethod != null)
+                {
+                    bool isAuto2 = !ps2.IsAbstract;
+                    var declRef2 = ps2.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (declRef2?.GetSyntax() is PropertyDeclarationSyntax propSyntax2)
+                    {
+                        bool hasExprBody2 = propSyntax2.ExpressionBody != null;
+                        bool hasAccessorBody2 = propSyntax2.AccessorList?.Accessors
+                            .Any(a => a.Body != null || a.ExpressionBody != null) ?? false;
+                        if (hasExprBody2 || hasAccessorBody2)
+                            isAuto2 = false;
+                    }
+                    if (!isAuto2)
+                    {
+                        var receiver = (_currentMethodParams.Contains(typeStr) || _currentMethodLocals.Contains(typeStr))
+                            ? typeStr
+                            : (_isInstanceContext && _instanceFields.Contains(typeStr) ? $"self.{typeStr}" : typeStr);
+                        if (ps2.IsStatic)
+                        {
+                            var containingType2 = ps2.ContainingType?.Name;
+                            if (containingType2 != null)
+                                return $"{containingType2}.get_{memberName}()";
+                        }
+                        else
+                        {
+                            return $"{receiver}:get_{memberName}()";
+                        }
+                    }
+                }
             }
 
             // SyntaxKind.None etc. → SyntaxKind.None (module.member)
@@ -3430,9 +4313,64 @@ public class LuauEmitter
                 {
                     return $"--[[dictCount]] #{left}"; // TODO: replace with __rt.dictCount
                 }
+                // IList<T>/ICollection<T> interface or concrete custom class implementing IList
+                // Use runtime helper to handle custom implementations (e.g. JPropertyList)
+                if (ownerType != null)
+                {
+                    bool isIListInterface = ownerType.TypeKind == TypeKind.Interface
+                        && ownerType.Name is "IList" or "ICollection" or "IReadOnlyList" or "IReadOnlyCollection";
+                    bool implementsIList = !isIListInterface
+                        && ownerType.Name is not "List" and not "Array" and not "Queue" and not "Stack"
+                        && (ownerType.AllInterfaces.Any(i => i.Name is "IList" or "ICollection"));
+                    if (isIListInterface || implementsIList)
+                    {
+                        NeedsRuntime = true;
+                        return $"__rt.ilistCount({left})";
+                    }
+                }
             }
-            // Fallback: always use # (matches old behavior)
-            return $"#{left}";
+            // Fallback: use # only when semantic model is unavailable (no type info).
+            // When the model IS available but type didn't match any whitelist above,
+            // it's a custom struct/class with a .Length/.Count property — fall through
+            // to the property getter logic below.
+            if (_model == null)
+                return $"#{left}";
+        }
+
+        // Property access → getter call for non-auto properties
+        // Auto-properties are emitted as fields (no get_ method), so direct access works.
+        // Non-auto properties store values in backing fields (_field), so we must call the getter.
+        if (_model != null)
+        {
+            var symbol = GetSymbol(memberAccess);
+            if (symbol is IPropertySymbol ps && ps.GetMethod != null)
+            {
+                // Check if the property is auto-implemented (all accessors have no body)
+                // Abstract properties have no backing field — must use getter
+                bool isAuto = !ps.IsAbstract;
+                var declRef = ps.DeclaringSyntaxReferences.FirstOrDefault();
+                if (declRef?.GetSyntax() is PropertyDeclarationSyntax propSyntax)
+                {
+                    bool hasExprBody = propSyntax.ExpressionBody != null;
+                    bool hasAccessorBody = propSyntax.AccessorList?.Accessors
+                        .Any(a => a.Body != null || a.ExpressionBody != null) ?? false;
+                    if (hasExprBody || hasAccessorBody)
+                        isAuto = false;
+                }
+                if (!isAuto)
+                {
+                    if (ps.IsStatic)
+                    {
+                        var containingType = ps.ContainingType?.Name;
+                        if (containingType != null)
+                            return $"{containingType}.get_{memberName}()";
+                    }
+                    else
+                    {
+                        return $"{left}:get_{memberName}()";
+                    }
+                }
+            }
         }
 
         return $"{left}.{memberName}";
@@ -3446,53 +4384,202 @@ public class LuauEmitter
             return EmitMemberInvocation(memberAccess, invocation.ArgumentList.Arguments);
         }
 
-        var args = invocation.ArgumentList.Arguments.Select(a => EmitExpression(a.Expression));
-        var argStr = string.Join(", ", args);
-        int argCount = invocation.ArgumentList.Arguments.Count;
+        var arguments = invocation.ArgumentList.Arguments;
+        var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
 
-        // Handle the expression being called
-        if (invocation.Expression is IdentifierNameSyntax methodName)
+        // ── Handle params arrays for bare-name calls ──
+        if (_model != null)
         {
-            var name = methodName.Identifier.Text;
+            var calledSym = _model.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+            if (calledSym != null && calledSym.Parameters.Length > 0)
+            {
+                var lastParam = calledSym.Parameters[^1];
+                if (lastParam.IsParams && lastParam.Type is IArrayTypeSymbol)
+                {
+                    var nonParamsCount = calledSym.Parameters.Length - 1;
+                    if (arguments.Count > nonParamsCount)
+                    {
+                        bool needsWrap = true;
+                        if (arguments.Count == calledSym.Parameters.Length)
+                        {
+                            var lastArgType = GetExpressionType(arguments[^1].Expression);
+                            if (lastArgType is IArrayTypeSymbol)
+                                needsWrap = false;
+                        }
+                        if (needsWrap)
+                        {
+                            var paramsArgs = args.Skip(nonParamsCount).ToList();
+                            args = args.Take(nonParamsCount).ToList();
+                            args.Add("{" + string.Join(", ", paramsArgs) + "}");
+                        }
+                    }
+                    else if (arguments.Count == nonParamsCount)
+                    {
+                        args.Add("{}");
+                    }
+                }
+            }
+        }
+
+        var argStr = string.Join(", ", args);
+        int argCount = arguments.Count;
+
+        var callResult = EmitBareNameCall(invocation, arguments, args, argStr, argCount);
+
+        // Apply out-param hoisting for any call with out arguments
+        var hoisted = TryHoistOutParams(callResult, arguments, args);
+        return hoisted ?? callResult;
+    }
+
+    /// <summary>
+    /// Core logic for bare-name invocations (no member access).
+    /// Called by EmitInvocation which wraps with out-param hoisting.
+    /// </summary>
+    private string EmitBareNameCall(InvocationExpressionSyntax invocation,
+        SeparatedSyntaxList<ArgumentSyntax> arguments, List<string> args, string argStr, int argCount)
+    {
+        // Handle the expression being called — both plain and generic names
+        // e.g. DoSomething(x) or DoSomething<T>(x)
+        string? bareMethodName = invocation.Expression switch
+        {
+            IdentifierNameSyntax id => id.Identifier.Text,
+            GenericNameSyntax gen => gen.Identifier.Text,
+            _ => null
+        };
+        if (bareMethodName != null)
+        {
+            var name = bareMethodName;
 
             // nameof(x) → "x"
             if (name == "nameof")
             {
-                var firstArg = invocation.ArgumentList.Arguments[0].Expression.ToString();
+                var firstArg = arguments[0].Expression.ToString();
                 return $"\"{firstArg}\"";
             }
 
             // ReferenceEquals(a, b) → rawequal(a, b)
-            if (name == "ReferenceEquals" && invocation.ArgumentList.Arguments.Count == 2)
-                return $"rawequal({EmitExpression(invocation.ArgumentList.Arguments[0].Expression)}, {EmitExpression(invocation.ArgumentList.Arguments[1].Expression)})";
+            if (name == "ReferenceEquals" && argCount == 2)
+                return $"rawequal({args[0]}, {args[1]})";
 
-            // GetType() → typeof(self) — bare call to Object.GetType() in instance context
+            // GetType() → __rt.getType(self) — bare call to Object.GetType() in instance context
             if (name == "GetType" && argCount == 0 && _isInstanceContext)
-                return "typeof(self)";
+            {
+                NeedsRuntime = true;
+                return "__rt.getType(self)";
+            }
 
             // Resolve overloaded name via the overload map
             // Use semantic model to determine target overload's first param type for precise resolution
             var firstParamType = "";
+            string? fullSigResolvedName = null;
             if (_model != null)
             {
                 var symbol = GetSymbol(invocation);
-                if (symbol is IMethodSymbol targetMethod && targetMethod.Parameters.Length > 0)
+                if (symbol is IMethodSymbol targetMethod)
                 {
-                    var fpt = targetMethod.Parameters[0].Type.ToDisplayString(Microsoft.CodeAnalysis.SymbolDisplayFormat.MinimallyQualifiedFormat);
-                    var isNullableFpt = fpt.EndsWith("?");
-                    fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
-                    if (isNullableFpt) fpt += "_nullable";
-                    firstParamType = fpt;
+                    if (targetMethod.Parameters.Length > 0)
+                    {
+                        var fpt = targetMethod.Parameters[0].Type.ToDisplayString(Microsoft.CodeAnalysis.SymbolDisplayFormat.MinimallyQualifiedFormat);
+                        var isNullableFpt = fpt.EndsWith("?");
+                        fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                        if (isNullableFpt) fpt += "_nullable";
+                        firstParamType = fpt;
+                    }
+                    // Try full-signature lookup for precise resolution
+                    var containingType = targetMethod.ContainingType?.Name ?? _currentClassName ?? "";
+                    var allParamSig = string.Join(",", targetMethod.Parameters.Select(p =>
+                    {
+                        var pt = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                        var isNullablePt = pt.EndsWith("?")
+                            || (p.Type is INamedTypeSymbol { NullableAnnotation: NullableAnnotation.Annotated });
+                        pt = pt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                            .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                        if (isNullablePt) pt += "_nullable";
+                        return pt;
+                    }));
+                    if (FullSignatureOverloadMap.TryGetValue((containingType, name, allParamSig), out var fsResolved))
+                    {
+                        fullSigResolvedName = fsResolved;
+                    }
                 }
             }
-            var resolvedName = ResolveOverloadedName(name, argCount, firstParamType);
+            var resolvedName = fullSigResolvedName ?? ResolveOverloadedName(name, argCount, firstParamType);
 
             // In instance context, calling an instance method by bare name → self dispatch
             if (_isInstanceContext && _instanceMethods.Contains(name)
                 && !_currentMethodParams.Contains(name)
                 && !_currentMethodLocals.Contains(name))
             {
-                // Use ClassName.Method(self, args) for explicit dispatch
+                if (_model != null)
+                {
+                    var sym = GetSymbol(invocation.Expression);
+                    if (sym is IMethodSymbol mSym)
+                    {
+                        // Static method called as bare name (e.g., Equals(a, b) → object.Equals)
+                        // Don't inject self — dispatch via the containing type
+                        if (mSym.IsStatic)
+                        {
+                            var staticTypeName = mSym.ContainingType?.Name ?? _currentClassName!;
+                            // Try MethodMapper first
+                            var mapResult = MethodMapper.TryRewrite(mSym, staticTypeName, args.ToArray(), null);
+                            if (mapResult != null) return mapResult;
+                            // Otherwise emit as Type.Method(args)
+                            return $"{staticTypeName}.{resolvedName}({argStr})";
+                        }
+
+                        var containingTypeName = mSym.ContainingType?.Name;
+                        if (containingTypeName != null && containingTypeName != _currentClassName)
+                        {
+                            // Resolve disambiguated name from the base class
+                            string baseResolvedName = name;
+                            var bareFSig1 = GetFullParamSig(mSym);
+                            if (FullSignatureOverloadMap.TryGetValue((containingTypeName, name, bareFSig1), out var bareFsResolved1))
+                                baseResolvedName = bareFsResolved1;
+                            else if (TryResolveGlobalOverload(containingTypeName, name, argCount, out var gResolved, GetFirstParamTypeKey(mSym)))
+                                baseResolvedName = gResolved;
+
+                            // Check for true shadowing: current class has a same-named method
+                            // that is NOT an override of the resolved method
+                            bool hasShadowing = false;
+                            if (_model.Compilation.GetTypeByMetadataName(
+                                    mSym.ContainingType?.ContainingNamespace?.ToDisplayString() + "." + _currentClassName)
+                                is INamedTypeSymbol currentTypeSymbol)
+                            {
+                                hasShadowing = currentTypeSymbol.GetMembers(name)
+                                    .OfType<IMethodSymbol>()
+                                    .Any(m => !IsSameOrOverrideOf(m, mSym));
+                            }
+                            else
+                            {
+                                // Fallback: if we can't resolve the current type symbol,
+                                // assume shadowing if current class has the method
+                                hasShadowing = true;
+                            }
+
+                            if (hasShadowing)
+                            {
+                                // Explicit dispatch to base class to avoid Lua finding wrong method
+                                var runtimeRef = GetRuntimeRef(containingTypeName);
+                                if (runtimeRef == containingTypeName)
+                                    ReferencedModules.Add(containingTypeName);
+                                var fullArgs = string.IsNullOrEmpty(argStr) ? "self" : $"self, {argStr}";
+                                return $"{runtimeRef}.{baseResolvedName}({fullArgs})";
+                            }
+
+                            // No shadowing, but name may be disambiguated — use virtual dispatch with correct name
+                            if (baseResolvedName != name)
+                                resolvedName = baseResolvedName;
+                        }
+
+                        // Virtual/abstract/override methods need instance dispatch (self:Method)
+                        // for correct polymorphic behavior through the metatable chain
+                        if (mSym.IsVirtual || mSym.IsAbstract || mSym.IsOverride)
+                        {
+                            return string.IsNullOrEmpty(argStr) ? $"self:{resolvedName}()" : $"self:{resolvedName}({argStr})";
+                        }
+                    }
+                }
+                // Non-virtual: static dispatch via class table
                 if (string.IsNullOrEmpty(argStr))
                     return $"{_currentClassName}.{resolvedName}(self)";
                 return $"{_currentClassName}.{resolvedName}(self, {argStr})";
@@ -3501,7 +4588,7 @@ public class LuauEmitter
             // SemanticModel: resolve local functions and inherited instance methods
             if (_model != null)
             {
-                var symbol = GetSymbol(methodName);
+                var symbol = GetSymbol(invocation.Expression);
                 if (symbol is IMethodSymbol ms)
                 {
                     if (ms.MethodKind == MethodKind.LocalFunction)
@@ -3510,6 +4597,52 @@ public class LuauEmitter
                     // Inherited instance method called by bare name → add self dispatch
                     if (!ms.IsStatic && ms.MethodKind == MethodKind.Ordinary && _currentClassName != null)
                     {
+                        var containingTypeName = ms.ContainingType?.Name;
+                        if (containingTypeName != null && containingTypeName != _currentClassName)
+                        {
+                            // Resolve disambiguated name from the base class
+                            string baseResolvedName = name;
+                            var bareFSig2 = GetFullParamSig(ms);
+                            if (FullSignatureOverloadMap.TryGetValue((containingTypeName, name, bareFSig2), out var bareFsResolved2))
+                                baseResolvedName = bareFsResolved2;
+                            else if (TryResolveGlobalOverload(containingTypeName, name, argCount, out var gResolved, GetFirstParamTypeKey(ms)))
+                                baseResolvedName = gResolved;
+
+                            // Check for true shadowing if current class has same-named method
+                            if (_instanceMethods.Contains(name))
+                            {
+                                bool hasShadowing = false;
+                                if (_model.Compilation.GetTypeByMetadataName(
+                                        ms.ContainingType?.ContainingNamespace?.ToDisplayString() + "." + _currentClassName)
+                                    is INamedTypeSymbol currentTypeSymbol)
+                                {
+                                    hasShadowing = currentTypeSymbol.GetMembers(name)
+                                        .OfType<IMethodSymbol>()
+                                        .Any(m => !IsSameOrOverrideOf(m, ms));
+                                }
+                                else
+                                {
+                                    hasShadowing = true;
+                                }
+
+                                if (hasShadowing)
+                                {
+                                    var runtimeRef = GetRuntimeRef(containingTypeName);
+                                    if (runtimeRef == containingTypeName)
+                                        ReferencedModules.Add(containingTypeName);
+                                    var fullArgs = string.IsNullOrEmpty(argStr) ? "self" : $"self, {argStr}";
+                                    return $"{runtimeRef}.{baseResolvedName}({fullArgs})";
+                                }
+                            }
+
+                            // No shadowing, but name may be disambiguated
+                            if (baseResolvedName != name)
+                                resolvedName = baseResolvedName;
+                        }
+
+                        // Virtual/abstract/override → instance dispatch
+                        if (ms.IsVirtual || ms.IsAbstract || ms.IsOverride)
+                            return string.IsNullOrEmpty(argStr) ? $"self:{resolvedName}()" : $"self:{resolvedName}({argStr})";
                         if (string.IsNullOrEmpty(argStr))
                             return $"{_currentClassName}.{resolvedName}(self)";
                         return $"{_currentClassName}.{resolvedName}(self, {argStr})";
@@ -3552,9 +4685,19 @@ public class LuauEmitter
         return name;
     }
 
-    private bool TryResolveGlobalOverload(string typeName, string methodName, int argCount, out string resolvedName)
+    private bool TryResolveGlobalOverload(string typeName, string methodName, int argCount, out string resolvedName, string firstParamType = "")
     {
-        // Try any matching entry (ignore first param type on caller side)
+        // Try exact 4-tuple match first (most precise)
+        if (firstParamType != "")
+        {
+            var exactKey = (typeName, methodName, argCount, firstParamType);
+            if (GlobalOverloadMap.TryGetValue(exactKey, out var exactResolved))
+            {
+                resolvedName = exactResolved;
+                return true;
+            }
+        }
+        // Fall back to any matching entry (ignore first param type)
         foreach (var kvp in GlobalOverloadMap)
         {
             if (kvp.Key.TypeName == typeName && kvp.Key.MethodName == methodName && kvp.Key.ArgCount == argCount)
@@ -3565,6 +4708,107 @@ public class LuauEmitter
         }
         resolvedName = methodName;
         return false;
+    }
+
+    /// <summary>
+    /// Extract the first parameter type key from an IMethodSymbol,
+    /// formatted to match GlobalOverloadMap key conventions.
+    /// </summary>
+    private static string GetFirstParamTypeKey(IMethodSymbol method)
+    {
+        if (method.Parameters.Length == 0) return "";
+        var fpt = method.Parameters[0].Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        var isNullable = fpt.EndsWith("?")
+            || (method.Parameters[0].Type is INamedTypeSymbol { NullableAnnotation: NullableAnnotation.Annotated });
+        fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+            .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+        if (isNullable) fpt += "_nullable";
+        return fpt;
+    }
+
+    /// <summary>
+    /// Build the full parameter signature string for FullSignatureOverloadMap lookups.
+    /// </summary>
+    private static string GetFullParamSig(IMethodSymbol method)
+    {
+        return string.Join(",", method.Parameters.Select(p =>
+        {
+            var pt = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+            var isNullablePt = pt.EndsWith("?")
+                || (p.Type is INamedTypeSymbol { NullableAnnotation: NullableAnnotation.Annotated });
+            pt = pt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+            if (isNullablePt) pt += "_nullable";
+            return pt;
+        }));
+    }
+
+    /// <summary>
+    /// Check if <paramref name="method"/> is the same as or an override of <paramref name="target"/>
+    /// by walking up the override chain.
+    /// </summary>
+    private static bool IsSameOrOverrideOf(IMethodSymbol method, IMethodSymbol target)
+    {
+        var current = method;
+        while (current != null)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, target)) return true;
+            // Also check OriginalDefinition for generic methods
+            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, target.OriginalDefinition)) return true;
+            current = current.OverriddenMethod;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Resolve cross-inheritance method dispatch for an instance method call.
+    /// Returns the correct call expression, or null if default colon dispatch with the
+    /// original memberName is correct.
+    /// Handles two cases:
+    /// 1. Name disambiguation (e.g., WriteTo → WriteTo_JsonWriter) — returns colon syntax with fixed name
+    /// 2. True shadowing (different method with same name in derived class) — returns explicit dispatch
+    /// </summary>
+    private string? TryResolveCrossInheritanceCall(
+        IMethodSymbol resolvedMethod, string memberName, string receiver, string argStr, int argCount,
+        ExpressionSyntax receiverExpression)
+    {
+        var containingType = resolvedMethod.ContainingType;
+        if (containingType == null) return null;
+
+        // Resolve disambiguated name — try FullSignatureOverloadMap first, then GlobalOverloadMap
+        string resolvedName = memberName;
+        var fullSig = GetFullParamSig(resolvedMethod);
+        if (FullSignatureOverloadMap.TryGetValue((containingType.Name, memberName, fullSig), out var fsResolved))
+            resolvedName = fsResolved;
+        else if (TryResolveGlobalOverload(containingType.Name, memberName, argCount, out var globalResolved, GetFirstParamTypeKey(resolvedMethod)))
+            resolvedName = globalResolved;
+
+        // Check for cross-inheritance shadowing
+        var receiverType = _model!.GetTypeInfo(receiverExpression).Type as INamedTypeSymbol;
+        if (receiverType != null && !SymbolEqualityComparer.Default.Equals(containingType, receiverType))
+        {
+            // Check if receiver type has a same-named method that truly shadows
+            // (not an override of the resolved method)
+            bool hasShadowingMethod = receiverType.GetMembers(memberName)
+                .OfType<IMethodSymbol>()
+                .Any(m => !IsSameOrOverrideOf(m, resolvedMethod));
+
+            if (hasShadowingMethod)
+            {
+                // Explicit dispatch needed — Lua __index would find the wrong method
+                ReferencedModules.Add(containingType.Name);
+                var fullArgs = string.IsNullOrEmpty(argStr) ? receiver : $"{receiver}, {argStr}";
+                return $"{containingType.Name}.{resolvedName}({fullArgs})";
+            }
+        }
+
+        // If name was disambiguated but no shadowing, use colon syntax with disambiguated name
+        if (resolvedName != memberName)
+        {
+            return $"{receiver}:{resolvedName}({argStr})";
+        }
+
+        return null; // default dispatch is correct
     }
 
     /// <summary>
@@ -3586,7 +4830,7 @@ public class LuauEmitter
         {
             var typeStr = typeOfExpr.Type.ToString().Replace(",", "").Replace(" ", "").Replace("<", "_").Replace(">", "");
             if (memberName is "IsAssignableFrom" or "IsSubclassOf" or "IsInstanceOfType")
-                return "true --[[typeof reflection]]";
+                return "false --[[typeof reflection]]";
             if (memberName is "MakeGenericType" or "GetGenericTypeDefinition")
                 return $"\"{typeStr}\" --[[typeof reflection]]";
             if (memberName is "GetMethod" or "GetField" or "GetProperty" or "GetMember"
@@ -3610,8 +4854,23 @@ public class LuauEmitter
             var receiver = EmitExpression(memberAccess.Expression);
             if (arguments.Count == 1)
                 return $"({receiver} or {EmitExpression(arguments[0].Expression)})";
-            // No args: default to 0 (most Nullable<T> uses are numeric)
-            return $"({receiver} or 0)";
+            // No args: determine default based on underlying type
+            var defaultVal = "0";
+            if (_model != null)
+            {
+                var receiverType = GetExpressionType(memberAccess.Expression);
+                if (receiverType is INamedTypeSymbol nts
+                    && nts.OriginalDefinition?.SpecialType == SpecialType.System_Nullable_T
+                    && nts.TypeArguments.Length > 0)
+                {
+                    var underlying = nts.TypeArguments[0];
+                    if (underlying.SpecialType == SpecialType.System_Boolean)
+                        defaultVal = "false";
+                }
+                else if (receiverType?.SpecialType == SpecialType.System_Boolean)
+                    defaultVal = "false";
+            }
+            return $"({receiver} or {defaultVal})";
         }
 
         // ── String case methods — work on any expression receiver ──
@@ -3633,25 +4892,100 @@ public class LuauEmitter
         }
 
         var args = arguments.Select(a => EmitExpression(a.Expression)).ToList();
+
+        // ── Handle params arrays: wrap expanded arguments into a table constructor ──
+        // In C#, `params T[]` allows passing individual values that get auto-wrapped into an array.
+        // In Luau, we need to explicitly wrap them in { ... }.
+        if (_model != null)
+        {
+            var calledSym = _model.GetSymbolInfo(memberAccess.Parent!).Symbol as IMethodSymbol;
+            if (calledSym != null && calledSym.Parameters.Length > 0)
+            {
+                var lastParam = calledSym.Parameters[^1];
+                if (lastParam.IsParams && lastParam.Type is IArrayTypeSymbol)
+                {
+                    // Check if the caller is passing expanded args (not already an array)
+                    // This is true when we have more arguments than non-params parameters
+                    var nonParamsCount = calledSym.Parameters.Length - 1;
+                    if (arguments.Count > nonParamsCount)
+                    {
+                        // Check that the args aren't already passed as an array
+                        // If exactly one arg at the params position and it matches the array type, don't wrap
+                        bool needsWrap = true;
+                        if (arguments.Count == calledSym.Parameters.Length)
+                        {
+                            var lastArgType = GetExpressionType(arguments[^1].Expression);
+                            if (lastArgType is IArrayTypeSymbol)
+                                needsWrap = false;
+                        }
+                        if (needsWrap)
+                        {
+                            var paramsArgs = args.Skip(nonParamsCount).ToList();
+                            args = args.Take(nonParamsCount).ToList();
+                            args.Add("{" + string.Join(", ", paramsArgs) + "}");
+                        }
+                    }
+                    else if (arguments.Count == nonParamsCount)
+                    {
+                        // No params args passed — add empty table
+                        args.Add("{}");
+                    }
+                }
+            }
+        }
+
         var argStr = string.Join(", ", args);
 
         // ── Handle base.Method(args) → ParentClass.Method(self, args) ──
         if (memberAccess.Expression is BaseExpressionSyntax && _baseClassName != null)
         {
-            // base.GetType() → typeof(self)
+            // base.GetType() → __rt.getType(self)
             if (memberName == "GetType" && arguments.Count == 0)
-                return $"typeof(self)";
+            {
+                NeedsRuntime = true;
+                return $"__rt.getType(self)";
+            }
+            // Resolve overloaded method name for base class
+            var baseResolvedName = memberName;
+            if (_model != null)
+            {
+                var baseSym = _model.GetSymbolInfo(memberAccess).Symbol as IMethodSymbol;
+                if (baseSym != null)
+                {
+                    var fullSig = GetFullParamSig(baseSym);
+                    if (FullSignatureOverloadMap.TryGetValue((_baseClassName, memberName, fullSig), out var fsName))
+                        baseResolvedName = fsName;
+                    else
+                    {
+                        var fpt = GetFirstParamTypeKey(baseSym);
+                        TryResolveGlobalOverload(_baseClassName, memberName, baseSym.Parameters.Length, out baseResolvedName, fpt);
+                    }
+                }
+            }
             if (string.IsNullOrEmpty(argStr))
-                return $"{_baseClassName}.{memberName}(self)";
-            return $"{_baseClassName}.{memberName}(self, {argStr})";
+                return $"{_baseClassName}.{baseResolvedName}(self)";
+            return $"{_baseClassName}.{baseResolvedName}(self, {argStr})";
         }
 
         // ── Handle this.Method(args) → ClassName.Method(self, args) ──
         if (memberAccess.Expression is ThisExpressionSyntax)
         {
-            // this.GetType() → typeof(self) (must intercept before instance dispatch)
+            // this.GetType() → __rt.getType(self)
             if (memberName == "GetType" && arguments.Count == 0)
-                return $"typeof(self)";
+            {
+                NeedsRuntime = true;
+                return $"__rt.getType(self)";
+            }
+
+            // Virtual/abstract/override → instance dispatch for polymorphism
+            if (_model != null)
+            {
+                var sym = GetSymbol(memberAccess);
+                if (sym is IMethodSymbol mSym && (mSym.IsVirtual || mSym.IsAbstract || mSym.IsOverride))
+                {
+                    return string.IsNullOrEmpty(argStr) ? $"self:{memberName}()" : $"self:{memberName}({argStr})";
+                }
+            }
 
             if (_instanceMethods.Contains(memberName))
             {
@@ -3675,7 +5009,79 @@ public class LuauEmitter
                 if (result != null)
                 {
                     if (result.Contains("__rt.")) NeedsRuntime = true;
-                    return result;
+                    var hoisted = TryHoistOutParams(result, arguments, args);
+                    return hoisted ?? result;
+                }
+
+                // Extension methods: emit as static call ContainingType.Method(receiver, args)
+                // e.g., bindingAttr.RemoveFlag(16) → ReflectionUtils.RemoveFlag(bindingAttr, 16)
+                if (symbol.IsExtensionMethod)
+                {
+                    var containingType = symbol.ContainingType?.Name;
+                    if (containingType != null)
+                    {
+                        var allArgs = new[] { obj }.Concat(args);
+                        var callResult = $"{containingType}.{memberName}({string.Join(", ", allArgs)})";
+                        var hoisted = TryHoistOutParams(callResult, arguments, args);
+                        return hoisted ?? callResult;
+                    }
+                }
+
+                // Static method calls to other types: resolve overloaded names via GlobalOverloadMap
+                // e.g., JsonConvert.ToString(value, ...) → JsonConvert.ToString_float__2(value, ...)
+                if (symbol.IsStatic)
+                {
+                    var containingTypeName = symbol.ContainingType?.Name;
+                    if (containingTypeName != null)
+                    {
+                        var resolvedName = memberName;
+                        // Use MinimallyQualifiedFormat to get C# keyword names (float, bool, etc.)
+                        // which matches the syntax-based keys in GlobalOverloadMap
+                        var paramType = symbol.Parameters.FirstOrDefault()?.Type;
+                        var firstParamType = paramType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat) ?? "";
+                        // Match the scanner's nullable convention: strip ?, append _nullable
+                        var isNullableParam = firstParamType.EndsWith("?")
+                            || (paramType is INamedTypeSymbol { NullableAnnotation: NullableAnnotation.Annotated });
+                        firstParamType = firstParamType.Replace("?", "").Replace("[]", "_Array")
+                            .Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                        if (isNullableParam) firstParamType += "_nullable";
+
+                        // Use symbol.Parameters.Length for arg count (matches how the map was populated)
+                        var mapArgCount = symbol.Parameters.Length;
+
+                        // Try full-signature map first (most precise — handles ambiguous first-param keys)
+                        var allParamSig = string.Join(",", symbol.Parameters.Select(p =>
+                        {
+                            var pt = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                            var isNullablePt = pt.EndsWith("?")
+                                || (p.Type is INamedTypeSymbol { NullableAnnotation: NullableAnnotation.Annotated });
+                            pt = pt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                                .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                            if (isNullablePt) pt += "_nullable";
+                            return pt;
+                        }));
+                        var fullKey = (containingTypeName, memberName, allParamSig);
+                        if (FullSignatureOverloadMap.TryGetValue(fullKey, out var fullResolved))
+                            resolvedName = fullResolved;
+
+                        // Fall back to simple 4-tuple key
+                        if (resolvedName == memberName)
+                        {
+                            var preciseKey = (containingTypeName, memberName, mapArgCount, firstParamType);
+                            if (GlobalOverloadMap.TryGetValue(preciseKey, out var preciseResolved))
+                                resolvedName = preciseResolved;
+                            else if (TryResolveGlobalOverload(containingTypeName, memberName, mapArgCount, out var gResolved))
+                                resolvedName = gResolved;
+                        }
+
+                        if (resolvedName != memberName)
+                        {
+                            ReferencedModules.Add(containingTypeName);
+                            var callResult = $"{obj}.{resolvedName}({argStr})";
+                            var hoisted = TryHoistOutParams(callResult, arguments, args);
+                            return hoisted ?? callResult;
+                        }
+                    }
                 }
             }
         }
@@ -3739,10 +5145,16 @@ public class LuauEmitter
             }
         }
 
-        // ── Handle calls on identifier targets ──
-        if (memberAccess.Expression is IdentifierNameSyntax ownerIdent)
+        // ── Handle calls on identifier targets (including generic names like CachedAttributeGetter<T>) ──
+        string? _ownerNameExtracted = memberAccess.Expression switch
         {
-            var ownerName = ownerIdent.Identifier.Text;
+            IdentifierNameSyntax id => id.Identifier.Text,
+            GenericNameSyntax gen => gen.Identifier.Text,
+            _ => null
+        };
+        if (_ownerNameExtracted != null)
+        {
+            var ownerName = _ownerNameExtracted;
 
             // Console.WriteLine(x) → print(x)
             if (ownerName == "Console" && memberName is "WriteLine" or "Write")
@@ -3788,11 +5200,11 @@ public class LuauEmitter
                 return $"__rt.reverse({EmitExpression(arguments[0].Expression)})";
             }
 
-            // Array.CreateInstance(type, size) → table.create(size)
+            // Array.CreateInstance(type, size) → table.create(size, 0)
             if (ownerName == "Array" && memberName == "CreateInstance" && arguments.Count == 2)
             {
                 var size = EmitExpression(arguments[1].Expression);
-                return $"table.create({size})";
+                return $"table.create({size}, 0)";
             }
 
             // Array.Sort(array) → table.sort(array)
@@ -3955,6 +5367,25 @@ public class LuauEmitter
                 return "-- Debug.Assert()";
             }
 
+            // System.Enum static methods → runtime helpers
+            if (ownerName == "Enum")
+            {
+                NeedsRuntime = true;
+                if (memberName == "GetNames" && arguments.Count == 1)
+                    return $"__rt.Enum_GetNames({args[0]})";
+                if (memberName == "GetValues" && arguments.Count == 1)
+                    return $"__rt.Enum_GetValues({args[0]})";
+                if (memberName == "GetName" && arguments.Count == 2)
+                    return $"__rt.Enum_GetName({args[0]}, {args[1]})";
+                if (memberName == "IsDefined" && arguments.Count == 2)
+                    return $"__rt.Enum_IsDefined({args[0]}, {args[1]})";
+                if (memberName == "Parse" && arguments.Count >= 2)
+                    return $"__rt.Enum_Parse({args[0]}, {args[1]})";
+                if (memberName == "ToObject")
+                    return args.Count > 1 ? args[1] : args[0];
+                return $"nil --[[Enum.{memberName}]]";
+            }
+
             // Known external calls that we can't transpile — emit as TODO
             if (ownerName is "CharUnicodeInfo" or "Char")
             {
@@ -3965,11 +5396,18 @@ public class LuauEmitter
 
             // Resolve the actual Luau name for the owner
             string luauOwner;
-            if (_isInstanceContext && _instanceFields.Contains(ownerName)
+            if (_isInstanceContext && IsInstanceFieldRef(ownerName, memberAccess.Expression)
                 && !_currentMethodParams.Contains(ownerName)
                 && !_currentMethodLocals.Contains(ownerName))
             {
                 luauOwner = $"self.{ownerName}";
+            }
+            else if (_constFields.Contains(ownerName)
+                && !_currentMethodParams.Contains(ownerName)
+                && !_currentMethodLocals.Contains(ownerName)
+                && _currentClassName != null)
+            {
+                luauOwner = $"{_currentClassName}.{ownerName}";
             }
             else
             {
@@ -4055,10 +5493,11 @@ public class LuauEmitter
                 return $"tostring({luauOwner})";
             }
 
-            // .GetType() → typeof(obj)
+            // .GetType() → __rt.getType(obj)
             if (memberName == "GetType" && args.Count == 0)
             {
-                return $"typeof({luauOwner})";
+                NeedsRuntime = true;
+                return $"__rt.getType({luauOwner})";
             }
 
             // If the owner is an instance field, dispatch the method call.
@@ -4089,6 +5528,14 @@ public class LuauEmitter
                 return $"{luauOwner}:{memberName}({argStr})";
             }
 
+            // Calls on static/const fields holding object instances → colon syntax for instance dispatch
+            if (_constFields.Contains(ownerName)
+                && !_currentMethodParams.Contains(ownerName)
+                && !_currentMethodLocals.Contains(ownerName))
+            {
+                return $"{luauOwner}:{memberName}({argStr})";
+            }
+
             // Calls to our own type's static methods stay as ClassName.Method
             if (ownerName == _currentClassName)
             {
@@ -4103,14 +5550,137 @@ public class LuauEmitter
                 ReferencedModules.Add(ownerName);
             }
 
-            // If the owner is a parameter or local variable (not a static/enum type),
-            // use colon syntax for instance method dispatch
-            if (_currentMethodParams.Contains(ownerName) || _currentMethodLocals.Contains(ownerName))
+            // .NET Type/reflection method calls that can't dispatch via colon syntax
+            // (because the receiver may be a string or table, not a class with these methods)
+            if (memberName == "IsEnum")
             {
-                return $"{luauOwner}:{memberName}({argStr})";
+                NeedsRuntime = true;
+                return $"__rt.Type_IsEnum({luauOwner})";
+            }
+            if (memberName is "IsValueType" or "IsClass" or "IsInterface"
+                or "IsAbstract" or "IsArray" or "IsGenericType" or "IsPrimitive"
+                or "IsSealed" or "IsSerializable" or "IsPublic")
+            {
+                return "false --[[reflection stub]]";
+            }
+            if (memberName is "GetField" or "GetFields" && args.Count >= 1)
+            {
+                NeedsRuntime = true;
+                return $"__rt.Type_GetField({luauOwner}, {args[0]})";
+            }
+            if (memberName is "GetCustomAttributes" or "GetCustomAttribute")
+                return "{}";
+            if (memberName == "IsDefined")
+                return "false";
+
+            // Try MethodMapper name-based fallback (for static calls like TypeDescriptor.GetConverter)
+            var mappedByName = MethodMapper.TryRewriteByName(ownerName, memberName, luauOwner, args.Select(a => a).ToArray());
+            if (mappedByName != null)
+            {
+                if (mappedByName.Contains("__rt.")) NeedsRuntime = true;
+                var hoisted = TryHoistOutParams(mappedByName, arguments, args);
+                return hoisted ?? mappedByName;
             }
 
-            return $"{luauOwner}.{memberName}({argStr})";
+            // If the owner is a parameter or local variable (not a static/enum type),
+            // use colon syntax for instance method dispatch.
+            // Use semantic model to resolve overloaded method names across modules.
+            if (_currentMethodParams.Contains(ownerName) || _currentMethodLocals.Contains(ownerName))
+            {
+                var resolvedMemberName = memberName;
+                if (_model != null)
+                {
+                    var symbolInfo = _model.GetSymbolInfo(memberAccess);
+                    if (symbolInfo.Symbol is IMethodSymbol calledMethod && !calledMethod.IsStatic)
+                    {
+                        // Use cross-inheritance resolution (handles shadowing + name disambiguation)
+                        var crossResult = TryResolveCrossInheritanceCall(
+                            calledMethod, memberName, luauOwner, argStr, args.Count, memberAccess.Expression);
+                        if (crossResult != null)
+                        {
+                            var hoisted = TryHoistOutParams(crossResult, arguments, args);
+                            return hoisted ?? crossResult;
+                        }
+
+                        // Fallback: resolve within-type overloads
+                        var containingType = calledMethod.ContainingType;
+                        if (containingType != null)
+                        {
+                            var sameNameMethods = containingType.GetMembers(memberName)
+                                .OfType<IMethodSymbol>()
+                                .Where(m => !m.IsStatic && m.MethodKind == MethodKind.Ordinary)
+                                .ToList();
+                            if (sameNameMethods.Count > 1)
+                            {
+                                var typeName = containingType.Name;
+                                // Try FullSignatureOverloadMap first, then GlobalOverloadMap with firstParamType
+                                var withinFullSig = GetFullParamSig(calledMethod);
+                                if (FullSignatureOverloadMap.TryGetValue((typeName, memberName, withinFullSig), out var withinFsResolved))
+                                {
+                                    resolvedMemberName = withinFsResolved;
+                                }
+                                else if (TryResolveGlobalOverload(typeName, memberName, args.Count, out var globalResolved, GetFirstParamTypeKey(calledMethod)))
+                                {
+                                    resolvedMemberName = globalResolved;
+                                }
+                                else
+                                {
+                                    var firstParam = calledMethod.Parameters.FirstOrDefault();
+                                    if (firstParam != null)
+                                    {
+                                        var suffix = firstParam.Type.Name;
+                                        resolvedMemberName = $"{memberName}_{suffix}";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                {
+                    var callResult = $"{luauOwner}:{resolvedMemberName}({argStr})";
+                    var hoisted = TryHoistOutParams(callResult, arguments, args);
+                    return hoisted ?? callResult;
+                }
+            }
+
+            // Type reflection method stubs — only for static-looking calls on type names
+            // (NOT on params/locals, which are handled above with colon syntax)
+            if (memberName is "GetMethods" or "GetConstructors" or "GetProperties"
+                or "GetFields" or "GetInterfaces" or "GetGenericArguments" or "GetMember")
+                return "{}";
+            if (memberName is "GetMethod" or "GetConstructor" or "GetProperty"
+                or "GetConverter")
+                return "nil";
+
+            // Instance field method calls → colon syntax for instance dispatch
+            // e.g., self.Serializer:GetReferenceResolver()
+            if (luauOwner.StartsWith("self."))
+            {
+                // Check for cross-inheritance shadowing/disambiguation on field receivers
+                if (_model != null)
+                {
+                    var symbolInfo = _model.GetSymbolInfo(memberAccess);
+                    if (symbolInfo.Symbol is IMethodSymbol fieldCalledMethod && !fieldCalledMethod.IsStatic)
+                    {
+                        var crossResult = TryResolveCrossInheritanceCall(
+                            fieldCalledMethod, memberName, luauOwner, argStr, args.Count, memberAccess.Expression);
+                        if (crossResult != null)
+                        {
+                            var hoisted = TryHoistOutParams(crossResult, arguments, args);
+                            return hoisted ?? crossResult;
+                        }
+                    }
+                }
+                var callResult2 = $"{luauOwner}:{memberName}({argStr})";
+                var hoisted2 = TryHoistOutParams(callResult2, arguments, args);
+                return hoisted2 ?? callResult2;
+            }
+
+            {
+                var callResult = $"{luauOwner}.{memberName}({argStr})";
+                var hoisted = TryHoistOutParams(callResult, arguments, args);
+                return hoisted ?? callResult;
+            }
         }
 
         // ── Handle PredefinedType method calls: string.IsNullOrEmpty etc. ──
@@ -4144,7 +5714,8 @@ public class LuauEmitter
             if (mapped != null)
             {
                 if (mapped.Contains("__rt.")) NeedsRuntime = true;
-                return mapped;
+                var hoisted = TryHoistOutParams(mapped, arguments, args);
+                return hoisted ?? mapped;
             }
 
             return $"--[[TODO: {typeStr}.{memberName}]] nil";
@@ -4153,8 +5724,35 @@ public class LuauEmitter
         // ── Handle nested member access calls ──
         var left = EmitExpression(memberAccess.Expression);
 
-        // .Length → # operator (already handled in EmitMemberAccess, but catch here for method form)
+        // Use semantic model to determine instance vs static method dispatch
+        if (_model != null)
+        {
+            var methodSymbol = _model.GetSymbolInfo(memberAccess).Symbol as IMethodSymbol
+                ?? _model.GetSymbolInfo(memberAccess.Parent!).Symbol as IMethodSymbol;
+            if (methodSymbol != null && !methodSymbol.IsStatic)
+            {
+                // Cross-inheritance shadowing/disambiguation check
+                var crossResult = TryResolveCrossInheritanceCall(
+                    methodSymbol, memberName, left, argStr, args.Count, memberAccess.Expression);
+                if (crossResult != null)
+                {
+                    var hoisted = TryHoistOutParams(crossResult, arguments, args);
+                    return hoisted ?? crossResult;
+                }
 
+                var callResult2 = $"{left}:{memberName}({argStr})";
+                var hoisted2 = TryHoistOutParams(callResult2, arguments, args);
+                return hoisted2 ?? callResult2;
+            }
+            if (methodSymbol != null && methodSymbol.IsStatic)
+            {
+                var callResult = $"{left}.{memberName}({argStr})";
+                var hoisted = TryHoistOutParams(callResult, arguments, args);
+                return hoisted ?? callResult;
+            }
+        }
+
+        // Fallback without semantic model:
         // For method calls on element access or complex expressions (non-type),
         // use colon syntax for instance method dispatch (e.g., arr[i]:Method())
         if (memberAccess.Expression is ElementAccessExpressionSyntax
@@ -4162,10 +5760,16 @@ public class LuauEmitter
                 && nestedMA.Expression is not PredefinedTypeSyntax
                 && !IsLikelyEnumOrExternalType(nestedMA.Expression.ToString())))
         {
-            return $"{left}:{memberName}({argStr})";
+            var callResult = $"{left}:{memberName}({argStr})";
+            var hoisted = TryHoistOutParams(callResult, arguments, args);
+            return hoisted ?? callResult;
         }
 
-        return $"{left}.{memberName}({argStr})";
+        {
+            var callResult = $"{left}.{memberName}({argStr})";
+            var hoisted = TryHoistOutParams(callResult, arguments, args);
+            return hoisted ?? callResult;
+        }
     }
 
     /// <summary>
@@ -4181,10 +5785,20 @@ public class LuauEmitter
         {
             // new StringBuilder() → ""
             // new StringBuilder("initial") → "initial"
+            // new StringBuilder(capacity) → "" (capacity is just pre-allocation)
             var ctorArgs = objCreate.ArgumentList?.Arguments;
             if (ctorArgs != null && ctorArgs.Value.Count > 0)
             {
                 var firstArg = EmitExpression(ctorArgs.Value[0].Expression);
+                // Check if argument is numeric (capacity) — StringBuilder(int) allocates but starts empty
+                if (_model != null)
+                {
+                    var argType = _model.GetTypeInfo(ctorArgs.Value[0].Expression).Type;
+                    if (argType != null && argType.SpecialType is SpecialType.System_Int32
+                        or SpecialType.System_Int64 or SpecialType.System_Int16
+                        or SpecialType.System_Byte or SpecialType.System_UInt32)
+                        return "\"\"";
+                }
                 return firstArg; // new StringBuilder("text") → "text"
             }
             return "\"\"";
@@ -4197,11 +5811,26 @@ public class LuauEmitter
         // Strip generic type args for Luau: List<TokenInfo> → just use {}
         if (typeName.StartsWith("List<") || typeName.StartsWith("Dictionary<")
             || typeName.StartsWith("HashSet<") || typeName.StartsWith("Queue<")
-            || typeName.StartsWith("Stack<"))
+            || typeName.StartsWith("Stack<") || typeName.StartsWith("ConcurrentDictionary<"))
         {
             // Check for collection initializer
             if (objCreate.Initializer != null)
             {
+                // Dictionary initializers: { {key, val}, {key, val} } → {[key] = val, ...}
+                bool isDictInit = objCreate.Initializer.Expressions.All(e =>
+                    e.Kind() == SyntaxKind.ComplexElementInitializerExpression
+                    && ((InitializerExpressionSyntax)e).Expressions.Count == 2);
+                if (isDictInit)
+                {
+                    var entries = objCreate.Initializer.Expressions.Select(e =>
+                    {
+                        var pair = (InitializerExpressionSyntax)e;
+                        var k = EmitExpression(pair.Expressions[0]);
+                        var v = EmitExpression(pair.Expressions[1]);
+                        return $"[{k}] = {v}";
+                    });
+                    return $"{{ {string.Join(", ", entries)} }}";
+                }
                 var elements = objCreate.Initializer.Expressions
                     .Select(e => EmitExpression(e));
                 return $"{{ {string.Join(", ", elements)} }}";
@@ -4248,6 +5877,21 @@ public class LuauEmitter
         // Handle collection initializer: new T() { item1, item2, ... }
         if (objCreate.Initializer != null && objCreate.Initializer.Kind() == SyntaxKind.CollectionInitializerExpression)
         {
+            // Detect dictionary initializers: each element is { key, value } (ComplexElementInitializer)
+            bool isDictInit = objCreate.Initializer.Expressions.All(e =>
+                e.Kind() == SyntaxKind.ComplexElementInitializerExpression
+                && ((InitializerExpressionSyntax)e).Expressions.Count == 2);
+            if (isDictInit)
+            {
+                var entries = objCreate.Initializer.Expressions.Select(e =>
+                {
+                    var pair = (InitializerExpressionSyntax)e;
+                    var k = EmitExpression(pair.Expressions[0]);
+                    var v = EmitExpression(pair.Expressions[1]);
+                    return $"[{k}] = {v}";
+                });
+                return $"{{ {string.Join(", ", entries)} }}";
+            }
             var elements = objCreate.Initializer.Expressions
                 .Select(e => EmitExpression(e));
             return $"{{ {string.Join(", ", elements)} }}";
@@ -4395,11 +6039,16 @@ public class LuauEmitter
                 return EmitExpression(objCreate.ArgumentList.Arguments[0].Expression);
             return "\"00000000-0000-0000-0000-000000000000\"";
         }
-        // Collection<T>, ReadOnlyCollection<T>, KeyedCollection → {}
-        if (cleanType is "Collection" or "ReadOnlyCollection" or "KeyedCollection"
-            or "PropertyDescriptorCollection" or "NameTable" or "ConcurrentDictionary")
+        // Collection<T>, ReadOnlyCollection<T> → runtime base class
+        if (cleanType is "Collection" or "ReadOnlyCollection")
+            return "__rt.Collection.new()";
+        if (cleanType is "KeyedCollection")
+            return "__rt.KeyedCollection.new()";
+        // PropertyDescriptorCollection, NameTable, ConcurrentDictionary → {}
+        if (cleanType is "PropertyDescriptorCollection" or "NameTable" or "ConcurrentDictionary")
             return "{}";
-        // string(char[], start, length) → string.sub(chars, start+1, start+length)
+        // string(char[], start, length) → __rt.charsToString(chars, start, length)
+        // char arrays are stored as number tables, not Luau strings
         if (cleanType == "string")
         {
             var argList = objCreate.ArgumentList?.Arguments;
@@ -4408,7 +6057,8 @@ public class LuauEmitter
                 var chars = EmitExpression(argList.Value[0].Expression);
                 var start = EmitExpression(argList.Value[1].Expression);
                 var length = EmitExpression(argList.Value[2].Expression);
-                return $"string.sub({chars}, {start} + 1, {start} + {length})";
+                NeedsRuntime = true;
+                return $"__rt.charsToString({chars}, {start}, {length})";
             }
             if (argList != null && argList.Value.Count == 2)
             {
@@ -4435,6 +6085,94 @@ public class LuauEmitter
             or "AddingNewEventArgs" or "StreamingContext" or "SerializationInfo"
             or "DictionaryEntry" or "FormatterConverter")
             return $"{{ {argStr} }}";
+
+        // Struct default construction: new StructType() with no args
+        // In C#, `new StructType()` always creates a zeroed/default instance even when
+        // the struct only has parameterized constructors. We must NOT call a parameterized
+        // constructor with nil args — instead emit a default table with metatable.
+        if (objCreate.ArgumentList == null || objCreate.ArgumentList.Arguments.Count == 0)
+        {
+            bool isStruct = false;
+            bool hasParameterlessCtor = false;
+            var fieldDefaults = new List<string>();
+
+            // Try semantic model first
+            if (_model != null)
+            {
+                var typeInfo = _model.GetTypeInfo(objCreate).Type;
+                if (typeInfo is INamedTypeSymbol { IsValueType: true, TypeKind: TypeKind.Struct } structSymbol)
+                {
+                    isStruct = true;
+                    hasParameterlessCtor = structSymbol.InstanceConstructors
+                        .Any(c => c.Parameters.Length == 0 && !c.IsImplicitlyDeclared);
+                    if (!hasParameterlessCtor)
+                    {
+                        foreach (var member in structSymbol.GetMembers())
+                        {
+                            if (member is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst && fs.AssociatedSymbol == null)
+                            {
+                                var val = fs.Type.SpecialType switch
+                                {
+                                    SpecialType.System_Int32 or SpecialType.System_Int64 or SpecialType.System_Single
+                                        or SpecialType.System_Double or SpecialType.System_Byte or SpecialType.System_Int16
+                                        or SpecialType.System_UInt16 or SpecialType.System_UInt32 or SpecialType.System_UInt64 => "0",
+                                    SpecialType.System_Boolean => "false",
+                                    SpecialType.System_String => "nil :: any",
+                                    _ when fs.Type.TypeKind == TypeKind.Enum => "0",
+                                    _ when fs.Type.IsValueType => "0",
+                                    _ => "nil :: any"
+                                };
+                                fieldDefaults.Add($"{fs.Name} = {val}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: use GlobalStructTypes when semantic model doesn't resolve
+            if (!isStruct && GlobalStructTypes.Contains(cleanType))
+            {
+                isStruct = true;
+                // Check if there's a parameterless constructor in the overload map
+                hasParameterlessCtor = GlobalOverloadMap.Keys
+                    .Any(k => k.TypeName == cleanType && k.MethodName == "new" && k.ArgCount == 0);
+            }
+
+            if (isStruct && !hasParameterlessCtor)
+            {
+                var fields = fieldDefaults.Count > 0 ? string.Join(", ", fieldDefaults) : "";
+                if (GlobalStructTypes.Contains(cleanType))
+                    return $"setmetatable({{ {fields} }}, {cleanType})";
+                return fieldDefaults.Count > 0 ? $"{{ {fields} }}" : "{}";
+            }
+        }
+
+        // Resolve overloaded constructor name via semantic model
+        if (_model != null)
+        {
+            var ctorSymbol = _model.GetSymbolInfo(objCreate).Symbol as IMethodSymbol;
+            if (ctorSymbol != null && ctorSymbol.MethodKind == MethodKind.Constructor)
+            {
+                var ctorParamCount = objCreate.ArgumentList?.Arguments.Count ?? 0;
+                var firstParamType = ctorSymbol.Parameters.FirstOrDefault()?.Type
+                    ?.ToDisplayString(Microsoft.CodeAnalysis.SymbolDisplayFormat.MinimallyQualifiedFormat) ?? "";
+                var isNullable = firstParamType.EndsWith("?");
+                firstParamType = firstParamType.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                    .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                if (isNullable) firstParamType += "_nullable";
+
+                // Try local overload map (only for constructors of the current class)
+                if (cleanType == _currentClassName
+                    && _overloadMap.TryGetValue(("new", ctorParamCount, firstParamType), out var localResolved)
+                    && localResolved != "new")
+                    return $"{cleanType}.{localResolved}({argStr})";
+
+                // Try global overload map
+                var globalKey = (cleanType, "new", ctorParamCount, firstParamType);
+                if (GlobalOverloadMap.TryGetValue(globalKey, out var globalResolved) && globalResolved != "new")
+                    return $"{cleanType}.{globalResolved}({argStr})";
+            }
+        }
 
         return $"{cleanType}.new({argStr})";
     }
@@ -4472,14 +6210,38 @@ public class LuauEmitter
             return $"{{ {string.Join(", ", elements)} }}";
         }
 
-        // new Type[size] → table.create(size)
+        // new Type[size] → table.create(size, default)
+        // Must use default value so #table returns the correct length
+        // Use appropriate default: 0 for numeric, false for boolean, nil for reference types
         if (arrayCreate.Type.RankSpecifiers.Count > 0)
         {
             var rankSpec = arrayCreate.Type.RankSpecifiers[0];
             if (rankSpec.Sizes.Count > 0 && rankSpec.Sizes[0] is not OmittedArraySizeExpressionSyntax)
             {
                 var size = EmitExpression(rankSpec.Sizes[0]);
-                return $"table.create({size})";
+                var elemType = arrayCreate.Type.ElementType.ToString();
+                var defaultVal = elemType switch
+                {
+                    "bool" or "Boolean" or "boolean" => "false",
+                    "string" or "String" => "\"\"",
+                    "char" or "byte" or "int" or "long" or "float" or "double" or "decimal"
+                        or "short" or "ushort" or "uint" or "ulong" or "sbyte"
+                        or "Int32" or "Int64" or "Byte" or "Char" or "Single" or "Double" => "0",
+                    _ => (string?)null // reference types default to nil (not 0)
+                };
+                if (defaultVal == null)
+                {
+                    // Check semantic model: value types → 0, reference types → nil
+                    if (_model != null)
+                    {
+                        var elemTypeSymbol = _model.GetTypeInfo(arrayCreate.Type.ElementType).Type;
+                        if (elemTypeSymbol != null && elemTypeSymbol.IsValueType)
+                            defaultVal = "0";
+                    }
+                }
+                return defaultVal != null
+                    ? $"table.create({size}, {defaultVal})"
+                    : $"table.create({size})";
             }
         }
 
@@ -4495,6 +6257,13 @@ public class LuauEmitter
     private string EmitElementAccess(ElementAccessExpressionSyntax elementAccess)
     {
         var obj = EmitExpression(elementAccess.Expression);
+
+        // If the expression resolved to an empty table literal {} (from stub methods
+        // like GetGenericArguments()), indexing it always yields nil and Luau can't
+        // parse {}[idx] directly (syntax error).
+        if (obj == "{}")
+            return "nil";
+
         var args = elementAccess.ArgumentList.Arguments;
         if (args.Count != 1)
         {
@@ -4516,6 +6285,38 @@ public class LuauEmitter
             if (receiverType?.Name is "Dictionary" or "IDictionary" or "ConcurrentDictionary"
                 || (receiverType?.AllInterfaces.Any(i => i.Name == "IDictionary") ?? false))
                 return $"{obj}[{index}]";
+
+            // IList<T> interface or custom IList implementation indexer — may not be a plain table
+            if (receiverType != null)
+            {
+                bool isIListInterface = receiverType.TypeKind == TypeKind.Interface
+                    && receiverType.Name is "IList" or "IReadOnlyList";
+                bool implementsIList = !isIListInterface
+                    && receiverType.Name is not "List" and not "Array" and not "Queue" and not "Stack"
+                    && receiverType is not IArrayTypeSymbol
+                    && (receiverType.AllInterfaces.Any(i => i.Name == "IList"));
+                if (isIListInterface || implementsIList)
+                {
+                    NeedsRuntime = true;
+                    // Assignment targets need special handling at statement level
+                    bool isAssignTarget = elementAccess.Parent is AssignmentExpressionSyntax assignExpr
+                        && assignExpr.Left == elementAccess;
+                    if (!isAssignTarget)
+                        return $"__rt.ilistGet({obj}, {index})";
+                    // Fall through for assignment targets — handled in EmitAssignmentStatement
+                }
+            }
+
+            // char[] access: out-of-bounds returns nil in Luau but \0 in C#
+            // Only wrap reads — skip when used as assignment target (LHS)
+            if (receiverType is IArrayTypeSymbol arrayType
+                && arrayType.ElementType.SpecialType == SpecialType.System_Char)
+            {
+                bool isAssignTarget = elementAccess.Parent is AssignmentExpressionSyntax assign
+                    && assign.Left == elementAccess;
+                if (!isAssignTarget)
+                    return $"({obj}[{index} + 1] or 0)";
+            }
         }
         else if (IsLikelyStringAccess(elementAccess.Expression))
         {
@@ -4524,6 +6325,40 @@ public class LuauEmitter
 
         // Default: array/list access with 0→1 index adjustment
         return $"{obj}[{index} + 1]";
+    }
+
+    /// <summary>
+    /// Check if an identifier is an instance field reference in instance context.
+    /// Uses both syntax-based tracking and semantic model for partial class / base class fields.
+    /// </summary>
+    private static bool HasPropertyBody(IPropertySymbol ps)
+    {
+        var declRef = ps.DeclaringSyntaxReferences.FirstOrDefault();
+        if (declRef?.GetSyntax() is PropertyDeclarationSyntax propSyn)
+        {
+            return propSyn.ExpressionBody != null
+                || (propSyn.AccessorList?.Accessors.Any(a => a.Body != null || a.ExpressionBody != null) ?? false);
+        }
+        return false;
+    }
+
+    private bool IsInstanceFieldRef(string name, ExpressionSyntax? expr)
+    {
+        if (!_isInstanceContext || _currentMethodParams.Contains(name) || _currentMethodLocals.Contains(name))
+            return false;
+        // Syntax-based check (fields declared in this file)
+        if (_instanceFields.Contains(name))
+            return true;
+        // Semantic model check (fields from partial classes, base classes)
+        if (_model != null && expr != null)
+        {
+            var symbol = GetSymbol(expr);
+            if (symbol is IFieldSymbol fs && !fs.IsStatic && !fs.IsConst)
+                return true;
+            if (symbol is IPropertySymbol ps && !ps.IsStatic)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -4553,13 +6388,39 @@ public class LuauEmitter
     }
 
     /// <summary>
+    /// Pending pre-statements generated by compound assignments used in expression position.
+    /// Callers like EmitWhile drain this list to hoist assignments before the condition.
+    /// </summary>
+    private List<string> _pendingAssignmentStatements = new();
+
+    /// <summary>
     /// Handle assignment as an expression (rare in C#, but valid).
+    /// Luau has no assignment expressions, so we hoist the assignment to a pending
+    /// pre-statement and return the variable name (its post-modification value).
     /// </summary>
     private string EmitAssignmentExpression(AssignmentExpressionSyntax assignment)
     {
-        // Most assignments in C# are expression statements; in Luau they're always statements.
-        // When forced into expression position, emit the right-hand side.
-        return EmitExpression(assignment.Right);
+        var lhs = EmitExpression(assignment.Left);
+        var rhs = EmitExpression(assignment.Right);
+
+        if (assignment.Kind() == SyntaxKind.SimpleAssignmentExpression)
+        {
+            _pendingAssignmentStatements.Add($"{lhs} = {rhs}");
+            return lhs;
+        }
+
+        // Compound assignment: +=, -=, *=, /=, %=
+        var op = assignment.Kind() switch
+        {
+            SyntaxKind.SubtractAssignmentExpression => "-=",
+            SyntaxKind.AddAssignmentExpression => "+=",
+            SyntaxKind.MultiplyAssignmentExpression => "*=",
+            SyntaxKind.DivideAssignmentExpression => "/=",
+            SyntaxKind.ModuloAssignmentExpression => "%=",
+            _ => "="
+        };
+        _pendingAssignmentStatements.Add($"{lhs} {op} {rhs}");
+        return lhs;
     }
 
     private string EmitBinary(BinaryExpressionSyntax binary)
@@ -4587,7 +6448,9 @@ public class LuauEmitter
             // to avoid evaluating it twice. Common case: settings?.Prop ?? default
             bool isSimple = binary.Left is IdentifierNameSyntax
                 || binary.Left is LiteralExpressionSyntax
-                || binary.Left is ThisExpressionSyntax;
+                || binary.Left is ThisExpressionSyntax
+                || (binary.Left is MemberAccessExpressionSyntax coalMa
+                    && coalMa.Expression is IdentifierNameSyntax or ThisExpressionSyntax);
             if (!isSimple)
             {
                 var tempName = $"__coal_{_evalTempCounter++}";
@@ -4698,6 +6561,18 @@ public class LuauEmitter
             return $"{left} {op} {right}";
         }
 
+        // Bitwise & and | with boolean operands → logical and/or (non-short-circuit & on bools)
+        if (binary.Kind() is SyntaxKind.BitwiseAndExpression or SyntaxKind.BitwiseOrExpression && _model != null)
+        {
+            var leftType = _model.GetTypeInfo(binary.Left).Type;
+            var rightType = _model.GetTypeInfo(binary.Right).Type;
+            if (leftType?.SpecialType == SpecialType.System_Boolean || rightType?.SpecialType == SpecialType.System_Boolean)
+            {
+                var logicalOp = binary.Kind() == SyntaxKind.BitwiseAndExpression ? "and" : "or";
+                return $"({left} {logicalOp} {right})";
+            }
+        }
+
         // Bitwise operations → bit32 functions
         return binary.Kind() switch
         {
@@ -4719,8 +6594,8 @@ public class LuauEmitter
             SyntaxKind.UnaryMinusExpression => $"-{operand}",
             SyntaxKind.UnaryPlusExpression => operand,
             SyntaxKind.BitwiseNotExpression => $"bit32.bnot({operand})",
-            SyntaxKind.PreIncrementExpression => $"({operand} + 1)", // approximation
-            SyntaxKind.PreDecrementExpression => $"({operand} - 1)", // approximation
+            SyntaxKind.PreIncrementExpression => EmitPreIncrement(operand),
+            SyntaxKind.PreDecrementExpression => EmitPreDecrement(operand),
             _ => $"--[[TODO: prefix {prefixUnary.Kind()}]] {operand}"
         };
     }
@@ -4735,13 +6610,35 @@ public class LuauEmitter
     private string EmitPostfixUnary(PostfixUnaryExpressionSyntax postfix)
     {
         var operand = EmitExpression(postfix.Operand);
+        if (postfix.Kind() == SyntaxKind.PostIncrementExpression)
+        {
+            // Post-increment: use current value, then increment
+            // Hoist the increment as a pending statement
+            _pendingAssignmentStatements.Add($"{operand} += 1");
+            return operand;
+        }
+        if (postfix.Kind() == SyntaxKind.PostDecrementExpression)
+        {
+            _pendingAssignmentStatements.Add($"{operand} -= 1");
+            return operand;
+        }
         return postfix.Kind() switch
         {
-            SyntaxKind.PostIncrementExpression => $"({operand} + 1)", // approximation
-            SyntaxKind.PostDecrementExpression => $"({operand} - 1)", // approximation
             SyntaxKind.SuppressNullableWarningExpression => operand, // just drop the !
             _ => $"--[[TODO: postfix {postfix.Kind()}]] {operand}"
         };
+    }
+
+    private string EmitPreIncrement(string operand)
+    {
+        _pendingAssignmentStatements.Add($"{operand} += 1");
+        return $"({operand} + 1)";
+    }
+
+    private string EmitPreDecrement(string operand)
+    {
+        _pendingAssignmentStatements.Add($"{operand} -= 1");
+        return $"({operand} - 1)";
     }
 
     private string EmitParenthesized(ParenthesizedExpressionSyntax paren)
@@ -4937,6 +6834,13 @@ public class LuauEmitter
     private string EmitConditionalAccess(ConditionalAccessExpressionSyntax conditionalAccess)
     {
         var target = EmitExpression(conditionalAccess.Expression);
+
+        // If the subject resolved to the literal nil (e.g., from a stub), the whole
+        // conditional access is always nil.  Short-circuit to avoid emitting
+        // `nil:Method()` which Luau can't parse inside if-then-else expressions.
+        if (target == "nil")
+            return "nil";
+
         var binding = EmitConditionalBinding(target, conditionalAccess.WhenNotNull);
         // Wrap in parens so comparison operators bind correctly:
         // (if x ~= nil then x.Y else nil) == Z, not: if x ~= nil then x.Y else (nil == Z)
@@ -5287,6 +7191,15 @@ public class LuauEmitter
     /// that won't have a transpiled Luau module (e.g. Attribute, Exception, EventArgs).
     /// For these, we emit {} instead of BaseType.new() in constructors.
     /// </summary>
+    private static bool IsExceptionBaseClass(string name)
+    {
+        return name is "Exception" or "SystemException" or "ApplicationException"
+            or "ArgumentException" or "InvalidOperationException" or "FormatException"
+            or "NotSupportedException" or "NotImplementedException" or "IOException"
+            or "JsonException" or "JsonReaderException" or "JsonWriterException"
+            or "JsonSerializationException";
+    }
+
     private static bool IsNetFrameworkBaseClass(string name)
     {
         return name is "Attribute" or "Exception" or "EventArgs"
@@ -5300,6 +7213,19 @@ public class LuauEmitter
             or "SerializationBinder" or "PropertyDescriptor"
             or "DynamicMetaObject" or "GetMemberBinder" or "SetMemberBinder"
             or "ExpressionVisitor" or "IXmlNode";
+    }
+
+    /// <summary>
+    /// Map a BCL type name to its Luau runtime reference (e.g., "Collection" → "__rt.Collection").
+    /// Returns the input unchanged if not a known runtime BCL type.
+    /// </summary>
+    private static string GetRuntimeRef(string typeName)
+    {
+        if (typeName is "Collection" or "ReadOnlyCollection")
+            return "__rt.Collection";
+        if (typeName is "KeyedCollection")
+            return "__rt.KeyedCollection";
+        return typeName;
     }
 
     /// <summary>
@@ -5450,19 +7376,43 @@ public class LuauEmitter
 
     private string EmitTypeCheck(string subject, string typeName)
     {
+        NeedsRuntime = true;
         return typeName switch
         {
             "string" => $"(type({subject}) == \"string\")",
             "int" or "float" or "double" or "long" or "decimal" or "number" =>
                 $"(type({subject}) == \"number\")",
             "bool" or "boolean" => $"(type({subject}) == \"boolean\")",
-            _ => $"({subject} ~= nil)" // reference type check
+            _ => $"(__rt.isinstance({subject}, \"{typeName}\"))"
         };
     }
 
     // ────────────────────────────────────────────────────────────────────
     //  await expression: await expr → direct call or task.wait
     // ────────────────────────────────────────────────────────────────────
+
+    private string EmitTypeOf(TypeOfExpressionSyntax typeOf)
+    {
+        var typeName = typeOf.Type.ToString();
+        // If we have a semantic model, check the type kind
+        if (_model != null)
+        {
+            var typeInfo = _model.GetTypeInfo(typeOf.Type);
+            var typeSymbol = typeInfo.Type;
+            if (typeSymbol?.TypeKind == TypeKind.Enum)
+            {
+                // Emit the actual enum table reference so reflection helpers can iterate it
+                var cleanName = typeName.Replace(",", "").Replace(" ", "").Replace("<", "_").Replace(">", "");
+                ReferencedModules.Add(cleanName);
+                return cleanName;
+            }
+            // Generic type parameter (T, TValue, etc.) — can't resolve at transpile time
+            if (typeSymbol?.TypeKind == TypeKind.TypeParameter)
+                return "nil";
+        }
+        // Default: emit as string
+        return $"\"{typeName}\"";
+    }
 
     private string EmitAwait(AwaitExpressionSyntax awaitExpr)
     {
@@ -5522,6 +7472,42 @@ public class LuauEmitter
             return string.Join(", ", names);
         }
         return $"--[[TODO: decl {declExpr.Designation.Kind()}]] nil";
+    }
+
+    /// <summary>
+    /// Handle out-parameter hoisting for method calls like TryGetValue, TryParse.
+    /// When a method call has out arguments and the runtime returns (bool, outVal),
+    /// hoist the call as: local __tryOk, outVar = call(...)
+    /// Returns the temp bool variable name, or null if no out args found.
+    /// </summary>
+    private string? TryHoistOutParams(string callResult, SeparatedSyntaxList<ArgumentSyntax> arguments, List<string> emittedArgs)
+    {
+        var outArgIndices = new List<int>();
+        for (int i = 0; i < arguments.Count; i++)
+        {
+            if (arguments[i].RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
+                outArgIndices.Add(i);
+        }
+        if (outArgIndices.Count == 0) return null;
+
+        var outVarNames = outArgIndices.Select(i => emittedArgs[i]).ToList();
+        var tempBool = $"__tryOk_{_hoistCounter++}";
+
+        bool allDeclarations = outArgIndices.All(i =>
+            arguments[i].Expression is DeclarationExpressionSyntax);
+
+        if (allDeclarations)
+        {
+            var declList = string.Join(", ", new[] { tempBool }.Concat(outVarNames));
+            AppendLine($"local {declList} = {callResult}");
+        }
+        else
+        {
+            AppendLine($"local {tempBool}");
+            var assignList = string.Join(", ", new[] { tempBool }.Concat(outVarNames));
+            AppendLine($"{assignList} = {callResult}");
+        }
+        return tempBool;
     }
 
     private string EmitImplicitArrayCreation(ImplicitArrayCreationExpressionSyntax implicitArray)

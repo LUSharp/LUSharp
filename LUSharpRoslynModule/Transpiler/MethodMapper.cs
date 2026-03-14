@@ -15,6 +15,17 @@ public static class MethodMapper
 
     public static string? TryRewrite(IMethodSymbol method, string receiver, string[] args, ITypeSymbol? receiverType)
     {
+        // Preprocess: wrap char-typed args with string.char() for String methods
+        // so that methods like IndexOf(char) pass a string to string.find, not a number
+        if (method.ContainingType?.SpecialType == SpecialType.System_String)
+        {
+            for (int i = 0; i < method.Parameters.Length && i < args.Length; i++)
+            {
+                if (method.Parameters[i].Type.SpecialType == SpecialType.System_Char)
+                    args[i] = $"string.char({args[i]})";
+            }
+        }
+
         var typeName = method.ContainingType?.Name ?? "";
         // Try exact type match first
         if (_map.TryGetValue((typeName, method.Name), out var rewriter))
@@ -22,16 +33,20 @@ public static class MethodMapper
             try { return rewriter(receiver, args, receiverType); }
             catch (IndexOutOfRangeException) { return null; } // args count mismatch
         }
-        // Try base types
-        var current = method.ContainingType?.BaseType;
-        while (current != null)
+        // Try base types — skip for static methods since static methods don't inherit
+        // (avoids e.g. JsonConvert.ToString(value, ...) matching Object.ToString())
+        if (!method.IsStatic)
         {
-            if (_map.TryGetValue((current.Name, method.Name), out rewriter))
+            var current = method.ContainingType?.BaseType;
+            while (current != null)
             {
-                try { return rewriter(receiver, args, receiverType); }
-                catch (IndexOutOfRangeException) { return null; }
+                if (_map.TryGetValue((current.Name, method.Name), out rewriter))
+                {
+                    try { return rewriter(receiver, args, receiverType); }
+                    catch (IndexOutOfRangeException) { return null; }
+                }
+                current = current.BaseType;
             }
-            current = current.BaseType;
         }
         // Try interfaces (for LINQ extension methods on IEnumerable, IList, etc.)
         if (method.IsExtensionMethod && method.ReducedFrom != null)
@@ -82,8 +97,10 @@ public static class MethodMapper
         Register("String", "Replace", (r, a, _) => $"string.gsub({r}, {a[0]}, {a[1]})");
         Register("String", "Split", (r, a, _) => $"string.split({r}, {a[0]})");
         Register("String", "IndexOf", (r, a, _) => $"((string.find({r}, {a[0]}, 1, true) or 0) - 1)");
+        Register("String", "IndexOfAny", (r, a, _) => $"__rt.stringIndexOfAny({r}, {a[0]})");
         Register("String", "LastIndexOf", (r, a, _) => $"((select(2, string.find({r}, \".*()\" .. {a[0]})) or 0) - 1)");
         Register("String", "ToString", (r, a, _) => $"tostring({r})");
+        Register("String", "ToCharArray", (r, a, _) => $"(function() local __c = {{}}; for i = 1, #{r} do __c[i] = string.byte({r}, i) end; return __c end)()");
         Register("String", "Insert", (r, a, _) => $"string.sub({r}, 1, {a[0]}) .. {a[1]} .. string.sub({r}, {a[0]} + 1)");
         Register("String", "Remove", (r, a, _) => a.Length == 2
             ? $"string.sub({r}, 1, {a[0]}) .. string.sub({r}, {a[0]} + {a[1]} + 1)"
@@ -141,10 +158,18 @@ public static class MethodMapper
         Register("StringBuilder", "Clear", (r, a, _) => $"(function() {r} = \"\" end)()");
         Register("StringBuilder", "Insert", (r, a, _) => $"(function() {r} = string.sub({r}, 1, {a[0]}) .. tostring({a[1]}) .. string.sub({r}, {a[0]} + 1) end)()");
 
-        // === List<T> ===
+        // === List<T> / IList<T> ===
         Register("List", "Add", (r, a, _) => $"table.insert({r}, {a[0]})");
         Register("List", "Insert", (r, a, _) => $"table.insert({r}, {a[0]} + 1, {a[1]})");
         Register("List", "RemoveAt", (r, a, _) => $"table.remove({r}, {a[0]} + 1)");
+        // IList<T> may be a custom implementation (e.g. JPropertyList), not a plain table.
+        // Use runtime helpers that check for method dispatch before falling back to table ops.
+        Register("IList", "Add", (r, a, _) => $"__rt.ilistAdd({r}, {a[0]})");
+        Register("IList", "Insert", (r, a, _) => $"__rt.ilistInsert({r}, {a[0]}, {a[1]})");
+        Register("IList", "RemoveAt", (r, a, _) => $"__rt.ilistRemoveAt({r}, {a[0]})");
+        Register("IList", "Contains", (r, a, _) => $"__rt.ilistContains({r}, {a[0]})");
+        Register("IList", "IndexOf", (r, a, _) => $"__rt.ilistIndexOf({r}, {a[0]})");
+        Register("IList", "Clear", (r, a, _) => $"__rt.ilistClear({r})");
         Register("List", "Clear", (r, a, _) => $"table.clear({r})");
         Register("List", "Contains", (r, a, _) => $"(table.find({r}, {a[0]}) ~= nil)");
         Register("List", "IndexOf", (r, a, _) => $"((table.find({r}, {a[0]}) or 0) - 1)");
@@ -161,12 +186,17 @@ public static class MethodMapper
             $"(function() local __pred = {a[0]}; for i, v in {r} do if __pred(v) then return i - 1 end end; return -1 end)()");
         Register("List", "ForEach", (r, a, _) => $"(function() for _, v in {r} do ({a[0]})(v) end end)()");
 
-        // === Dictionary<K,V> ===
+        // === Dictionary<K,V> / ConcurrentDictionary<K,V> ===
         Register("Dictionary", "ContainsKey", (r, a, _) => $"({r}[{a[0]}] ~= nil)");
         Register("Dictionary", "ContainsValue", (r, a, _) =>
             $"(function() for _, v in {r} do if v == {a[0]} then return true end end; return false end)()");
         Register("Dictionary", "Remove", (r, a, _) => $"(function() {r}[{a[0]}] = nil end)()");
         Register("Dictionary", "Clear", (r, a, _) => $"table.clear({r})");
+        // ConcurrentDictionary.GetOrAdd(key, factory) → table lookup with lazy init
+        Register("ConcurrentDictionary", "GetOrAdd", (r, a, _) =>
+            $"(function() local __v = {r}[{a[0]}]; if __v == nil then __v = ({a[1]})({a[0]}); {r}[{a[0]}] = __v end; return __v end)()");
+        Register("ConcurrentDictionary", "TryGetValue", (r, a, _) => $"__rt.tryGetValue({r}, {a[0]})");
+        Register("ConcurrentDictionary", "ContainsKey", (r, a, _) => $"({r}[{a[0]}] ~= nil)");
 
         // === HashSet<T> ===
         Register("HashSet", "Add", (r, a, _) => $"(function() {r}[{a[0]}] = true end)()");
@@ -213,9 +243,21 @@ public static class MethodMapper
         Register("Single", "IsInfinity", (r, a, _) => $"({a[0]} == math.huge or {a[0]} == -math.huge)");
 
         // === String comparison methods ===
-        Register("String", "Equals", (r, a, _) => a.Length >= 2
-            ? $"({a[0]} == {a[1]})" // String.Equals(a, b) or String.Equals(a, b, comparison)
-            : $"({r} == {a[0]})");  // s.Equals(other)
+        // Instance: s.Equals(other) or s.Equals(other, StringComparison) → (s == other)
+        // Static: String.Equals(a, b) or String.Equals(a, b, StringComparison) → (a == b)
+        Register("String", "Equals", (r, a, _) =>
+        {
+            // 3 args is always static: String.Equals(a, b, comparison)
+            if (a.Length >= 3) return $"({a[0]} == {a[1]})";
+            // 2 args: could be static String.Equals(a, b) or instance s.Equals(other, comparison)
+            // If a[1] parses as a number, it's a StringComparison enum → instance call
+            if (a.Length == 2 && int.TryParse(a[1], out var _unused))
+                return $"({r} == {a[0]})";
+            // Otherwise 2 args is static String.Equals(a, b)
+            return a.Length >= 2
+                ? $"({a[0]} == {a[1]})"
+                : $"({r} == {a[0]})";
+        });
         Register("String", "Compare", (r, a, _) => $"(if {a[0]} < {a[1]} then -1 elseif {a[0]} > {a[1]} then 1 else 0)");
         Register("String", "CompareOrdinal", (r, a, _) => $"(if {a[0]} < {a[1]} then -1 elseif {a[0]} > {a[1]} then 1 else 0)");
 
@@ -230,15 +272,15 @@ public static class MethodMapper
         Register("Char", "IsLowSurrogate", (r, a, _) => $"({a[0]} >= 0xDC00 and {a[0]} <= 0xDFFF)");
 
         // === Boolean ===
-        Register("Boolean", "TryParse", (r, a, _) => $"(string.lower({a[0]}) == \"true\" or string.lower({a[0]}) == \"false\")");
+        Register("Boolean", "TryParse", (r, a, _) => $"__rt.tryParse_bool({a[0]})");
 
         // === Decimal ===
         Register("Decimal", "Parse", (r, a, _) => $"tonumber({a[0]})");
-        Register("Decimal", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
+        Register("Decimal", "TryParse", (r, a, _) => $"__rt.tryParse_double({a[0]})");
 
         // === Int64/Long ===
         Register("Int64", "Parse", (r, a, _) => $"tonumber({a[0]})");
-        Register("Int64", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
+        Register("Int64", "TryParse", (r, a, _) => $"__rt.tryParse_int({a[0]})");
 
         // === Convert ===
         Register("Convert", "ToInt32", (r, a, _) => $"math.floor(tonumber({a[0]}))");
@@ -249,9 +291,9 @@ public static class MethodMapper
 
         // === Int32/Double/Single static ===
         Register("Int32", "Parse", (r, a, _) => $"tonumber({a[0]})");
-        Register("Int32", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
+        Register("Int32", "TryParse", (r, a, _) => $"__rt.tryParse_int({a[0]})");
         Register("Double", "Parse", (r, a, _) => $"tonumber({a[0]})");
-        Register("Double", "TryParse", (r, a, _) => $"(tonumber({a[0]}) ~= nil)");
+        Register("Double", "TryParse", (r, a, _) => $"__rt.tryParse_double({a[0]})");
         Register("Single", "Parse", (r, a, _) => $"tonumber({a[0]})");
 
         // === Char static ===
@@ -264,16 +306,25 @@ public static class MethodMapper
         Register("Char", "IsPunctuation", (r, a, _) => $"(string.match(string.char({a[0]}), \"%p\") ~= nil)");
         Register("Char", "ToUpper", (r, a, _) => $"string.byte(string.upper(string.char({a[0]})))");
         Register("Char", "ToLower", (r, a, _) => $"string.byte(string.lower(string.char({a[0]})))");
-        Register("Char", "ToString", (r, a, _) => $"string.char({a[0]})");
+        Register("Char", "ToString", (r, a, _) =>
+        {
+            // Instance: value.ToString() or value.ToString(cultureInfo) → string.char(value)
+            // Static: Char.ToString(value) → string.char(value)
+            if (a.Length == 0) return $"string.char({r})";
+            // If receiver is the type name itself, it's a static call
+            if (r is "Char" or "char") return $"string.char({a[0]})";
+            // Instance call with extra args (e.g. CultureInfo) — use receiver
+            return $"string.char({r})";
+        });
 
         // === Object ===
         Register("Object", "ToString", (r, a, _) => $"tostring({r})");
-        Register("Object", "Equals", (r, a, _) => $"({r} == {a[0]})");
+        Register("Object", "Equals", (r, a, _) => a.Length >= 2 ? $"({a[0]} == {a[1]})" : $"({r} == {a[0]})");
         Register("Object", "GetHashCode", (r, a, _) => $"tostring({r})");
         Register("Object", "GetType", (r, a, _) =>
         {
             if (a.Length > 0) throw new IndexOutOfRangeException(); // not parameterless .GetType()
-            return $"typeof({r})";
+            return $"__rt.getType({r})";
         });
 
         // === Type / Assembly (reflection) ===
@@ -369,6 +420,90 @@ public static class MethodMapper
 
         // === Guid ===
         Register("Guid", "NewGuid", (r, a, _) => $"__rt.newGuid()");
+
+        // === .NET Reflection stubs (Type, FieldInfo, MemberInfo) ===
+        // These enable enum reflection (e.g. Enum.GetNames, Type.GetField) in Luau
+        Register("Type", "GetField", (r, a, _) => $"__rt.Type_GetField({r}, {a[0]})");
+        Register("Type", "IsDefined", (r, a, _) => "false");
+        Register("Type", "GetCustomAttributes", (r, a, _) => "{}");
+        Register("Type", "GetCustomAttribute", (r, a, _) => "nil");
+        Register("Type", "IsAssignableFrom", (r, a, _) => "false");
+        Register("Type", "IsSubclassOf", (r, a, _) => "false");
+        Register("Type", "IsEnum", (r, a, _) => $"__rt.Type_IsEnum({r})");
+        Register("Type", "GetMethods", (r, a, _) => "{}");
+        Register("Type", "GetConstructors", (r, a, _) => "{}");
+        Register("Type", "GetConstructor", (r, a, _) => "nil");
+        Register("Type", "GetProperties", (r, a, _) => "{}");
+        Register("Type", "GetFields", (r, a, _) => "{}");
+        Register("Type", "GetMethod", (r, a, _) => "nil");
+        Register("Type", "GetProperty", (r, a, _) => "nil");
+        Register("Type", "GetInterfaces", (r, a, _) => "{}");
+        Register("Type", "GetGenericArguments", (r, a, _) => "{}");
+        Register("Type", "GetMember", (r, a, _) => "{}");
+        Register("Type", "GetGenericTypeDefinition", (r, a, _) => r);
+        Register("Type", "MakeGenericType", (r, a, _) => r);
+        Register("FieldInfo", "GetValue", (r, a, _) => $"__rt.FieldInfo_GetValue({r})");
+        Register("FieldInfo", "GetCustomAttributes", (r, a, _) => "{}");
+        Register("MemberInfo", "GetCustomAttributes", (r, a, _) => "{}");
+        Register("MemberInfo", "IsDefined", (r, a, _) => "false");
+
+        // === .NET Attribute reflection stubs — always nil in Luau ===
+        Register("CachedAttributeGetter", "GetAttribute", (r, a, _) => "nil --[[no attributes]]");
+        Register("JsonTypeReflector", "GetCachedAttribute", (r, a, _) => "nil --[[no attributes]]");
+        Register("JsonTypeReflector", "GetAttribute", (r, a, _) => "nil --[[no attributes]]");
+
+        // === TypeDescriptor (.NET reflection) — not available in Luau ===
+        Register("TypeDescriptor", "GetConverter", (r, a, _) => "nil");
+        Register("TypeDescriptor", "GetProperties", (r, a, _) => "{}");
+
+        // === ReflectionUtils (Newtonsoft) — runtime type checks that can't work in Luau ===
+        Register("ReflectionUtils", "ImplementsGenericDefinition", (r, a, _) => "false");
+        Register("ReflectionUtils", "InheritsGenericDefinition", (r, a, _) => "false");
+        Register("ReflectionUtils", "IsNullableType", (r, a, _) => "false");
+        Register("ReflectionUtils", "HasDefaultConstructor", (r, a, _) => "true");
+        Register("ReflectionUtils", "GetDefaultConstructor", (r, a, _) => "nil");
+        Register("ReflectionUtils", "EnsureNotByRefType", (r, a, _) => a.Length > 0 ? a[0] : r);
+        Register("ReflectionUtils", "EnsureNotNullableType", (r, a, _) => a.Length > 0 ? a[0] : r);
+
+        // === TypeExtensions (Newtonsoft extension methods on Type) ===
+        // These are extension methods resolved by Roslyn as TypeExtensions.MethodName
+        // In Luau, types are strings — return sensible defaults
+        Register("TypeExtensions", "IsEnum", (r, a, _) => $"__rt.Type_IsEnum({r})");
+        Register("TypeExtensions", "IsClass", (r, a, _) => "false");
+        Register("TypeExtensions", "IsValueType", (r, a, _) => "false");
+        Register("TypeExtensions", "IsPrimitive", (r, a, _) => "false");
+        Register("TypeExtensions", "IsAbstract", (r, a, _) => "false");
+        Register("TypeExtensions", "IsInterface", (r, a, _) => "false");
+        Register("TypeExtensions", "IsGenericType", (r, a, _) => "false");
+        Register("TypeExtensions", "IsGenericTypeDefinition", (r, a, _) => "false");
+        Register("TypeExtensions", "IsVisible", (r, a, _) => "true");
+        Register("TypeExtensions", "IsSealed", (r, a, _) => "false");
+        Register("TypeExtensions", "ContainsGenericParameters", (r, a, _) => "false");
+        Register("TypeExtensions", "BaseType", (r, a, _) => "nil");
+        Register("TypeExtensions", "Assembly", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetGenericArguments", (r, a, _) => "{}");
+        Register("TypeExtensions", "GetInterfaces", (r, a, _) => "{}");
+        Register("TypeExtensions", "IsSubclassOf", (r, a, _) => "false");
+        Register("TypeExtensions", "IsAssignableFrom", (r, a, _) => "false");
+        Register("TypeExtensions", "IsInstanceOfType", (r, a, _) => "false");
+        Register("TypeExtensions", "ImplementInterface", (r, a, _) => "false");
+        Register("TypeExtensions", "MemberType", (r, a, _) => "\"Field\"");
+        Register("TypeExtensions", "AssignableToTypeName", (r, a, _) => "false");
+        Register("TypeExtensions", "AssignableToTypeNameIncludingInterfaces", (r, a, _) => "false");
+        Register("TypeExtensions", "GetMethods", (r, a, _) => "{}");
+        Register("TypeExtensions", "GetConstructors", (r, a, _) => "{}");
+        Register("TypeExtensions", "GetProperties", (r, a, _) => "{}");
+        Register("TypeExtensions", "GetFields", (r, a, _) => "{}");
+        Register("TypeExtensions", "GetMethod", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetConstructor", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetProperty", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetField", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetMember", (r, a, _) => "{}");
+        Register("TypeExtensions", "GetBaseDefinition", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetGetMethod", (r, a, _) => "nil");
+        Register("TypeExtensions", "GetSetMethod", (r, a, _) => "nil");
+        Register("TypeExtensions", "IsDefined", (r, a, _) => "false");
+        Register("TypeExtensions", "Method", (r, a, _) => "nil");
     }
 
     private static void RegisterLinq(string methodName, Func<string, string[], string> rewriter)

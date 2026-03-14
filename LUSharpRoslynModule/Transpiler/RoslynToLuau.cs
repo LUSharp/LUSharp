@@ -13,18 +13,39 @@ public class RoslynToLuau
     private Dictionary<(string TypeName, string MethodName, int ArgCount, string FirstParamType), string> _globalOverloadMap = new();
 
     /// <summary>
+    /// Full-signature overload map: (TypeName, MethodName, AllParamTypes) → EmitName.
+    /// Used when the simple 4-tuple key is ambiguous (e.g., same first param type + count).
+    /// </summary>
+    private Dictionary<(string TypeName, string MethodName, string AllParamTypes), string> _fullSignatureMap = new();
+
+    /// <summary>
     /// Maps each type name to the module file name (without extension) that contains it.
     /// For example, if SyntaxNode.cs defines SyntaxNode, ExpressionSyntax, StatementSyntax,
     /// this maps all three to "SyntaxNode".
     /// Built during PreScan, used by InsertRequires to generate correct require() paths.
     /// </summary>
     private Dictionary<string, string> _typeToModuleMap = new();
+    /// <summary>
+    /// When multiple modules export the same type name, track all alternatives.
+    /// </summary>
+    private Dictionary<string, List<string>> _typeToModuleCollisions = new();
 
     /// <summary>
     /// Maps class name → base class name, collected across all files during PreScan.
     /// Handles partial classes where base class is declared in one file but used in another.
     /// </summary>
     private Dictionary<string, string> _baseClassMap = new();
+
+    /// <summary>
+    /// Set of struct type names (value types). Used to detect default struct construction
+    /// (new StructType()) which zero-initializes rather than calling .new().
+    /// </summary>
+    private HashSet<string> _structTypes = new();
+
+    /// <summary>
+    /// Types known to have a ToString() method. Shared across emitters for __tostring propagation.
+    /// </summary>
+    private HashSet<string> _typesWithToString = new();
 
     /// <summary>
     /// Set of (FromModule, ToModule) edges that should use lazy requires to break cycles.
@@ -115,11 +136,33 @@ public class RoslynToLuau
             var typeNames = CollectAllTypeNames(root.Members);
             foreach (var typeName in typeNames)
             {
+                if (_typeToModuleMap.ContainsKey(typeName) && _typeToModuleMap[typeName] != moduleName)
+                {
+                    // Name collision — track all modules that export this type
+                    if (!_typeToModuleCollisions.ContainsKey(typeName))
+                        _typeToModuleCollisions[typeName] = new List<string> { _typeToModuleMap[typeName] };
+                    _typeToModuleCollisions[typeName].Add(moduleName);
+                }
                 _typeToModuleMap[typeName] = moduleName;
             }
 
             // Collect base class info (handles partial classes across files)
             ScanBaseClasses(root.Members);
+        }
+
+        // Propagate ToString through inheritance: if a type has ToString, all descendants get it too
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var (child, parent) in _baseClassMap)
+            {
+                if (!_typesWithToString.Contains(child) && _typesWithToString.Contains(parent))
+                {
+                    _typesWithToString.Add(child);
+                    changed = true;
+                }
+            }
         }
 
         // Build CSharpCompilation from all valid trees + BCL references
@@ -134,8 +177,94 @@ public class RoslynToLuau
             );
         }
 
+        // Fix override method names in global overload map now that we have semantic info
+        FixOverrideNames();
+
         // Build dependency graph and detect cycles upfront
         DetectCycles();
+    }
+
+    /// <summary>
+    /// Post-scan pass: for override methods, ensure the GlobalOverloadMap entry uses
+    /// the same disambiguated name as the base class's original declaration.
+    /// This prevents naming mismatches like JObject.WriteTo vs JToken.WriteTo_JsonWriter.
+    /// Must run after _compilation is built.
+    /// </summary>
+    private void FixOverrideNames()
+    {
+        if (_compilation == null) return;
+
+        foreach (var (fileName, tree) in _syntaxTrees)
+        {
+            var model = _compilation.GetSemanticModel(tree);
+            var root = tree.GetCompilationUnitRoot();
+
+            foreach (var method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+            {
+                if (!method.Modifiers.Any(SyntaxKind.OverrideKeyword)) continue;
+
+                var symbol = model.GetDeclaredSymbol(method) as IMethodSymbol;
+                if (symbol?.OverriddenMethod == null) continue;
+
+                // Walk up the override chain to find the original declaration
+                var baseMethod = symbol.OverriddenMethod;
+                while (baseMethod.OverriddenMethod != null)
+                    baseMethod = baseMethod.OverriddenMethod;
+
+                var baseTypeName = baseMethod.ContainingType?.Name;
+                var currentTypeName = symbol.ContainingType?.Name;
+                if (baseTypeName == null || currentTypeName == null || currentTypeName == baseTypeName) continue;
+
+                // Compute the base method's firstParamType key from the semantic model
+                var baseFpt = "";
+                if (baseMethod.Parameters.Length > 0)
+                {
+                    baseFpt = baseMethod.Parameters[0].Type.ToDisplayString(
+                        Microsoft.CodeAnalysis.SymbolDisplayFormat.MinimallyQualifiedFormat);
+                    var isNullableBase = baseFpt.EndsWith("?")
+                        || (baseMethod.Parameters[0].Type is INamedTypeSymbol { NullableAnnotation: NullableAnnotation.Annotated });
+                    baseFpt = baseFpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                        .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                    if (isNullableBase) baseFpt += "_nullable";
+                }
+
+                // Look up the exact base entry
+                var baseKey = (baseTypeName, baseMethod.Name, baseMethod.Parameters.Length, baseFpt);
+                if (!_globalOverloadMap.TryGetValue(baseKey, out var baseEmitName))
+                    continue;
+
+                // Update the current type's GlobalOverloadMap entry to match
+                var curFpt = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+                var isNullableCur = curFpt.EndsWith("?");
+                curFpt = curFpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                    .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                if (isNullableCur) curFpt += "_nullable";
+                var curKey = (currentTypeName, method.Identifier.Text, method.ParameterList.Parameters.Count, curFpt);
+                // Only update if the override's current emit name differs from the base
+                if (_globalOverloadMap.TryGetValue(curKey, out var curEmitName))
+                {
+                    if (curEmitName != baseEmitName)
+                    {
+                        _globalOverloadMap[curKey] = baseEmitName;
+                        // Also update full-signature map
+                        var allParamTypes = string.Join(",", method.ParameterList.Parameters.Select(p =>
+                        {
+                            var pt = p.Type?.ToString() ?? "";
+                            var isNullable = pt.EndsWith("?");
+                            pt = pt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                                .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                            if (isNullable) pt += "_nullable";
+                            return pt;
+                        }));
+                        _fullSignatureMap[(currentTypeName, method.Identifier.Text, allParamTypes)] = baseEmitName;
+                    }
+                }
+                else
+                {
+                    _globalOverloadMap[curKey] = baseEmitName;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -545,8 +674,19 @@ public class RoslynToLuau
                             break;
                         }
                     }
+                    // Check if class has a parameterless instance ToString()
+                    if (classDecl.Members.OfType<MethodDeclarationSyntax>().Any(m =>
+                        m.Identifier.Text == "ToString"
+                        && !m.Modifiers.Any(SyntaxKind.StaticKeyword)
+                        && m.ParameterList.Parameters.Count == 0))
+                    {
+                        _typesWithToString.Add(classDecl.Identifier.Text);
+                    }
+                    // Recurse into nested types
+                    ScanBaseClasses(classDecl.Members);
                     break;
                 case StructDeclarationSyntax structDecl:
+                    _structTypes.Add(structDecl.Identifier.Text);
                     if (structDecl.BaseList != null)
                     {
                         foreach (var bt in structDecl.BaseList.Types)
@@ -595,12 +735,23 @@ public class RoslynToLuau
         var methodNameCounts = new Dictionary<string, int>();
         var methodNameSeen = new Dictionary<string, int>();
 
+        // Count constructor occurrences
+        int constructorCount = 0;
+
         foreach (var member in members)
         {
             if (member is MethodDeclarationSyntax m)
             {
+                // Skip explicit interface implementations (not emitted in Luau)
+                if (m.ExplicitInterfaceSpecifier != null) continue;
                 var name = m.Identifier.Text;
                 methodNameCounts[name] = methodNameCounts.GetValueOrDefault(name) + 1;
+            }
+            else if (member is ConstructorDeclarationSyntax ctorMember)
+            {
+                // Skip static constructors — they don't emit as Luau constructors
+                if (!ctorMember.Modifiers.Any(SyntaxKind.StaticKeyword))
+                    constructorCount++;
             }
             // Recurse into nested types
             else if (member is ClassDeclarationSyntax nested)
@@ -613,12 +764,14 @@ public class RoslynToLuau
             }
         }
 
-        // Track emitted names per (name, paramCount) to detect same-count overloads
-        var emittedPerKey = new Dictionary<(string, int), List<(string firstParamType, string emitName)>>();
+        // Track emitted names to detect duplicates and apply __2, __3 suffixes
+        var emitNameUsage = new Dictionary<string, int>();
 
         foreach (var member in members)
         {
             if (member is not MethodDeclarationSyntax method) continue;
+            // Skip explicit interface implementations
+            if (method.ExplicitInterfaceSpecifier != null) continue;
 
             var name = method.Identifier.Text;
             int paramCount = method.ParameterList.Parameters.Count;
@@ -633,15 +786,80 @@ public class RoslynToLuau
                 {
                     var firstParam = method.ParameterList.Parameters.FirstOrDefault();
                     var suffix = firstParam?.Type?.ToString() ?? $"_{overloadIndex}";
-                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+                    var isNullableSuffix = suffix.EndsWith("?");
+                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                    if (isNullableSuffix) suffix += "_nullable";
                     emitName = $"{name}_{suffix}";
                 }
             }
 
+            // Apply dedup suffix if this emit name was already used (e.g., two overloads
+            // with same first param type but different param counts: ToString(float) and
+            // ToString(float, FloatFormatHandling, char, bool) both get emitName "ToString_float")
+            var count = emitNameUsage.GetValueOrDefault(emitName);
+            emitNameUsage[emitName] = count + 1;
+            if (count > 0)
+            {
+                emitName = $"{emitName}__{count + 1}";
+            }
+
             // Use first param type in the key to disambiguate same-count overloads
+            // Match the emitter's nullable convention: strip ?, then append _nullable
             var firstParamType = method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
-            firstParamType = firstParamType.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_");
+            var isNullableFpt = firstParamType.EndsWith("?");
+            firstParamType = firstParamType.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+            if (isNullableFpt) firstParamType += "_nullable";
             _globalOverloadMap[(typeName, name, paramCount, firstParamType)] = emitName;
+
+            // Also store in full-signature map for precise resolution
+            var allParamTypes = string.Join(",", method.ParameterList.Parameters.Select(p =>
+            {
+                var pt = p.Type?.ToString() ?? "";
+                var isNullable = pt.EndsWith("?");
+                pt = pt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_")
+                    .Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                if (isNullable) pt += "_nullable";
+                return pt;
+            }));
+            _fullSignatureMap[(typeName, name, allParamTypes)] = emitName;
+        }
+
+        // Register constructor overloads in global map
+        if (constructorCount > 1)
+        {
+            int ctorIndex = 0;
+            var ctorNamesUsed = new HashSet<string> { "new" };
+            foreach (var member in members)
+            {
+                if (member is not ConstructorDeclarationSyntax ctor) continue;
+                // Skip static constructors — not emitted as Luau constructors
+                if (ctor.Modifiers.Any(SyntaxKind.StaticKeyword)) continue;
+                string ctorEmitName = "new";
+                if (ctorIndex > 0)
+                {
+                    var firstParam = ctor.ParameterList.Parameters.FirstOrDefault();
+                    var suffix = firstParam?.Type?.ToString() ?? $"_{ctorIndex}";
+                    var isNullableCtorSuffix = suffix.EndsWith("?");
+                    suffix = suffix.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                    if (isNullableCtorSuffix) suffix += "_nullable";
+                    ctorEmitName = $"new_{suffix}";
+                    if (ctorNamesUsed.Contains(ctorEmitName))
+                    {
+                        int counter = 2;
+                        while (ctorNamesUsed.Contains($"{ctorEmitName}__{counter}"))
+                            counter++;
+                        ctorEmitName = $"{ctorEmitName}__{counter}";
+                    }
+                }
+                ctorNamesUsed.Add(ctorEmitName);
+                var paramCount = ctor.ParameterList.Parameters.Count;
+                var fpt = ctor.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ?? "";
+                var isNullableFpt = fpt.EndsWith("?");
+                fpt = fpt.Replace("?", "").Replace("[]", "_Array").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "").Replace(" ", "");
+                if (isNullableFpt) fpt += "_nullable";
+                _globalOverloadMap[(typeName, "new", paramCount, fpt)] = ctorEmitName;
+                ctorIndex++;
+            }
         }
     }
 
@@ -682,7 +900,10 @@ public class RoslynToLuau
 
         var emitter = new LuauEmitter(model);
         emitter.GlobalOverloadMap = _globalOverloadMap;
+        emitter.FullSignatureOverloadMap = _fullSignatureMap;
         emitter.GlobalBaseClassMap = _baseClassMap;
+        emitter.GlobalStructTypes = _structTypes;
+        emitter.GlobalTypesWithToString = _typesWithToString;
         emitter.EmitHeader();
 
         // Count top-level type declarations to decide whether to suppress individual returns
@@ -918,6 +1139,27 @@ public class RoslynToLuau
                 continue;
 
             var moduleName = _typeToModuleMap[typeName];
+
+            // Resolve name collisions: if multiple modules export the same type name,
+            // prefer the one in the current module's base class chain.
+            // E.g., JsonTextReader extends JsonReader; both JsonReader and JsonWriter export "State"
+            // → prefer JsonReader's State since it's in the inheritance chain.
+            if (_typeToModuleCollisions.TryGetValue(typeName, out var alternatives) && currentModuleName != null)
+            {
+                var allCandidates = new HashSet<string>(alternatives) { moduleName };
+                // Walk the base class chain of the main class (same name as module)
+                var cur = currentModuleName;
+                while (_baseClassMap.TryGetValue(cur, out var baseClass))
+                {
+                    if (_typeToModuleMap.TryGetValue(baseClass, out var baseMod) && allCandidates.Contains(baseMod))
+                    {
+                        moduleName = baseMod;
+                        break;
+                    }
+                    cur = baseClass;
+                }
+            }
+
             if (!moduleToTypes.ContainsKey(moduleName))
                 moduleToTypes[moduleName] = new List<string>();
             moduleToTypes[moduleName].Add(typeName);
@@ -940,20 +1182,20 @@ public class RoslynToLuau
 
             if (isLazy)
             {
-                // Emit lazy require pattern to break circular dependency
+                // Emit lazy require via metatable proxy.
+                // Accessing any key triggers the require on demand.
+                // By the time user code calls into these, the owning module has fully returned,
+                // so the circular require resolves (the target can now require us from cache).
                 requireBlock.AppendLine($"local _{moduleName}");
                 foreach (var typeName in types.OrderBy(t => t))
                 {
-                    requireBlock.AppendLine($"local {typeName}");
+                    // Each type gets a proxy that lazy-resolves on first key access
+                    requireBlock.AppendLine($"local {typeName} = setmetatable({{}}, {{__index = function(_, k)");
+                    requireBlock.AppendLine($"\tif not _{moduleName} then _{moduleName} = require(script.Parent.{moduleName}) end");
+                    requireBlock.AppendLine($"\treturn _{moduleName}.{typeName}[k]");
+                    requireBlock.AppendLine($"end}})");
+                    requireBlock.AppendLine($"type {typeName} = any");
                 }
-                // Emit a lazy initializer that runs on first access via task.defer
-                // This allows the current module to return first, breaking the cycle
-                lazyBlock.AppendLine($"task.defer(function() _{moduleName} = require(script.Parent.{moduleName})");
-                foreach (var typeName in types.OrderBy(t => t))
-                {
-                    lazyBlock.AppendLine($"\t{typeName} = _{moduleName}.{typeName}");
-                }
-                lazyBlock.AppendLine("end)");
             }
             else
             {

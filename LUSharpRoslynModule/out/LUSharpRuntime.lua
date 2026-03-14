@@ -44,6 +44,25 @@ function RT.tryGetValue(dict: { [any]: any }, key: any): (boolean, any)
 	return val ~= nil, val
 end
 
+-- ── TryParse helpers ────────────────────────────────────────
+
+function RT.tryParse_int(str: string): (boolean, number)
+	local n = tonumber(str)
+	if n ~= nil then return true, math.floor(n) else return false, 0 end
+end
+
+function RT.tryParse_double(str: string): (boolean, number)
+	local n = tonumber(str)
+	if n ~= nil then return true, n else return false, 0 end
+end
+
+function RT.tryParse_bool(str: string): (boolean, boolean)
+	local lower = string.lower(str)
+	if lower == "true" then return true, true
+	elseif lower == "false" then return true, false
+	else return false, false end
+end
+
 -- ── Array helpers ───────────────────────────────────────────
 
 function RT.reverseInPlace(arr: { any })
@@ -77,6 +96,58 @@ function RT.lastIndexOf(s: string, sub: string): number
 		start = (found :: number) + 1
 	end
 	return last
+end
+
+-- Convert a char code array slice to a Luau string
+-- Equivalent to C#: new string(char[], startIndex, length)
+function RT.isinstance(obj: any, className: string): boolean
+	if type(obj) ~= "table" then return false end
+	-- Walk the class hierarchy: instance → Class → Parent → GrandParent ...
+	-- Each class C has: C.__index = C, getmetatable(C) = {__index = ParentOrProxy}
+	-- ParentOrProxy may be a deferred proxy with __index metamethod
+	local cls = getmetatable(obj) -- the direct class table
+	local depth = 0
+	while cls ~= nil and type(cls) == "table" and depth < 20 do
+		depth += 1
+		-- Check this class (use normal access so deferred proxies resolve via metamethods)
+		if cls.__className == className then return true end
+		-- Find the parent class: getmetatable(cls).__index
+		local clsMt = getmetatable(cls)
+		if clsMt == nil or type(clsMt) ~= "table" or clsMt == cls then break end
+		local parent = rawget(clsMt, "__index")
+		if parent == nil or parent == cls then break end
+		if type(parent) == "table" then
+			-- parent is the next class (or a deferred proxy — __className access will resolve it)
+			cls = parent
+		elseif type(parent) == "function" then
+			-- __index is a function — try to get __className from it
+			local ok, cn = pcall(parent, clsMt, "__className")
+			if ok and cn == className then return true end
+			break
+		else
+			break
+		end
+	end
+	return false
+end
+
+function RT.stringIndexOfAny(s: string, chars: { number }): number
+	for i = 1, #s do
+		local b = string.byte(s, i)
+		for _, c in chars do
+			if b == c then return i - 1 end
+		end
+	end
+	return -1
+end
+
+function RT.charsToString(chars: { number }, startIndex: number, length: number): string
+	if chars == nil or length <= 0 then return "" end
+	local parts = table.create(length)
+	for i = 1, length do
+		parts[i] = string.char(chars[startIndex + i] or 0)
+	end
+	return table.concat(parts)
 end
 
 function RT.stringSplit(s: string, delim: string, count: number): { string }
@@ -1067,7 +1138,7 @@ function RT.StringWriter.__tostring(self: any): string
 end
 
 function RT.StringWriter.new(...: any): any
-	return setmetatable({ _parts = {}, _length = 0 }, RT.StringWriter)
+	return setmetatable({ _parts = {}, _length = 0, NewLine = "\r\n" }, RT.StringWriter)
 end
 
 function RT.StringWriter.Write(self: any, value: any, index: number?, count: number?): ()
@@ -1111,7 +1182,346 @@ function RT.StringWriter.ToString(self: any): string
 	return table.concat(self._parts)
 end
 
+-- Overload aliases used by transpiled code (C# TextWriter.Write overloads)
+function RT.StringWriter.Write_Char(self: any, charCode: number): ()
+	table.insert(self._parts, string.char(charCode))
+	self._length += 1
+end
+
+function RT.StringWriter.Write_String(self: any, s: string): ()
+	if s ~= nil then
+		table.insert(self._parts, s)
+		self._length += #s
+	end
+end
+
+function RT.StringWriter.Write_(self: any, chars: { number }, index: number, count: number): ()
+	local parts = {}
+	local i = 0
+	while i < count do
+		table.insert(parts, string.char(chars[index + i + 1]))
+		i += 1
+	end
+	local s = table.concat(parts)
+	table.insert(self._parts, s)
+	self._length += count
+end
+
 function RT.StringWriter.Close(self: any) end
 function RT.StringWriter.Flush(self: any) end
+
+-- === Collection / KeyedCollection base classes ===
+-- Collection<T>: simple list wrapper with Items array
+local Collection = {}
+Collection.__index = Collection
+RT.Collection = Collection
+
+function Collection.new(): any
+	local self = setmetatable({}, Collection)
+	self.Items = {}
+	return self
+end
+
+function Collection.get_Count(self: any): number
+	return #self.Items
+end
+
+function Collection.Add(self: any, item: any): ()
+	self:InsertItem(#self.Items, item)
+end
+
+function Collection.Insert(self: any, index: number, item: any): ()
+	self:InsertItem(index, item)
+end
+
+function Collection.InsertItem(self: any, index: number, item: any): ()
+	table.insert(self.Items, index + 1, item)
+end
+
+function Collection.Remove(self: any, item: any): boolean
+	local idx = table.find(self.Items, item)
+	if idx then
+		self:RemoveItem(idx - 1)
+		return true
+	end
+	return false
+end
+
+function Collection.RemoveItem(self: any, index: number): ()
+	table.remove(self.Items, index + 1)
+end
+
+function Collection.SetItem(self: any, index: number, item: any): ()
+	self.Items[index + 1] = item
+end
+
+function Collection.ClearItems(self: any): ()
+	table.clear(self.Items)
+end
+
+function Collection.Clear(self: any): ()
+	self:ClearItems()
+end
+
+Collection.__len = function(self: any)
+	return #self.Items
+end
+
+Collection.__iter = function(self: any)
+	return next, self.Items
+end
+
+-- KeyedCollection<TKey, TItem>: Collection + dictionary lookup by key
+-- Subclasses must define GetKeyForItem(self, item) → key
+local KeyedCollection = setmetatable({}, { __index = Collection })
+KeyedCollection.__index = KeyedCollection
+RT.KeyedCollection = KeyedCollection
+
+function KeyedCollection.new(): any
+	local self = setmetatable({}, KeyedCollection)
+	self.Items = {}
+	self.Dictionary = {}
+	return self
+end
+
+function KeyedCollection.Add(self: any, item: any): ()
+	table.insert(self.Items, item)
+	if self.GetKeyForItem then
+		local key = self:GetKeyForItem(item)
+		if key ~= nil then
+			self.Dictionary[key] = item
+		end
+	end
+end
+
+function KeyedCollection.Remove(self: any, item: any): boolean
+	if self.GetKeyForItem then
+		local key = self:GetKeyForItem(item)
+		if key ~= nil then self.Dictionary[key] = nil end
+	end
+	local idx = table.find(self.Items, item)
+	if idx then table.remove(self.Items, idx) return true end
+	return false
+end
+
+function KeyedCollection.Contains(self: any, key: string): boolean
+	return self.Dictionary[key] ~= nil
+end
+
+function KeyedCollection.Clear(self: any): ()
+	table.clear(self.Items)
+	table.clear(self.Dictionary)
+end
+
+KeyedCollection.__len = function(self: any)
+	return #self.Items
+end
+
+KeyedCollection.__iter = function(self: any)
+	return next, self.Items
+end
+
+-- === .NET Type helpers ===
+-- Maps Luau typeof() results to C# type names for interop with .NET type maps
+local _luauToCSharpType = {
+	["number"] = "double",
+	["string"] = "string",
+	["boolean"] = "bool",
+	["table"] = "Object",
+	["nil"] = "Object",
+	["function"] = "Object",
+}
+
+function RT.getType(value: any): string
+	local luauType = typeof(value)
+	if luauType == "number" then
+		-- Distinguish int vs double: whole numbers map to "int" (C# Int32)
+		if value == math.floor(value) and value == value then
+			return "int"
+		end
+		return "double"
+	end
+	return _luauToCSharpType[luauType] or luauType
+end
+
+-- === .NET Enum reflection stubs ===
+-- Works with Luau table-based enums: { Name1 = 0, Name2 = 1, ... }
+function RT.Enum_GetNames(enumType: any): { string }
+	local names = {}
+	if type(enumType) == "table" then
+		for k, v in enumType do
+			if type(k) == "string" and type(v) == "number" then
+				table.insert(names, k)
+			end
+		end
+	end
+	return names
+end
+
+function RT.Enum_GetValues(enumType: any): { number }
+	local values = {}
+	if type(enumType) == "table" then
+		for k, v in enumType do
+			if type(k) == "string" and type(v) == "number" then
+				table.insert(values, v)
+			end
+		end
+		table.sort(values)
+	end
+	return values
+end
+
+function RT.Enum_GetName(enumType: any, value: any): string?
+	if type(enumType) == "table" then
+		for k, v in enumType do
+			if v == value then return k end
+		end
+	end
+	return nil
+end
+
+function RT.Enum_IsDefined(enumType: any, value: any): boolean
+	if type(enumType) == "table" then
+		for _, v in enumType do
+			if v == value then return true end
+		end
+	end
+	return false
+end
+
+function RT.Enum_Parse(enumType: any, name: string): any
+	if type(enumType) == "table" then
+		return enumType[name]
+	end
+	return nil
+end
+
+-- === .NET Type/FieldInfo reflection stubs ===
+-- Type.GetField(enumTable, name) → returns a stub { _value = enumTable[name], _name = name }
+function RT.Type_GetField(typeObj: any, name: string): any
+	if type(typeObj) == "table" and typeObj[name] ~= nil then
+		return { _value = typeObj[name], _name = name, GetValue = function(self, _) return self._value end, GetCustomAttributes = function(self, ...) return {} end }
+	end
+	return nil
+end
+
+function RT.FieldInfo_GetValue(field: any): any
+	if type(field) == "table" and field._value ~= nil then
+		return field._value
+	end
+	return nil
+end
+
+function RT.Type_IsEnum(typeObj: any): boolean
+	if type(typeObj) == "table" then
+		for k, v in typeObj do
+			if type(k) == "string" and type(v) == "number" then return true end
+		end
+	end
+	return false
+end
+
+-- Expose .NET base collection types as globals for transpiled modules
+-- that inherit from them (e.g., JsonPropertyCollection : KeyedCollection)
+rawset(_G, "KeyedCollection", RT.KeyedCollection)
+rawset(_G, "Collection", RT.Collection)
+
+-- ── IList<T> runtime helpers ──────────────────────────────────
+-- Custom IList<T> implementations (e.g. JPropertyList) use method dispatch;
+-- plain tables (List<T>) use native table operations as fallback.
+
+local function hasMethod(obj, name)
+	if obj == nil then return false end
+	-- Traverse full __index chain via normal table access
+	local val = obj[name]
+	return type(val) == "function"
+end
+
+function RT.ilistInsert(list: any, index: number, item: any)
+	if list == nil then return end
+	if hasMethod(list, "Insert") then
+		list:Insert(index, item)
+	else
+		table.insert(list, index + 1, item)
+	end
+end
+
+function RT.ilistAdd(list: any, item: any)
+	if list == nil then return end
+	if hasMethod(list, "Add") then
+		list:Add(item)
+	else
+		table.insert(list, item)
+	end
+end
+
+function RT.ilistRemoveAt(list: any, index: number)
+	if list == nil then return end
+	if hasMethod(list, "RemoveAt") then
+		list:RemoveAt(index)
+	else
+		table.remove(list, index + 1)
+	end
+end
+
+function RT.ilistContains(list: any, item: any): boolean
+	if list == nil then return false end
+	if hasMethod(list, "Contains") then
+		return list:Contains(item)
+	end
+	return table.find(list, item) ~= nil
+end
+
+function RT.ilistIndexOf(list: any, item: any): number
+	if list == nil then return -1 end
+	if hasMethod(list, "IndexOf") then
+		return list:IndexOf(item)
+	end
+	return (table.find(list, item) or 0) - 1
+end
+
+function RT.ilistClear(list: any)
+	if list == nil then return end
+	if hasMethod(list, "Clear") then
+		list:Clear()
+	else
+		table.clear(list)
+	end
+end
+
+function RT.ilistCount(list: any): number
+	if list == nil then return 0 end
+	if hasMethod(list, "get_Count") then
+		return list:get_Count()
+	end
+	return #list
+end
+
+function RT.ilistGet(list: any, index: number): any
+	if list == nil then return nil end
+	-- Collection<T> pattern: numeric items are in .Items, not in __index_get
+	-- (__index_get may be a string-keyed indexer like JPropertyKeyedCollection)
+	if type(index) == "number" and list.Items ~= nil then
+		return list.Items[index + 1]
+	end
+	if hasMethod(list, "__index_get") then
+		return list:__index_get(index)
+	end
+	return list[index + 1]
+end
+
+function RT.ilistSet(list: any, index: number, value: any)
+	if list == nil then return end
+	-- Collection<T> pattern: numeric items are in .Items
+	if type(index) == "number" and list.Items ~= nil then
+		list.Items[index + 1] = value
+		return
+	end
+	if hasMethod(list, "__index_set") then
+		list:__index_set(index, value)
+	else
+		list[index + 1] = value
+	end
+end
 
 return RT
