@@ -6538,7 +6538,7 @@ public class LuauEmitter
             SyntaxKind.AddExpression => "+",
             SyntaxKind.SubtractExpression => "-",
             SyntaxKind.MultiplyExpression => "*",
-            SyntaxKind.DivideExpression => "/",
+            SyntaxKind.DivideExpression => null, // handled below for integer division
             SyntaxKind.ModuloExpression => "%",
             SyntaxKind.EqualsExpression => "==",
             SyntaxKind.NotEqualsExpression => "~=",
@@ -6559,6 +6559,30 @@ public class LuauEmitter
         if (op != null)
         {
             return $"{left} {op} {right}";
+        }
+
+        // Integer division: C# int/int truncates toward zero, Luau / is float division
+        if (binary.Kind() == SyntaxKind.DivideExpression)
+        {
+            bool isIntegerDiv = false;
+            if (_model != null)
+            {
+                var leftType = _model.GetTypeInfo(binary.Left).Type;
+                var rightType = _model.GetTypeInfo(binary.Right).Type;
+                if (leftType != null && rightType != null
+                    && leftType.SpecialType is SpecialType.System_Int32 or SpecialType.System_UInt32
+                        or SpecialType.System_Int64 or SpecialType.System_UInt64
+                        or SpecialType.System_Int16 or SpecialType.System_UInt16
+                        or SpecialType.System_Byte or SpecialType.System_SByte
+                    && rightType.SpecialType is SpecialType.System_Int32 or SpecialType.System_UInt32
+                        or SpecialType.System_Int64 or SpecialType.System_UInt64
+                        or SpecialType.System_Int16 or SpecialType.System_UInt16
+                        or SpecialType.System_Byte or SpecialType.System_SByte)
+                {
+                    isIntegerDiv = true;
+                }
+            }
+            return isIntegerDiv ? $"math.floor({left} / {right})" : $"{left} / {right}";
         }
 
         // Bitwise & and | with boolean operands → logical and/or (non-short-circuit & on bools)
@@ -6631,14 +6655,16 @@ public class LuauEmitter
 
     private string EmitPreIncrement(string operand)
     {
-        _pendingAssignmentStatements.Add($"{operand} += 1");
-        return $"({operand} + 1)";
+        // Emit the increment immediately so subsequent uses see the updated value
+        AppendLine($"{operand} += 1");
+        return operand;
     }
 
     private string EmitPreDecrement(string operand)
     {
-        _pendingAssignmentStatements.Add($"{operand} -= 1");
-        return $"({operand} - 1)";
+        // Emit the decrement immediately so subsequent uses see the updated value
+        AppendLine($"{operand} -= 1");
+        return operand;
     }
 
     private string EmitParenthesized(ParenthesizedExpressionSyntax paren)
