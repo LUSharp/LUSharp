@@ -677,15 +677,17 @@ local function ensureCaretVerticallyVisible(self, caretY)
     end
 end
 
-local function updateCaretPosition(self)
+local function updateCaretPosition(self, scrollToCaret)
     if not self.caret or not self.textBox then
         return
     end
 
     local x, y = computeCaretLocalPosition(self.textBox.Text, self.textBox.CursorPosition, self.options.textSize, self.options.lineHeight)
 
-    ensureCaretHorizontallyVisible(self, x)
-    ensureCaretVerticallyVisible(self, y)
+    if scrollToCaret then
+        ensureCaretHorizontallyVisible(self, x)
+        ensureCaretVerticallyVisible(self, y)
+    end
 
     self.caret.Position = UDim2.new(0, x, 0, y)
     self.caret.Size = UDim2.new(0, 1, 0, self.options.lineHeight)
@@ -708,7 +710,7 @@ local function startCaretBlink(self)
         local visible = true
 
         while self._caretBlinkToken == token and self.caret and self.textBox do
-            updateCaretPosition(self)
+            updateCaretPosition(self, false)
 
             local show, shouldBlink = caretShouldShow(self.textBox)
             if show and shouldBlink then
@@ -1121,7 +1123,7 @@ local function refresh(self)
     if self._updateSelectionHighlight then
         self._updateSelectionHighlight()
     end
-    updateCaretPosition(self)
+    updateCaretPosition(self, false)
 end
 
 local function scheduleRefresh(self)
@@ -1952,7 +1954,7 @@ function Editor.new(pluginObject, options)
                     end
 
                     refresh(self)
-                    updateCaretPosition(self)
+                    updateCaretPosition(self, true)
                 end)
 
                 self._lastText = textBox.Text
@@ -2067,12 +2069,12 @@ function Editor.new(pluginObject, options)
         self._lastSelectionStart = textBox.SelectionStart
 
         updateStatus(self)
-        updateCaretPosition(self)
+        updateCaretPosition(self, true)
     end))
 
     table.insert(self._connections, textBox.Focused:Connect(function()
         updateStatus(self)
-        updateCaretPosition(self)
+        updateCaretPosition(self, true)
         startCaretBlink(self)
     end))
 
@@ -2221,7 +2223,7 @@ function Editor.new(pluginObject, options)
         if keyCode == Enum.KeyCode.Tab then
             insertAtCursor(self.textBox, self.options.tabText)
             self:hideCompletions()
-            updateCaretPosition(self)
+            updateCaretPosition(self, true)
             self.textBox:CaptureFocus()
             self._skipNextCompletionAcceptKey = keyCode
             return Enum.ContextActionResult.Sink
@@ -2269,7 +2271,7 @@ function Editor.new(pluginObject, options)
                 self._lastCursorPos = textBox.CursorPosition
                 self._lastSelectionStart = textBox.SelectionStart
                 updateStatus(self)
-                updateCaretPosition(self)
+                updateCaretPosition(self, true)
                 self:hideHoverInfo()
                 return
             end
@@ -2464,8 +2466,11 @@ function Editor.new(pluginObject, options)
         end
 
         if not cursorPos then
-            setHoverDebug(self, formatOutsideEditorDebug(self))
-            self:hideHoverInfo()
+            -- Don't hide an already-visible tooltip just because the poll failed to resolve
+            -- a cursor this frame — the mouse may be over the tooltip itself.
+            if not (self.hoverInfoFrame and self.hoverInfoFrame.Visible) then
+                setHoverDebug(self, formatOutsideEditorDebug(self))
+            end
             return
         end
 
@@ -2570,7 +2575,7 @@ function Editor.new(pluginObject, options)
                 self._lastCursorPos = self.textBox.CursorPosition
                 self._lastSelectionStart = self.textBox.SelectionStart
                 updateStatus(self)
-                updateCaretPosition(self)
+                updateCaretPosition(self, true)
 
                 setSelectionDebug(
                     self,
@@ -2749,7 +2754,7 @@ function Editor.new(pluginObject, options)
                     self._lastCursorPos = self.textBox.CursorPosition
                     self._lastSelectionStart = self.textBox.SelectionStart
                     updateStatus(self)
-                    updateCaretPosition(self)
+                    updateCaretPosition(self, true)
 
                     local success = self.textBox.SelectionStart == startPos and self.textBox.CursorPosition == endPosExclusive
                     if success then
@@ -2814,7 +2819,7 @@ function Editor.new(pluginObject, options)
                 self._lastCursorPos = self.textBox.CursorPosition
                 self._lastSelectionStart = self.textBox.SelectionStart
                 updateStatus(self)
-                updateCaretPosition(self)
+                updateCaretPosition(self, true)
 
                 setSelectionDebug(self, string.format("SelDbg normalize-character click=%s before=%s/%s after=%s/%s", tostring(normalizeClickCursor), beforeSelection, beforeCursor, tostring(self.textBox.SelectionStart), tostring(self.textBox.CursorPosition)), true)
             end)
@@ -2944,7 +2949,7 @@ function Editor.new(pluginObject, options)
                     self._lastCursorPos = newCursor
                     self._lastSelectionStart = newSelection
                     updateStatus(self)
-                    updateCaretPosition(self)
+                    updateCaretPosition(self, true)
                     self:requestDiagnostics()
                 end
             end
@@ -2962,7 +2967,7 @@ function Editor.new(pluginObject, options)
                     self._lastCursorPos = self.textBox.CursorPosition
                     self._lastSelectionStart = self.textBox.SelectionStart
                     updateStatus(self)
-                    updateCaretPosition(self)
+                    updateCaretPosition(self, true)
                 end
             end)
             return
@@ -3080,7 +3085,7 @@ function Editor.new(pluginObject, options)
 
             insertAtCursor(textBox, self.options.tabText)
             self:hideCompletions()
-            updateCaretPosition(self)
+            updateCaretPosition(self, true)
             textBox:CaptureFocus()
         elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
             local completionVisible = self.completionFrame and self.completionFrame.Visible
@@ -3190,6 +3195,7 @@ end
 
 function Editor:hideHoverInfo()
     self._hoverRequestToken = (self._hoverRequestToken or 0) + 1
+    self._shownHoverLabel = nil
 
     if self.hoverInfoFrame then
         self.hoverInfoFrame.Visible = false
@@ -3210,6 +3216,7 @@ function Editor:_showHoverInfo(info, screenPosition)
     )
     if suppressHover then
         self.hoverInfoFrame.Visible = false
+        self._shownHoverLabel = nil
         return
     end
 
@@ -3222,6 +3229,12 @@ function Editor:_showHoverInfo(info, screenPosition)
     local kind = tostring((info and info.kind) or "symbol")
     local detail = tostring((info and info.detail) or "")
     local documentation = tostring((info and info.documentation) or "")
+
+    -- Skip redundant updates when tooltip is already showing the same content
+    local frame = self.hoverInfoFrame
+    if frame.Visible and self._shownHoverLabel == label then
+        return
+    end
 
     local visual = getCompletionKindVisual(kind)
     self.hoverInfoIcon.Image = visual.image
@@ -3237,7 +3250,6 @@ function Editor:_showHoverInfo(info, screenPosition)
     self.hoverInfoText.Text = table.concat(lines, "\n")
 
     local rootPos = self.root.AbsolutePosition
-    local frame = self.hoverInfoFrame
 
     local x = screenPosition.X - rootPos.X + 14
     local y = screenPosition.Y - rootPos.Y + 18
@@ -3250,6 +3262,7 @@ function Editor:_showHoverInfo(info, screenPosition)
 
     frame.Position = UDim2.new(0, x, 0, y)
     frame.Visible = true
+    self._shownHoverLabel = label
 
     setHoverDebug(self, string.format("Hover: %s [%s]", label, kind))
 end
@@ -3568,7 +3581,7 @@ function Editor:_applyCompletion(label, activeCursorPos)
     self._suppressTextChange = true
     self._retriggerAfterCompletion = true
     replaceTextRange(self.textBox, startPos, endPos, label)
-    updateCaretPosition(self)
+    updateCaretPosition(self, true)
 end
 
 function Editor:showCompletions(items)
@@ -3605,7 +3618,7 @@ function Editor:showCompletions(items)
         if caret and root then
             local rootSize = root.AbsoluteSize
             if rootSize.X > 0 and rootSize.Y > 0 then
-                updateCaretPosition(self)
+                updateCaretPosition(self, true)
 
                 local rootPos = root.AbsolutePosition
                 local localCaretX = nil
@@ -3909,7 +3922,7 @@ function Editor:setCursorPosition(line, column)
     self.textBox.CursorPosition = math.clamp(index, 1, #source + 1)
     self.textBox.SelectionStart = -1
 
-    updateCaretPosition(self)
+    updateCaretPosition(self, true)
     startCaretBlink(self)
 end
 

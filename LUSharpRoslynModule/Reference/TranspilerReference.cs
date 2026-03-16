@@ -208,6 +208,18 @@ public static class TranspilerReference
         Console.WriteLine();
         Console.WriteLine($"Transpiler validation: {passed}/{passed + failed} files passed");
 
+        // Write output files to luau-out/ directory
+        var outDir = Path.Combine(roslynSourceDir, "luau-out");
+        Directory.CreateDirectory(outDir);
+        for (int i = 0; i < fileCount; i++)
+        {
+            if (results[i] != null)
+            {
+                var luaName = fileNames[i].Replace(".cs", ".lua");
+                File.WriteAllText(Path.Combine(outDir, luaName), results[i]);
+            }
+        }
+
         // Step 7: Print the require block region of StatementNodes to verify cross-module output.
         Console.WriteLine();
         Console.WriteLine("=== StatementNodes.lua (require block sample) ===");

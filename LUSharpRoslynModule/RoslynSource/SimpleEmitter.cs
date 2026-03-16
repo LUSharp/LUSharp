@@ -85,6 +85,42 @@ public class SimpleEmitter : SyntaxWalker
         _needsRuntime = false;
     }
 
+    private static bool IsLuauReserved(string name)
+    {
+        if (name == "and") return true;
+        if (name == "break") return true;
+        if (name == "do") return true;
+        if (name == "else") return true;
+        if (name == "elseif") return true;
+        if (name == "end") return true;
+        if (name == "false") return true;
+        if (name == "for") return true;
+        if (name == "function") return true;
+        if (name == "if") return true;
+        if (name == "in") return true;
+        if (name == "local") return true;
+        if (name == "nil") return true;
+        if (name == "not") return true;
+        if (name == "or") return true;
+        if (name == "repeat") return true;
+        if (name == "return") return true;
+        if (name == "then") return true;
+        if (name == "true") return true;
+        if (name == "until") return true;
+        if (name == "while") return true;
+        if (name == "continue") return true;
+        if (name == "export") return true;
+        if (name == "type") return true;
+        if (name == "typeof") return true;
+        return false;
+    }
+
+    private static string EscapeId(string name)
+    {
+        if (IsLuauReserved(name)) return name + "_";
+        return name;
+    }
+
     public string GetOutput()
     {
         return _output;
@@ -1024,25 +1060,26 @@ public class SimpleEmitter : SyntaxWalker
 
         if (kind == 8793) // LocalDeclaration
         {
-            LocalDeclarationStatementSyntax local = (LocalDeclarationStatementSyntax)stmt;
-            string luauType = MapType(local.TypeName);
+            LocalDeclarationStatementSyntax localDecl = (LocalDeclarationStatementSyntax)stmt;
+            string varName = EscapeId(localDecl.VariableName);
+            string luauType = MapType(localDecl.TypeName);
 
             // Track local variable for colon-call and string indexing detection
             if (_localCount < 64)
             {
-                _localNames[_localCount] = local.VariableName;
-                _localTypes[_localCount] = local.TypeName;
+                _localNames[_localCount] = varName;
+                _localTypes[_localCount] = localDecl.TypeName;
                 _localCount = _localCount + 1;
             }
 
-            if (local.Initializer != null)
+            if (localDecl.Initializer != null)
             {
-                string init = EmitExpression(local.Initializer);
-                AppendLine("local " + local.VariableName + ": " + luauType + " = " + init);
+                string init = EmitExpression(localDecl.Initializer);
+                AppendLine("local " + varName + ": " + luauType + " = " + init);
             }
             else
             {
-                AppendLine("local " + local.VariableName + ": " + luauType + " = " + DefaultForType(local.TypeName));
+                AppendLine("local " + varName + ": " + luauType + " = " + DefaultForType(localDecl.TypeName));
             }
             return;
         }
@@ -1683,6 +1720,14 @@ public class SimpleEmitter : SyntaxWalker
                 if (inner == "\\'") return "39";
                 if (inner == "\\\"") return "34";
                 if (inner == "\\0") return "0";
+                if (inner == "\"") return "34";
+                // Unicode escape: \uXXXX → decimal value
+                if (inner.Length == 6 && inner[0] == '\\' && inner[1] == 'u')
+                {
+                    string hex = inner.Substring(2, 4);
+                    int val = int.Parse(hex, System.Globalization.NumberStyles.HexNumber);
+                    return val.ToString();
+                }
                 if (inner.Length == 1)
                 {
                     return "string.byte(\"" + inner + "\", 1)";
@@ -1702,6 +1747,8 @@ public class SimpleEmitter : SyntaxWalker
             if (name == "false") return "false";
             if (name == "this") return "self";
 
+            string escaped = EscapeId(name);
+
             // Instance field: prefix with self. when in instance context
             if (!_isStaticContext && _currentClassName.Length > 0)
             {
@@ -1714,7 +1761,7 @@ public class SimpleEmitter : SyntaxWalker
                 }
             }
 
-            return name;
+            return escaped;
         }
 
         // ── Parenthesized ─────────────────────────────────────

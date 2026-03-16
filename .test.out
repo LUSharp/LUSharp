@@ -1,0 +1,536 @@
+
+Lexer
+  PASS  tokenizes keywords
+  PASS  tokenizes identifiers
+  PASS  tokenizes async and await as keywords
+  PASS  tokenizes numbers
+  PASS  tokenizes strings
+  PASS  tokenizes interpolated strings
+  PASS  tokenizes operators
+  PASS  tokenizes punctuation
+  PASS  skips single-line comments
+  PASS  skips multi-line comments
+  PASS  preserves comments when requested
+  PASS  tracks line and column
+  PASS  tokenizes a full class declaration
+  PASS  handles arrow operator
+  PASS  handles generic angle brackets
+
+Parser: Declarations
+  PASS  parses an empty class
+  PASS  parses class with base class
+  PASS  parses a method
+  PASS  parses a static method
+  PASS  parses a field with initializer
+  PASS  parses an auto-property
+  PASS  parses a constructor
+  PASS  parses using directives
+  PASS  parses classes wrapped in a namespace block
+  PASS  parses generic type in field
+  PASS  parses enum declaration
+  PASS  parses interface declaration
+  PASS  parses override method
+  PASS  parses async method modifier
+
+Parser: Statements
+  PASS  parses variable declaration with var
+  PASS  parses typed variable declaration
+  PASS  parses if/else
+  PASS  parses for loop
+  PASS  parses foreach loop
+  PASS  parses while loop
+  PASS  parses return
+  PASS  parses try/catch
+  PASS  parses switch
+  PASS  parses break and continue
+  PASS  parses throw
+
+Parser: Expressions
+  PASS  parses binary expression
+  PASS  parses method call
+  PASS  parses member access
+  PASS  parses object creation
+  PASS  parses target-typed new()
+  PASS  parses collection initializer before foreach without desync
+  PASS  parses lambda expression
+  PASS  parses await expression statement
+  PASS  parses async lambda expression
+  PASS  parses string interpolation
+  PASS  parses ternary
+  PASS  parses null coalescing
+  PASS  parses chained member access + method call
+  PASS  parses generic GetService call followed by semicolon
+  PASS  respects operator precedence
+
+Parser: C# 12
+  FAIL  parses class primary constructor parameters
+        ./plugin/tests/ParserTests.lua:332: Expected table, got nil
+  FAIL  parses collection expression literal
+        ./plugin/tests/ParserTests.lua:342: Expected collection_expression, got unknown
+  FAIL  parses lambda default parameter values
+        ./plugin/tests/ParserTests.lua:349: Expected lambda, got unknown
+  FAIL  parses ref readonly parameter modifiers
+        ./plugin/tests/ParserTests.lua:359: Expected ref_readonly, got nil
+  FAIL  parses using alias and resolves alias type names
+        ./plugin/tests/ParserTests.lua:366: Expected table, got nil
+
+Parser: Diagnostics
+  PASS  includes range data for parse errors
+  PASS  recovers from unsupported class-body tokens without stalling
+  PASS  aborts gracefully when parser operation budget is exceeded
+  PASS  reports error for using directive missing semicolon
+  PASS  reports error for namespace declaration missing opening brace
+  PASS  reports error for expression statement missing semicolon
+  PASS  reports error for trailing dot member access before next line
+  PASS  reports error for side-effect-free member access expression statements
+  PASS  reports error for incomplete compound assignment
+  PASS  reports error for variable declaration missing semicolon
+
+Lowerer
+  PASS  lowers a simple class to a table
+  PASS  lowers static field
+  PASS  lowers method to function
+  PASS  maps Console.WriteLine to print
+  PASS  lowers string interpolation to template_string
+  PASS  lowers foreach to for_in
+  PASS  preserves for-loop initializer in fallback lowering
+  PASS  uses assignment statement when fallback init is assignment
+  PASS  does not lower mismatched for variables as numeric loop
+  PASS  lowers increment statement to assignment
+  PASS  lowers null-conditional access safely
+  PASS  lowers is operator to boolean comparison
+  PASS  drops switch-case break and preserves default body
+  PASS  determines ScriptType from base class
+  PASS  determines ModuleScript for shared classes
+  FAIL  lowers primary constructor parameters into ctor and fields
+        ./plugin/tests/LowererTests.lua:151: Expected non-nil value
+  FAIL  lowers collection expressions to array literals
+        ./plugin/tests/LowererTests.lua:162: Expected array_literal, got identifier
+  FAIL  lowers lambda default parameters to nil guards
+        ./plugin/tests/LowererTests.lua:169: Expected function_expr, got identifier
+
+Emitter
+  PASS  emits simple class table
+  PASS  emits static fields
+  PASS  emits instance method with colon syntax
+  PASS  emits static method with dot syntax
+  PASS  emits constructor helper when constructor is present
+  PASS  emits GameEntry call for Script types
+  PASS  emits return for ModuleScript types
+  PASS  emits print for Console.WriteLine mapping
+  PASS  emits backtick string for interpolation
+  PASS  emits proper indentation for nested if
+  PASS  calls other instance methods via self
+  PASS  calls other static methods via class table
+  PASS  emits target-typed new() from declared type
+  PASS  emits target-typed collection initializer items
+  PASS  emits target-typed new for nullable declared types
+  FAIL  emits primary constructor parameters in constructor helper
+        ./plugin/tests/EmitterTests.lua:150: Expected string to contain 'function Foo.new(health)'
+  FAIL  emits collection expressions as table literals
+        ./plugin/tests/EmitterTests.lua:156: Expected string to contain 'local xs = {1, 2, 3}'
+  FAIL  emits lambda default parameter nil guards
+        ./plugin/tests/EmitterTests.lua:161: Expected string to contain 'if (x == nil) then'
+  PASS  lowers event += and -= using Connect/Disconnect cache
+
+SyntaxHighlighter
+  PASS  styles keywords
+  PASS  styles keywords in Light theme
+  PASS  styles strings and comments
+  PASS  escapes rich text special characters
+  PASS  preserves whitespace and newlines
+  PASS  styles type and method identifiers
+  PASS  styles enum-like chains
+  PASS  styles local variable declarations
+  PASS  styles full using namespace chain
+  PASS  styles full namespace declaration chain
+  PASS  styles generic, array, and nullable parameter identifiers as local vars
+  PASS  keeps method names method-colored while call arguments use argument coloring
+  PASS  styles nested property chains and events distinctly
+  PASS  does not treat comparison rhs identifier as declaration local
+  PASS  styles interpolation placeholders as local variables
+  PASS  does not style placeholder braces in regular string literals
+  PASS  styles dollar-prefixed interpolation placeholders as local variables
+  PASS  styles interpolation expressions with surrounding whitespace
+  PASS  styles member chains inside interpolation expressions
+  PASS  styles globals, methods, generics, and braces inside interpolation
+  PASS  styles generic type arguments in GetService calls as types
+  PASS  styles class names in parameter and argument positions
+
+IntelliSense
+  PASS  returns keyword completions by prefix
+  PASS  prioritizes Main when naming a class declaration
+  PASS  prioritizes GameEntry for Main entry method declaration
+  PASS  prioritizes Console.WriteLine for static member access
+  PASS  returns member completions after dot from inferred local type
+  PASS  includes generated documentation for class property completions
+  PASS  returns constructable type completions after new
+  PASS  includes type completions in default context
+  PASS  includes baseline dotnet namespaces and types in default context
+  PASS  returns namespace-aware completions after System dot prefix
+  PASS  keeps namespace/type members in namespace chain context
+  PASS  suppresses non-declaration suggestions while declaring class name
+  PASS  suppresses unrelated suggestions while declaring value name
+  PASS  suppresses unrelated suggestions for generic list declaration-name context
+  PASS  suppresses unrelated suggestions for generic dictionary declaration-name context
+  PASS  suppresses unrelated suggestions for nullable declaration-name context
+  PASS  suppresses unrelated suggestions for array declaration-name context
+  PASS  suppresses unrelated suggestions for custom type declaration-name context
+  PASS  suppresses unrelated suggestions for namespaced custom type declaration-name context
+  PASS  keeps member completion in declaration initializer expression context
+  PASS  keeps member completion in typed declaration initializer expression context
+  PASS  returns generic collection types under System.Collections.Generic
+  PASS  restricts using-directive root suggestions to namespaces
+  PASS  restricts using-directive nested suggestions to namespaces
+  PASS  restricts using-directive suggestions to provided validity profile namespaces
+  PASS  surfaces includable LUSharpAPI namespaces in using directives
+  PASS  filters already-included namespaces even when prior using lacks semicolon
+  PASS  filters already-included nested namespaces when prior using lacks semicolon
+  PASS  accepts context options without changing baseline results
+  PASS  suggests service names inside GetService string
+  PASS  limits GetService suggestions to default visible services
+  PASS  includes additional services when explicitly enabled
+  PASS  does not suggest completions inside comments
+  PASS  does not suggest completions inside strings unless provider exists
+  PASS  suggests members while typing inside interpolated string expressions
+  PASS  suggests members after trailing dot inside interpolated expressions
+  PASS  keeps interpolation member suggestions when cursor advances past closing brace
+  PASS  does not suggest members for brace text in regular strings
+  PASS  suggests class names inside Instance.new string
+  PASS  suggests members after GetService call when using dot chain
+  PASS  returns parameter hints for global methods
+  PASS  does not count commas inside strings for active parameter
+  PASS  returns diagnostics from parse results
+  PASS  still reports incomplete member access when parse result is unavailable
+  PASS  normalizes malformed diagnostics to stable non-zero clamped ranges
+  PASS  normalizes inverted spans while preserving severity and message
+  PASS  carries severity and message through parser diagnostics for invalid constructs
+  PASS  adds diagnostics for unknown using namespace include
+  PASS  adds unknown-namespace diagnostics against provided validity profile
+  FAIL  emits unsupported compile diagnostic for interceptors preview syntax
+        ./plugin/tests/IntelliSenseTests.lua:608: Expected non-nil value
+  FAIL  emits unsupported compile diagnostic for Experimental attribute
+        ./plugin/tests/IntelliSenseTests.lua:624: Expected non-nil value
+  FAIL  emits unsupported compile diagnostic for ref readonly semantics
+        ./plugin/tests/IntelliSenseTests.lua:640: Expected non-nil value
+  PASS  adds diagnostics when known types are used without required namespace imports
+  PASS  does not add missing-namespace diagnostics when required using directives are present
+  PASS  adds diagnostics for undeclared identifiers
+  PASS  adds diagnostics for incomplete member access statements
+  PASS  adds diagnostics for expression statements missing semicolon
+  PASS  adds diagnostics for trailing dot member access before next line
+  PASS  adds diagnostics for side-effect-free member access expression statements
+  PASS  adds diagnostics for invalid set accessor usage on read-only properties
+  PASS  adds diagnostics for incomplete compound assignments
+  PASS  adds diagnostics for variable declarations missing semicolon
+  PASS  adds undeclared diagnostics for identifiers used inside interpolated strings
+  PASS  does not add undeclared diagnostics for declared identifiers inside interpolated strings
+  PASS  adds diagnostics for incomplete member access inside interpolated strings
+  PASS  does not treat brace identifiers in regular strings as interpolation
+  PASS  adds diagnostics for using loop variable outside scope
+  PASS  does not mark print inside lambda callback as undeclared
+  PASS  does not mark async or await in async lambda callback as undeclared
+  PASS  returns diagnostic hover info when cursor is inside diagnostic span
+  PASS  uses friendly fallback detail when semantic diagnostic message is missing
+  PASS  keeps human-readable diagnostic messages as primary hover detail
+  PASS  uses generic fallback detail for unknown diagnostic codes
+  PASS  supports manual symbol type caching
+  PASS  exposes detail field for completion entries
+  PASS  shows return type first in method completion detail
+  PASS  returns hover info for member methods
+  PASS  shows generic GetService signature and summarizes alternate overloads
+  PASS  returns hover info for local variable symbols
+  PASS  returns hover info for variable and members inside interpolated expressions
+  PASS  does not return interpolation member hover info in regular strings
+  PASS  does not show hover info for type-like text inside regular strings
+  PASS  does not show hover info for interpolated string text outside braces
+  PASS  finds nearby hover symbol when cursor is offset
+  PASS  finds hover symbol via token-nearby fallback when char radius is too small
+  PASS  returns method hover for declaration name
+  PASS  prefers declaration method name over parameter type at method boundary
+  PASS  prefers method name over return type when hovering declaration gap
+  PASS  prefers static field name over type token in declaration
+  PASS  returns keyword hover when cursor is on class keyword
+  PASS  returns keyword hover when cursor is on namespace keyword
+  PASS  returns nested using namespace hover info instead of using keyword
+  PASS  infers local service type from generic GetService call
+  PASS  suggests members after generic GetService chain for ServerScriptService
+  PASS  does not show hover info for public modifier token
+  PASS  shows override hover as base method definition
+  PASS  shows override hover when modifiers follow override
+  PASS  shows full declaration for method name hover
+  PASS  shows class declaration for class name hover
+  PASS  does not show hover info for static modifier token
+  PASS  does not show hover info when cursor is on an opening brace
+  PASS  does not show hover info when cursor is on a statement semicolon
+  PASS  does not show hover info when caret is immediately after a statement semicolon
+  PASS  does not show hover info at end of incomplete assignment
+  PASS  does not show hover info when cursor is on collection initializer number
+  PASS  does not show hover info when cursor is on collection initializer comma
+  PASS  does not show hover info on trailing collection initializer number near foreach
+  PASS  does not show hover info when cursor is on a closing brace line
+  PASS  does not show hover info after trailing newline following class closing brace
+  PASS  does not show hover info when cursor is on an empty line
+  PASS  recovers nearby method hover when cursor is on whitespace before opening brace
+  PASS  infers local type from generic template method call
+  PASS  uses inferred template local type for member suggestions from chained generic call
+  PASS  keeps chained generic local inference generic across non-Part types
+  PASS  shows hover docs for local inferred from GetService generic
+  PASS  shows inferred service hover on declaration variable name
+  PASS  shows hover docs for local inferred from GetService string call
+  PASS  shows hover docs for local inferred from template call
+  PASS  shows method hover signature with params and return type
+  PASS  provides built-in Roblox type documentation on hover
+  PASS  returns type hover when hovering declaration type token
+  PASS  provides extensible Roblox documentation for non-curated supported types
+
+CSharp12SupportMatrix
+  PASS  exposes csharp12 feature inventory keys
+  PASS  defines parse/intellisense/compile flags for each feature
+  PASS  marks interceptors as explicit unsupported compile path
+
+RobloxValidityProvider
+  PASS  uses bundled snapshot when cached profile is missing
+  PASS  ignores invalid cached profile and falls back to snapshot
+  PASS  prefers valid cached profile when it is newer than snapshot
+
+RobloxValidityLiveUpdater
+  PASS  prefers newer validated live profile over snapshot
+  PASS  falls back cleanly when live fetch fails
+
+EditorTextUtils
+  PASS  dedents a closing brace by one indent level
+  PASS  dedents when there are multiple indent levels
+  PASS  dedents one level for tab indentation
+  PASS  dedents fallback indentation from line end
+  PASS  does nothing when line has other tokens
+  PASS  does nothing when previous char is not a closing brace
+  PASS  dedents a closing brace after a newline
+  PASS  does not over-dedent method closing brace at class scope
+  PASS  computes auto-indent after newline
+  PASS  carries forward leading whitespace after newline
+  PASS  auto-indents blank lines based on scope depth
+  PASS  computes auto-indent when newline replaces a selection
+  PASS  does not auto-indent when only the cursor moves
+  PASS  does not auto-indent when cursor crosses an existing newline
+  PASS  does not auto-indent after newline when previous line does not open scope
+  PASS  tops up indentation when newline insert already includes partial indent
+  PASS  does not duplicate indentation when newline insert already matches context
+  PASS  suppresses auto-trigger when current line is whitespace only
+  PASS  suppresses auto-trigger after trailing space without identifier
+  PASS  allows auto-trigger while typing an identifier
+  PASS  allows auto-trigger for member identifier after dot
+  PASS  suppresses auto-trigger immediately after dot
+  PASS  extracts completion label from completion object
+  PASS  extracts completion label from raw string
+  PASS  returns nil when completion item has no label
+  PASS  resolves active completion label by selected index
+  PASS  falls back to first completion label when selected index is invalid
+  PASS  resolves completion label from string entries
+  PASS  advances completion selection down and wraps
+  PASS  moves completion selection up and wraps
+  PASS  returns nil completion selection when list is empty
+  PASS  maps completion kind to method icon
+  PASS  maps variable aliases to local variable icon
+  PASS  maps service kind to a visible icon
+  PASS  maps enum item aliases to enum item icon
+  PASS  maps generic type completions to class icon
+  PASS  maps method kind to hover badge text
+  PASS  uses symbolic icons for property and variable hover badges
+  PASS  uses fallback hover badge text for unknown kind
+  PASS  clamps completion viewport rows
+  PASS  suppresses completion info without recent mouse movement
+  PASS  shows completion info after recent mouse movement
+  PASS  suppresses completion info when mouse moved before popup shown
+  PASS  shows completion info when mouse moved after popup shown
+  PASS  suppresses hover while completion list is visible
+  PASS  allows hover when completion list is hidden
+  PASS  suppresses hover when editor is not focused
+  PASS  suppresses hover briefly after typing
+  PASS  allows hover after typing suppression window
+  PASS  computes completion replacement range for identifier suffix
+  PASS  computes empty replacement range right after dot
+  PASS  clamps completion replacement range for invalid cursor
+  PASS  uses anchored completion replacement range when cursor stays in anchor
+  PASS  prefers current caret when stale active snapshot disagrees
+  PASS  falls back to cursor-derived range when cursor drifts away from anchor
+  PASS  prefers active caret range when click drift moves cursor outside anchor
+  PASS  still falls back when both current and active cursors are outside anchor
+  PASS  falls back to cursor-derived range when anchored range is invalid
+  PASS  falls back to cursor-derived range when anchored range is out of bounds
+  PASS  ctrl-delete removes a single word segment
+  PASS  ctrl-delete treats punctuation as its own segment
+  PASS  ctrl-delete treats each punctuation character as its own token
+  PASS  ctrl-delete at opening quote deletes only the opening quote boundary
+  PASS  ctrl-delete at member/index boundary deletes only dot punctuation
+  PASS  ctrl-delete removes only contiguous horizontal whitespace
+  PASS  ctrl-delete does not cross newline boundaries
+  PASS  ctrl-delete on newline boundary remains no-op
+  PASS  ctrl-delete helper still prioritizes active selection deletion
+  PASS  ctrl-delete helper returns unchanged state when nothing is deleted
+  PASS  ctrl-delete helper preserves quote-adjacent token boundary behavior
+  PASS  ctrl-backspace removes a single previous word segment
+  PASS  ctrl-backspace treats punctuation as its own segment
+  PASS  ctrl-backspace at closing bracket deletes only bracket boundary
+  PASS  ctrl-backspace at member/index boundary deletes only dot punctuation
+  PASS  ctrl-backspace helper deletes selected range as one edit
+  PASS  ctrl-backspace helper keeps newline boundary guard after refactor
+  PASS  ctrl-backspace removes the previous identifier token
+  PASS  ctrl-delete removes the next identifier token
+  PASS  ctrl-backspace on snake_case removes the whole identifier token
+  PASS  ctrl-backspace at end of GetService statement removes only trailing semicolon
+  PASS  ctrl-backspace removes chained member call tokens one segment at a time
+  PASS  detects ctrl+z and ctrl+y as undo/redo shortcuts
+  PASS  does not treat other key chords as undo/redo shortcuts
+  PASS  detects word-delete shortcuts for ctrl+backspace and ctrl/alt+delete
+  PASS  does not detect word-delete shortcut for plain backspace/delete
+  PASS  keeps shortcut modifier down true when live state is true even if reported is false
+  PASS  keeps shortcut modifier down false when reported and live are false
+  PASS  does not trust stale cached modifier when reported and live are false
+  PASS  falls back to cached modifier only when reported state is unavailable
+  PASS  keeps reported true shortcut modifier down regardless of live/cache
+  PASS  sanitizes selection for ctrl-delete word shortcut
+  PASS  sanitizes selection for ctrl-backspace word shortcut
+  PASS  keeps selection for non-word-delete shortcuts
+  PASS  prefers sanitized selection for shortcut delete detection
+  PASS  prefers raw selection for non-shortcut delete detection
+  PASS  falls back to sanitized selection when raw selection is unavailable
+  PASS  deduplicates pending word-delete snapshot across different sources inside dedupe window
+  PASS  does not deduplicate pending word-delete snapshot from same source
+  PASS  does not deduplicate pending word-delete snapshot outside dedupe window
+  PASS  treats matching selection splice as active selection
+  PASS  treats mismatched selection splice as stale selection
+  PASS  ignores missing or collapsed selection
+  PASS  repairs suspicious newline-spanning deletes without selection
+  PASS  repairs multi-char non-newline backspace delete without shortcut confirmation
+  PASS  repairs punctuation-rich backspace delete without shortcut confirmation
+  PASS  repairs suspicious multi-char non-newline delete without shortcut confirmation
+  PASS  does not repair normal single-char delete or selection deletes
+  PASS  repairs shortcut delete when native path only removed one character
+  PASS  does not repair shortcut backspace when native path already removed a token
+  PASS  repairs shortcut backspace when native path removes chained expression tails
+  PASS  repairs shortcut delete when native path removed a whole expression tail
+  PASS  repairs shortcut delete when native path already removed a token
+  PASS  does not repair shortcut delete when native path removed only semicolon
+  PASS  does not repair shortcut delete when there was an active selection
+  PASS  infers backspace direction when cursor moves left
+  PASS  infers delete direction when cursor stays or moves right
+  PASS  defaults delete direction to backward when cursors are invalid
+  PASS  derives backward repair cursor from removed splice length
+  PASS  derives forward repair cursor from splice start
+  PASS  returns nil repair cursor for invalid splice start
+  PASS  consumes enter completion key when completions are available
+  PASS  does not consume completion key when completions are unavailable
+  PASS  consumes tab completion key when completion popup is visible
+  PASS  resolves cursor column from x using measured widths
+  PASS  resolves cursor column with tab-aware measured widths
+  PASS  selects string segment on smart double-click
+  PASS  expands smart double-click inside string to full line
+  PASS  does not apply smart double-click selection on punctuation
+  PASS  selects left identifier when cursor is inside game in member chain
+  PASS  selects method identifier when cursor is inside GetService
+  PASS  expands to full line when expand mode is requested
+  PASS  expands method declaration click to full line in expand mode
+  PASS  selects string inner text Workspace without quotes
+  PASS  selects identifier before index accessor
+  PASS  does not select token when cursor lands on dot separator
+  PASS  does not force identifier expansion when cursor lands on interpolated string quote boundary
+  PASS  selects identifier token inside interpolation expression
+  PASS  respects custom stop characters at quote boundary
+  PASS  suppresses duplicate primary mouse down events within age and cursor thresholds
+  PASS  does not suppress primary mouse down events outside dedupe age threshold
+  PASS  does not suppress primary mouse down events beyond cursor delta threshold
+  PASS  treats slower repeat click as valid smart double-click within relaxed window
+  PASS  does not treat delayed repeat click as smart double-click outside relaxed window
+  PASS  expands double-click cycle when third click stays within expanded cursor delta
+  PASS  does not expand double-click cycle when third click cursor delta is too large
+  PASS  promotes slow third click to expand cycle when prior double-click exists
+  PASS  resolves second click in streak to word mode
+  PASS  ignores duplicate source event after first click
+  PASS  ignores duplicate source event after second click
+  PASS  resolves third click in streak to line mode inside burst window
+  PASS  does not promote word to line when third click drifts to another token
+  PASS  resets click streak when slower third click exceeds line window
+  PASS  resets click streak after line-mode click before starting new sequence
+  PASS  requires cadence tighter than grace window for second click
+  PASS  does not apply second-click grace when cursor drift is large
+  PASS  allows slower second click inside grace window even when base window is tighter
+  PASS  accepts semi-slow second click inside widened double-click window
+  PASS  accepts second click after line jump when cursor delta stays in max threshold
+  PASS  does not promote to line when click burst exceeds short window
+  PASS  promotes to line when click burst stays inside short window
+  PASS  does not promote slow third click when cycle is already expanded
+  PASS  does not promote slow third click while cycle apply is still pending
+  PASS  resolves line mode selection range including newline
+  PASS  expands drag selection by full lines in line mode
+  PASS  expands drag selection by full words in word mode
+  PASS  suppresses caret hover cursor when selection is active
+  PASS  resolves hover cursor from active selection start
+  PASS  does not resolve hover cursor from collapsed selection
+  PASS  allows caret hover cursor when selection is collapsed
+  PASS  rejects preferred selection cursor when text length is zero
+  PASS  validates smart selection cycle id before deferred apply
+  PASS  rejects stale character normalization token
+  PASS  accepts matching character normalization token
+  PASS  rejects cached caret hover sample when selection is active
+  PASS  allows cached non-caret hover sample when selection is active
+  PASS  normalizes character click when native selection is active
+  PASS  does not normalize character click when shift is held
+  PASS  does not normalize character click when selection is collapsed
+  PASS  resolves shift-click anchor from active selection start
+  PASS  prefers persisted shift-click anchor over active selection
+  PASS  uses current cursor as shift-click anchor when no active selection
+  PASS  prefers pre-click caret as shift-click anchor when provided
+  PASS  resolves shift-click selection endpoints with clamped cursors
+  PASS  returns nil shift-click endpoints when inputs are invalid
+  PASS  runs native retokenize fallback only inside recency window
+  PASS  does not run native retokenize fallback when outside recency window
+  PASS  doeTest run failed
+stacktrace:
+[C] function error
+./plugin/tests/run.lua:110
+s not run native retokenize fallback when cursor delta exceeds threshold
+  PASS  prefers live cursor for selection when valid
+  PASS  falls back to initial cursor when live cursor is invalid
+  PASS  prefers initial cursor when explicitly requested
+  PASS  falls back to live cursor when initial preference is invalid
+  PASS  retokenize cursor prefers later valid candidate inside selection
+  PASS  retokenize cursor keeps explicit click identifier over earlier method-bias candidate
+  PASS  retokenize cursor honors sparse preferred cursor list after leading nil
+  PASS  retokenize search range expands to line when preferred cursor is outside native selection
+  PASS  retokenize cursor resolves to an identifier token when candidate lands on punctuation
+  PASS  retokenize post-processing prefers right-side member when candidate is on dot separator
+  PASS  finds method identifier cursor in call range
+  PASS  returns nil method cursor when range has no call expression
+
+ScriptManager
+  PASS  builds namespaced template for known context
+  PASS  falls back to root namespace for Other context
+  PASS  uses explicit namespace override with sanitization
+  PASS  keeps class-only template when no namespace can be resolved
+
+ProjectViewStatus
+  PASS  returns error icon when errors are present
+  PASS  returns ok icon when explicit no-error count is present
+  PASS  returns ok icon when status is explicitly ok
+  PASS  returns nil for unknown status
+  PASS  prioritizes errors over ok flags
+
+---
+453 passed, 14 failed
+
+Failures:
+  parses class primary constructor parameters: ./plugin/tests/ParserTests.lua:332: Expected table, got nil
+  parses collection expression literal: ./plugin/tests/ParserTests.lua:342: Expected collection_expression, got unknown
+  parses lambda default parameter values: ./plugin/tests/ParserTests.lua:349: Expected lambda, got unknown
+  parses ref readonly parameter modifiers: ./plugin/tests/ParserTests.lua:359: Expected ref_readonly, got nil
+  parses using alias and resolves alias type names: ./plugin/tests/ParserTests.lua:366: Expected table, got nil
+  lowers primary constructor parameters into ctor and fields: ./plugin/tests/LowererTests.lua:151: Expected non-nil value
+  lowers collection expressions to array literals: ./plugin/tests/LowererTests.lua:162: Expected array_literal, got identifier
+  lowers lambda default parameters to nil guards: ./plugin/tests/LowererTests.lua:169: Expected function_expr, got identifier
+  emits primary constructor parameters in constructor helper: ./plugin/tests/EmitterTests.lua:150: Expected string to contain 'function Foo.new(health)'
+  emits collection expressions as table literals: ./plugin/tests/EmitterTests.lua:156: Expected string to contain 'local xs = {1, 2, 3}'
+  emits lambda default parameter nil guards: ./plugin/tests/EmitterTests.lua:161: Expected string to contain 'if (x == nil) then'
+  emits unsupported compile diagnostic for interceptors preview syntax: ./plugin/tests/IntelliSenseTests.lua:608: Expected non-nil value
+  emits unsupported compile diagnostic for Experimental attribute: ./plugin/tests/IntelliSenseTests.lua:624: Expected non-nil value
+  emits unsupported compile diagnostic for ref readonly semantics: ./plugin/tests/IntelliSenseTests.lua:640: Expected non-nil value

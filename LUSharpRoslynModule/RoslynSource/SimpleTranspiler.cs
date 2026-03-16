@@ -498,14 +498,18 @@ public class SimpleTranspiler
         for (int m = 0; m < moduleCount; m++)
         {
             string modName = modules[m];
-            result = result + "local _" + modName + " = require(script.Parent." + modName + ")\n";
+            // Use deferred lazy proxy to avoid circular require() errors
+            result = result + "local _" + modName + "\n";
 
             int typeSlotBase = m * 32;
             int typeCount = typeCounts[m];
             for (int t = 0; t < typeCount; t++)
             {
                 string typeName = types[typeSlotBase + t];
-                result = result + "local " + typeName + " = _" + modName + "." + typeName + "\n";
+                result = result + "local " + typeName + " = setmetatable({}, {__index = function(_, k)\n";
+                result = result + "\tif not _" + modName + " then _" + modName + " = require(script.Parent." + modName + ") end\n";
+                result = result + "\treturn _" + modName + "." + typeName + "[k]\n";
+                result = result + "end})\n";
             }
         }
         result = result + "\n";

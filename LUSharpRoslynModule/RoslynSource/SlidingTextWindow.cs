@@ -40,13 +40,6 @@ public struct SlidingTextWindow
         return Position >= _textEnd;
     }
 
-    public char PeekChar()
-    {
-        if (Position >= _textEnd)
-            return InvalidCharacter;
-        return _text[Position];
-    }
-
     public char PeekChar(int delta)
     {
         int pos = Position + delta;
@@ -76,7 +69,7 @@ public struct SlidingTextWindow
 
     public bool TryAdvance(char c)
     {
-        if (PeekChar() == c)
+        if (PeekChar(0) == c)
         {
             AdvanceChar();
             return true;
@@ -99,7 +92,7 @@ public struct SlidingTextWindow
 
     public int GetNewLineWidth()
     {
-        char c = PeekChar();
+        char c = PeekChar(0);
         if (c == '\r')
         {
             if (PeekChar(1) == '\n')
