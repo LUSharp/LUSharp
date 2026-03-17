@@ -32,8 +32,15 @@ MODULES = [
     ("SimpleTranspiler",  os.path.join(LUAU_OUT, "SimpleTranspiler.lua")),
 ]
 
-# SyntaxToken.cs as embedded test input
-CSHARP_SOURCE_PATH = os.path.join(REPO, "LUSharpRoslynModule", "RoslynSource", "SyntaxToken.cs")
+# All 13 C# source files as test input
+CSHARP_FILES = [
+    "SyntaxToken.cs", "SyntaxNode.cs", "SyntaxKind.cs", "SyntaxFacts.cs",
+    "SlidingTextWindow.cs", "SimpleTokenizer.cs", "SimpleParser.cs",
+    "DeclarationNodes.cs", "ExpressionNodes.cs", "StatementNodes.cs",
+    "SyntaxWalker.cs", "SimpleEmitter.cs", "SimpleTranspiler.cs",
+]
+CSHARP_SOURCE_DIR = os.path.join(REPO, "LUSharpRoslynModule", "RoslynSource")
+REFERENCE_DIR = os.path.join(REPO, "LUSharpRoslynModule", "RoslynSource", "luau-out")
 
 
 def lua_long_string_level(s):
@@ -48,10 +55,6 @@ def lua_long_string_level(s):
 
 
 def main():
-    # Read the C# test source
-    with open(CSHARP_SOURCE_PATH, "r", encoding="utf-8") as f:
-        csharp_source = f.read()
-
     out = []
 
     # ── Header ──
@@ -147,7 +150,7 @@ def main():
 
     # ── Test harness ──
     out.append("-- " + "=" * 60)
-    out.append("-- Self-hosting test: transpile SyntaxToken.cs")
+    out.append("-- Self-hosting test: transpile all 13 files and compare")
     out.append("-- " + "=" * 60)
     out.append("")
     out.append('print("=== LUSharp Self-Hosting Bundle Test ===")')
@@ -167,37 +170,91 @@ def main():
     out.append('print("")')
     out.append("")
 
-    # Embed C# source
-    level = lua_long_string_level(csharp_source)
-    eq = "=" * level
-    out.append("-- Embedded C# test source: SyntaxToken.cs")
-    out.append("local testSource = [{}[".format(eq))
-    out.append(csharp_source.rstrip())
-    out.append("]{}]".format(eq))
-    out.append("")
+    # Embed all 13 C# source files
+    out.append("-- Embedded C# source files")
+    out.append("local csharpSources = {}")
+    out.append("local csharpNames = {}")
+    out.append("local fileCount = {}".format(len(CSHARP_FILES)))
+    for i, cs_file in enumerate(CSHARP_FILES):
+        cs_path = os.path.join(CSHARP_SOURCE_DIR, cs_file)
+        with open(cs_path, "r", encoding="utf-8") as f:
+            cs_src = f.read()
+        level = lua_long_string_level(cs_src)
+        eq = "=" * level
+        out.append('csharpNames[{}] = "{}"'.format(i + 1, cs_file))
+        out.append("csharpSources[{}] = [{}[".format(i + 1, eq))
+        out.append(cs_src.rstrip())
+        out.append("]{}]".format(eq))
+        out.append("")
 
-    # Run transpiler
-    out.append("-- Create transpiler and transpile the test source")
+    # Embed all 13 reference Luau outputs
+    out.append("-- Reference Luau outputs (from C# transpiler)")
+    out.append("local references = {}")
+    for i, cs_file in enumerate(CSHARP_FILES):
+        lua_file = cs_file.replace(".cs", ".lua")
+        ref_path = os.path.join(REFERENCE_DIR, lua_file)
+        with open(ref_path, "r", encoding="utf-8") as f:
+            ref_src = f.read()
+        level = lua_long_string_level(ref_src)
+        eq = "=" * level
+        out.append("references[{}] = [{}[".format(i + 1, eq))
+        out.append(ref_src.rstrip())
+        out.append("]{}]".format(eq))
+        out.append("")
+
+    # Run transpiler on all files
     out.append('local transpilerMod = customRequire({ _moduleName = "SimpleTranspiler" })')
     out.append("local SimpleTranspiler = transpilerMod.SimpleTranspiler")
     out.append("")
     out.append('print("Creating SimpleTranspiler instance...")')
     out.append("local t = SimpleTranspiler.new()")
     out.append("")
-    out.append("-- PreScan (single file)")
-    out.append('print("PreScanning SyntaxToken.cs...")')
-    out.append('SimpleTranspiler.PreScan(t, { testSource }, { "SyntaxToken.cs" }, 1)')
+    out.append('print("PreScanning " .. fileCount .. " files...")')
+    out.append("SimpleTranspiler.PreScan(t, csharpSources, csharpNames, fileCount)")
+    out.append('print("TranspileAll...")')
+    out.append("local results = SimpleTranspiler.TranspileAll(t, csharpSources, csharpNames, fileCount)")
+    out.append('print("")')
     out.append("")
-    out.append("-- Transpile")
-    out.append('print("Transpiling SyntaxToken.cs...")')
-    out.append('local result = SimpleTranspiler.Transpile(t, testSource, "SyntaxToken.cs")')
+
+    # Compare results
+    out.append("-- Compare each output with reference")
+    out.append("local pass, fail = 0, 0")
+    out.append("for i = 1, fileCount do")
+    out.append('    local name = csharpNames[i]')
+    out.append('    local luauOut = results[i]')
+    out.append('    local ref = references[i]')
+    out.append('    if luauOut == nil then')
+    out.append('        fail = fail + 1')
+    out.append('        print("  FAIL  " .. name .. " — nil output")')
+    out.append('    else')
+    out.append('        -- Trim trailing whitespace/newlines for comparison')
+    out.append('        local function trim(s) while #s > 0 and (string.byte(s, #s) == 10 or string.byte(s, #s) == 13 or string.byte(s, #s) == 32) do s = string.sub(s, 1, #s - 1) end return s end')
+    out.append('        local a = trim(luauOut)')
+    out.append('        local b = trim(ref)')
+    out.append('        if a == b then')
+    out.append('            pass = pass + 1')
+    out.append('            print("  MATCH " .. name)')
+    out.append('        else')
+    out.append('            fail = fail + 1')
+    out.append('            -- Find first differing line')
+    out.append('            local aLines, bLines = {}, {}')
+    out.append('            for line in (a .. "\\n"):gmatch("([^\\n]*)\\n") do table.insert(aLines, line) end')
+    out.append('            for line in (b .. "\\n"):gmatch("([^\\n]*)\\n") do table.insert(bLines, line) end')
+    out.append('            local firstDiff = "?"')
+    out.append('            for j = 1, math.max(#aLines, #bLines) do')
+    out.append('                if aLines[j] ~= bLines[j] then')
+    out.append('                    firstDiff = "line " .. j .. ":\\n      Luau:  " .. tostring(aLines[j]):sub(1,80) .. "\\n      C#ref: " .. tostring(bLines[j]):sub(1,80)')
+    out.append('                    break')
+    out.append('                end')
+    out.append('            end')
+    out.append('            print("  DIFF  " .. name .. " (" .. #aLines .. " vs " .. #bLines .. " lines) first: " .. firstDiff)')
+    out.append('        end')
+    out.append('    end')
+    out.append("end")
     out.append("")
     out.append('print("")')
-    out.append('print("=== Transpiled Luau Output ===")')
-    out.append('print("")')
-    out.append("print(result)")
-    out.append('print("")')
-    out.append('print("=== Self-hosting test complete! ===")')
+    out.append('print(pass .. "/" .. (pass + fail) .. " files match")')
+    out.append('if pass == fileCount then print("PERFECT MATCH — Luau transpiler produces identical output to C# transpiler!") end')
     out.append("")
 
     # Write

@@ -980,7 +980,8 @@ public class SimpleEmitter : SyntaxWalker
         bool isNumeric = false;
         for (int i = 0; i < node.Members.Length; i++)
         {
-            if (node.Members[i].Value != null)
+            EnumMemberSyntax em = node.Members[i];
+            if (em.Value != null)
             {
                 isNumeric = true;
             }
@@ -992,10 +993,11 @@ public class SimpleEmitter : SyntaxWalker
         int autoValue = 0;
         for (int i = 0; i < node.Members.Length; i++)
         {
-            string memberName = node.Members[i].Name;
-            if (node.Members[i].Value != null)
+            EnumMemberSyntax em = node.Members[i];
+            string memberName = em.Name;
+            if (em.Value != null)
             {
-                string val = EmitExpression(node.Members[i].Value);
+                string val = EmitExpression(em.Value);
                 AppendLine(memberName + " = " + val + ",");
             }
             else if (isNumeric)
@@ -1464,11 +1466,13 @@ public class SimpleEmitter : SyntaxWalker
             for (int j = 0; j < section.Statements.Length; j++)
             {
                 // Skip the trailing break that C# switch sections require
-                if (section.Statements[j].Accept() == "break;")
+                StatementSyntax sj = section.Statements[j];
+                string sjText = sj.Accept();
+                if (sjText == "break;")
                 {
                     continue;
                 }
-                EmitStatement(section.Statements[j]);
+                EmitStatement(sj);
             }
             Dedent();
             isFirst = false;
@@ -2350,9 +2354,8 @@ public class SimpleEmitter : SyntaxWalker
         if (obj == "TimeSpan" && memberName == "Zero") return "0";
         if (obj == "TimeSpan" && memberName == "MaxValue") return "math.huge";
 
-        // Nullable<T>.HasValue / .Value / .GetValueOrDefault
+        // Nullable<T>.HasValue / .GetValueOrDefault (keep .Value as regular property)
         if (memberName == "HasValue") return "(" + obj + " ~= nil)";
-        if (memberName == "Value") return obj;
 
         // this.X / self.X → self.X
         if (obj == "this" || obj == "self")

@@ -350,7 +350,7 @@ public class SimpleParser
 
         Expect(SyntaxKind.OpenBraceToken);
 
-        var members = new EnumMemberSyntax[256];
+        var members = new EnumMemberSyntax[1024];
         int count = 0;
 
         while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
@@ -365,7 +365,7 @@ public class SimpleParser
                 value = ParseExpression();
             }
 
-            if (count < 256)
+            if (count < 1024)
             {
                 members[count] = new EnumMemberSyntax(memberName, value);
                 count++;
