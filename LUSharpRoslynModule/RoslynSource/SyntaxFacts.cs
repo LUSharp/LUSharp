@@ -114,17 +114,9 @@ public static class SyntaxFacts
 
 	internal static bool IsNonAsciiQuotationMark(char ch)
 	{
-		switch (ch)
-		{
-		case '\u2018':
-		case '\u2019':
-			return true;
-		case '\u201C':
-		case '\u201D':
-			return true;
-		default:
-			return false;
-		}
+		if (ch == '\u2018' || ch == '\u2019') return true;
+		if (ch == '\u201C' || ch == '\u201D') return true;
+		return false;
 	}
 
 	// ── SyntaxKind classification ───────────────────────────────────────
@@ -334,36 +326,32 @@ public static class SyntaxFacts
 
 	public static bool IsTypeSyntax(SyntaxKind kind)
 	{
-		switch (kind)
+		if (kind == SyntaxKind.PredefinedType
+			|| kind == SyntaxKind.ArrayType
+			|| kind == SyntaxKind.PointerType
+			|| kind == SyntaxKind.NullableType
+			|| kind == SyntaxKind.TupleType
+			|| kind == SyntaxKind.FunctionPointerType)
 		{
-		case SyntaxKind.PredefinedType:
-		case SyntaxKind.ArrayType:
-		case SyntaxKind.PointerType:
-		case SyntaxKind.NullableType:
-		case SyntaxKind.TupleType:
-		case SyntaxKind.FunctionPointerType:
 			return true;
-		default:
-			return IsName(kind);
 		}
+		return IsName(kind);
 	}
 
 	public static bool IsTypeDeclaration(SyntaxKind kind)
 	{
-		switch (kind)
+		if (kind == SyntaxKind.ClassDeclaration
+			|| kind == SyntaxKind.StructDeclaration
+			|| kind == SyntaxKind.InterfaceDeclaration
+			|| kind == SyntaxKind.EnumDeclaration
+			|| kind == SyntaxKind.DelegateDeclaration
+			|| kind == SyntaxKind.RecordDeclaration
+			|| kind == SyntaxKind.RecordStructDeclaration
+			|| kind == SyntaxKind.ExtensionBlockDeclaration)
 		{
-		case SyntaxKind.ClassDeclaration:
-		case SyntaxKind.StructDeclaration:
-		case SyntaxKind.InterfaceDeclaration:
-		case SyntaxKind.EnumDeclaration:
-		case SyntaxKind.DelegateDeclaration:
-		case SyntaxKind.RecordDeclaration:
-		case SyntaxKind.RecordStructDeclaration:
-		case SyntaxKind.ExtensionBlockDeclaration:
 			return true;
-		default:
-			return false;
 		}
+		return false;
 	}
 
 	public static bool IsNamespaceMemberDeclaration(SyntaxKind kind)
@@ -494,41 +482,37 @@ public static class SyntaxFacts
 
 	public static bool IsOverloadableUnaryOperator(SyntaxKind kind)
 	{
-		switch (kind)
+		if (kind == SyntaxKind.TildeToken
+			|| kind == SyntaxKind.ExclamationToken
+			|| kind == SyntaxKind.MinusToken
+			|| kind == SyntaxKind.PlusToken
+			|| kind == SyntaxKind.MinusMinusToken
+			|| kind == SyntaxKind.PlusPlusToken
+			|| kind == SyntaxKind.TrueKeyword
+			|| kind == SyntaxKind.FalseKeyword)
 		{
-		case SyntaxKind.TildeToken:
-		case SyntaxKind.ExclamationToken:
-		case SyntaxKind.MinusToken:
-		case SyntaxKind.PlusToken:
-		case SyntaxKind.MinusMinusToken:
-		case SyntaxKind.PlusPlusToken:
-		case SyntaxKind.TrueKeyword:
-		case SyntaxKind.FalseKeyword:
 			return true;
-		default:
-			return false;
 		}
+		return false;
 	}
 
 	public static bool IsOverloadableCompoundAssignmentOperator(SyntaxKind kind)
 	{
-		switch (kind)
+		if (kind == SyntaxKind.LessThanLessThanEqualsToken
+			|| kind == SyntaxKind.GreaterThanGreaterThanEqualsToken
+			|| kind == SyntaxKind.SlashEqualsToken
+			|| kind == SyntaxKind.AsteriskEqualsToken
+			|| kind == SyntaxKind.BarEqualsToken
+			|| kind == SyntaxKind.AmpersandEqualsToken
+			|| kind == SyntaxKind.PlusEqualsToken
+			|| kind == SyntaxKind.MinusEqualsToken
+			|| kind == SyntaxKind.CaretEqualsToken
+			|| kind == SyntaxKind.PercentEqualsToken
+			|| kind == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken)
 		{
-		case SyntaxKind.LessThanLessThanEqualsToken:
-		case SyntaxKind.GreaterThanGreaterThanEqualsToken:
-		case SyntaxKind.SlashEqualsToken:
-		case SyntaxKind.AsteriskEqualsToken:
-		case SyntaxKind.BarEqualsToken:
-		case SyntaxKind.AmpersandEqualsToken:
-		case SyntaxKind.PlusEqualsToken:
-		case SyntaxKind.MinusEqualsToken:
-		case SyntaxKind.CaretEqualsToken:
-		case SyntaxKind.PercentEqualsToken:
-		case SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
 			return true;
-		default:
-			return false;
 		}
+		return false;
 	}
 
 	// ── Expression/statement mapping ────────────────────────────────────
