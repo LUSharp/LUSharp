@@ -723,9 +723,10 @@ public class LuauEmitter
         }
         else
         {
-            // Extract base class name from BaseList (if any)
+            // Extract base class name and interface names from BaseList (if any)
             // Skip interfaces — only use concrete/abstract class inheritance
             string? baseClassName = null;
+            var interfaceNames = new List<string>();
             if (classDecl.BaseList != null)
             {
                 foreach (var baseType in classDecl.BaseList.Types)
@@ -755,10 +756,13 @@ public class LuauEmitter
                         isInterface = true;
                     }
 
-                    if (!isInterface && baseTypeName != classDecl.Identifier.Text)
+                    if (isInterface)
+                    {
+                        interfaceNames.Add(baseTypeName);
+                    }
+                    else if (baseTypeName != classDecl.Identifier.Text)
                     {
                         baseClassName = baseTypeName;
-                        break;
                     }
                 }
             }
@@ -768,7 +772,7 @@ public class LuauEmitter
 
             bool isNested = classDecl.Parent is ClassDeclarationSyntax
                 or StructDeclarationSyntax;
-            EmitInstanceClass(classDecl.Identifier.Text, classDecl.Members, isNested: isNested, baseClassName: baseClassName);
+            EmitInstanceClass(classDecl.Identifier.Text, classDecl.Members, isNested: isNested, baseClassName: baseClassName, interfaceNames: interfaceNames);
         }
     }
 
@@ -862,7 +866,7 @@ public class LuauEmitter
     ///   local ClassName = setmetatable({}, {__index = BaseClass})
     ///   ClassName.__index = ClassName
     /// </summary>
-    private void EmitInstanceClass(string className, SyntaxList<MemberDeclarationSyntax> members, bool isNested = false, string? baseClassName = null)
+    private void EmitInstanceClass(string className, SyntaxList<MemberDeclarationSyntax> members, bool isNested = false, string? baseClassName = null, List<string>? interfaceNames = null)
     {
         _currentClassName = className;
         // For BCL runtime base classes, remap _baseClassName to __rt.X so that
@@ -1253,6 +1257,13 @@ public class LuauEmitter
         }
         AppendLine($"{className}.__index = {className}");
         AppendLine($"{className}.__className = \"{className}\"");
+
+        // Emit __interfaces table for isinstance checks on interface types
+        if (interfaceNames != null && interfaceNames.Count > 0)
+        {
+            var ifaceEntries = string.Join(", ", interfaceNames.Select(n => $"[\"{n}\"] = true"));
+            AppendLine($"{className}.__interfaces = {{ {ifaceEntries} }}");
+        }
 
         if (instanceFields.Count > 0)
             AppendLine($"export type {className} = typeof(setmetatable({{}} :: {className}_self, {className}))");
@@ -2588,35 +2599,72 @@ public class LuauEmitter
         _insidePcallLambda = savedInsidePcall;
         _loopDepth = savedLoopDepth;
 
-        // Emit catch clauses
+        // Emit catch clauses with type discrimination for multiple catch blocks
         if (tryStmt.Catches.Count > 0)
         {
-            bool isFirst = true;
-            foreach (var catchClause in tryStmt.Catches)
+            bool hasMultipleCatches = tryStmt.Catches.Count > 1;
+            AppendLine("if not __ok then");
+            _indent++;
+
+            if (hasMultipleCatches)
             {
-                var keyword = isFirst ? "if" : "elseif";
-                isFirst = false;
+                // Multiple catch blocks: emit type-based dispatch
+                bool isFirstCatch = true;
+                foreach (var catchClause in tryStmt.Catches)
+                {
+                    var catchType = catchClause.Declaration?.Type?.ToString() ?? "Exception";
+                    bool isBaseCatch = catchType is "Exception" or "System.Exception";
+                    var keyword = isFirstCatch ? "if" : "elseif";
+                    isFirstCatch = false;
 
-                AppendLine($"{keyword} not __ok then");
-                _indent++;
+                    if (isBaseCatch)
+                    {
+                        // Base Exception catch — matches everything (else branch)
+                        if (keyword == "if")
+                            ; // No condition needed — only catch block
+                        else
+                            AppendLine("else");
+                    }
+                    else
+                    {
+                        // Specific exception type — check isinstance
+                        NeedsRuntime = true;
+                        AppendLine($"{keyword} __rt.isinstance(__pcall_ret, \"{catchType}\") then");
+                    }
+                    _indent++;
 
-                // If the catch has a declaration (e.g., catch (Exception e)),
-                // declare the exception variable as a table with Message property
+                    if (catchClause.Declaration != null)
+                    {
+                        var varName = catchClause.Declaration.Identifier.Text;
+                        if (!string.IsNullOrEmpty(varName))
+                        {
+                            _currentMethodLocals.Add(varName);
+                            AppendLine($"local {varName} = if type(__pcall_ret) == \"table\" then __pcall_ret else {{ Message = tostring(__pcall_ret) }}");
+                        }
+                    }
+
+                    EmitBlock(catchClause.Block);
+                    _indent--;
+                }
+                if (!isFirstCatch) AppendLine("end");
+            }
+            else
+            {
+                // Single catch block — no type discrimination needed
+                var catchClause = tryStmt.Catches[0];
                 if (catchClause.Declaration != null)
                 {
                     var varName = catchClause.Declaration.Identifier.Text;
                     if (!string.IsNullOrEmpty(varName))
                     {
                         _currentMethodLocals.Add(varName);
-                        // Create exception as table with Message for .Message access
-                        // and tostring() for passing as inner exception
-                        AppendLine($"local {varName} = {{ Message = tostring(__pcall_ret) }}");
+                        AppendLine($"local {varName} = if type(__pcall_ret) == \"table\" then __pcall_ret else {{ Message = tostring(__pcall_ret) }}");
                     }
                 }
-
                 EmitBlock(catchClause.Block);
-                _indent--;
             }
+
+            _indent--;
             AppendLine("end");
         }
 
@@ -2624,6 +2672,11 @@ public class LuauEmitter
         if (tryStmt.Finally != null)
         {
             EmitBlock(tryStmt.Finally.Block);
+            // If there are no catch blocks, re-throw the error after finally runs
+            if (tryStmt.Catches.Count == 0)
+            {
+                AppendLine("if not __ok then error(__pcall_ret) end");
+            }
         }
 
         // Forward the try block's return value if it contained return statements
@@ -3341,24 +3394,45 @@ public class LuauEmitter
         {
             var exType = objCreate.Type.ToString();
             var args = objCreate.ArgumentList?.Arguments;
-            if (args != null && args.Value.Count > 0)
+            // Check if this is a custom exception type (defined in this compilation)
+            bool isCustomException = false;
+            if (_model != null)
             {
-                // Try to get a meaningful error message
+                var typeSymbol = _model.GetTypeInfo(objCreate).Type;
+                if (typeSymbol != null)
+                {
+                    // If the type has declaring syntax references, it's user-defined
+                    isCustomException = typeSymbol.DeclaringSyntaxReferences.Length > 0;
+                }
+            }
+            if (isCustomException)
+            {
+                // Custom exception: use full constructor to preserve all fields
+                var emittedArgs = args != null
+                    ? string.Join(", ", args.Value.Select(a => EmitExpression(a.Expression)))
+                    : "";
+                AppendLine(string.IsNullOrEmpty(emittedArgs)
+                    ? $"error({exType}.new())"
+                    : $"error({exType}.new({emittedArgs}))");
+            }
+            else if (args != null && args.Value.Count > 0)
+            {
+                // BCL exception: emit as table with Message
                 var firstArg = args.Value[0].Expression;
                 if (firstArg is InvocationExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.Text: "nameof" } } nameofCall)
                 {
                     var nameofArg = nameofCall.ArgumentList.Arguments[0].Expression.ToString();
-                    AppendLine($"error(\"{exType}: {nameofArg}\")");
+                    AppendLine($"error({{ Message = \"{exType}: {nameofArg}\" }})");
                 }
                 else
                 {
                     var argStr = EmitExpression(firstArg);
-                    AppendLine($"error(\"{exType}: \" .. {argStr})");
+                    AppendLine($"error({{ Message = {argStr} }})");
                 }
             }
             else
             {
-                AppendLine($"error(\"{exType}\")");
+                AppendLine($"error({{ Message = \"{exType}\" }})");
             }
         }
         else if (throwStmt.Expression != null)
@@ -3391,7 +3465,7 @@ public class LuauEmitter
             CastExpressionSyntax cast => EmitCast(cast),
             ConditionalExpressionSyntax conditional => EmitConditional(conditional),
             SwitchExpressionSyntax switchExpr => EmitSwitchExpression(switchExpr),
-            DefaultExpressionSyntax => "nil",
+            DefaultExpressionSyntax defaultExpr => EmitDefaultExpression(defaultExpr),
             PostfixUnaryExpressionSyntax postfix => EmitPostfixUnary(postfix),
             ThrowExpressionSyntax throwExpr => EmitThrowExpression(throwExpr),
             ObjectCreationExpressionSyntax objCreate => EmitObjectCreation(objCreate),
@@ -3436,8 +3510,90 @@ public class LuauEmitter
             SyntaxKind.NumericLiteralExpression => EmitNumericLiteral(literal),
             SyntaxKind.StringLiteralExpression => EmitStringLiteral(literal),
             SyntaxKind.CharacterLiteralExpression => EmitCharLiteral(literal),
-            SyntaxKind.DefaultLiteralExpression => "nil",
+            SyntaxKind.DefaultLiteralExpression => EmitDefaultLiteral(literal),
             _ => literal.Token.Text
+        };
+    }
+
+    /// <summary>
+    /// Emit default(T) — returns the correct zero-value for value types.
+    /// default(int/long/float/double/decimal/byte/short) → 0
+    /// default(bool) → false
+    /// default(char) → 0
+    /// default(T) for reference types → nil
+    /// </summary>
+    private string EmitDefaultExpression(DefaultExpressionSyntax defaultExpr)
+    {
+        if (_model != null)
+        {
+            var typeInfo = _model.GetTypeInfo(defaultExpr);
+            var type = typeInfo.Type ?? typeInfo.ConvertedType;
+            if (type != null)
+                return GetDefaultForType(type);
+        }
+        // Fallback: try to inspect the type syntax textually
+        var typeName = defaultExpr.Type.ToString();
+        return GetDefaultForTypeName(typeName);
+    }
+
+    /// <summary>
+    /// Emit the `default` literal (C# 7.1+) which has no explicit type — infer from context.
+    /// </summary>
+    private string EmitDefaultLiteral(LiteralExpressionSyntax literal)
+    {
+        if (_model != null)
+        {
+            var typeInfo = _model.GetTypeInfo(literal);
+            var type = typeInfo.ConvertedType ?? typeInfo.Type;
+            if (type != null)
+                return GetDefaultForType(type);
+        }
+        return "nil";
+    }
+
+    private static string GetDefaultForType(ITypeSymbol type)
+    {
+        switch (type.SpecialType)
+        {
+            case SpecialType.System_Boolean:
+                return "false";
+            case SpecialType.System_Char:
+            case SpecialType.System_Byte:
+            case SpecialType.System_SByte:
+            case SpecialType.System_Int16:
+            case SpecialType.System_UInt16:
+            case SpecialType.System_Int32:
+            case SpecialType.System_UInt32:
+            case SpecialType.System_Int64:
+            case SpecialType.System_UInt64:
+            case SpecialType.System_Single:
+            case SpecialType.System_Double:
+            case SpecialType.System_Decimal:
+                return "0";
+            default:
+                // Structs are value types and default to a zero-initialized table,
+                // but for simplicity emit nil (same as C# default for unknown value types
+                // in the absence of constructor info). Enums default to 0.
+                if (type.TypeKind == TypeKind.Enum)
+                    return "0";
+                if (type.IsValueType)
+                    return "0"; // most user-defined structs: default to 0
+                return "nil";
+        }
+    }
+
+    private static string GetDefaultForTypeName(string typeName)
+    {
+        return typeName switch
+        {
+            "int" or "uint" or "long" or "ulong" or "short" or "ushort"
+                or "byte" or "sbyte" or "float" or "double" or "decimal"
+                or "char" or "nint" or "nuint"
+                or "Int32" or "UInt32" or "Int64" or "UInt64"
+                or "Int16" or "UInt16" or "Byte" or "SByte"
+                or "Single" or "Double" or "Decimal" or "Char" => "0",
+            "bool" or "Boolean" => "false",
+            _ => "nil"
         };
     }
 
@@ -6441,10 +6597,17 @@ public class LuauEmitter
             return EmitTypeCheck(isLeft, typeName);
         }
 
-        // Handle 'as' expression: x as T → just emit x (type erasure in Luau)
+        // Handle 'as' expression: x as T → type-checked cast that returns nil on failure
         if (binary.Kind() == SyntaxKind.AsExpression)
         {
-            return EmitExpression(binary.Left);
+            var asLeft = EmitExpression(binary.Left);
+            var asTypeName = binary.Right.ToString();
+            // Strip namespace qualifiers
+            if (asTypeName.Contains('.'))
+                asTypeName = asTypeName.Substring(asTypeName.LastIndexOf('.') + 1);
+            NeedsRuntime = true;
+            var check = EmitTypeCheck(asLeft, asTypeName);
+            return $"(if {check} then {asLeft} else nil)";
         }
 
         // Handle null-coalescing early (before emitting children) since it has special syntax
@@ -7378,6 +7541,8 @@ public class LuauEmitter
     {
         return pattern switch
         {
+            ConstantPatternSyntax cp when IsTypeReference(cp.Expression) =>
+                EmitTypeCheck(subject, cp.Expression.ToString()),
             ConstantPatternSyntax cp => $"{subject} == {EmitExpression(cp.Expression)}",
             DeclarationPatternSyntax dp => EmitDeclarationPattern(subject, dp),
             UnaryPatternSyntax np when np.IsKind(SyntaxKind.NotPattern) =>
@@ -7408,13 +7573,39 @@ public class LuauEmitter
         return EmitTypeCheck(subject, typeName);
     }
 
+    /// <summary>
+    /// Check if an expression in a ConstantPatternSyntax is actually a type reference
+    /// (e.g., `is not PatternDog` where PatternDog is a class, not a constant).
+    /// Roslyn sometimes parses `is not Type` with a ConstantPattern instead of TypePattern.
+    /// </summary>
+    private bool IsTypeReference(ExpressionSyntax expr)
+    {
+        if (_model != null)
+        {
+            // Check via semantic model: if the expression resolves to a type symbol, it's a type reference
+            var symbolInfo = _model.GetSymbolInfo(expr);
+            if (symbolInfo.Symbol is INamedTypeSymbol)
+                return true;
+            var typeInfo = _model.GetTypeInfo(expr);
+            if (typeInfo.Type is INamedTypeSymbol nt && nt.TypeKind is TypeKind.Class or TypeKind.Struct or TypeKind.Interface or TypeKind.Enum)
+            {
+                // Only if the expression itself refers to the type, not an instance of the type
+                if (expr is IdentifierNameSyntax && symbolInfo.Symbol == null && symbolInfo.CandidateSymbols.Length == 0)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     private string EmitTypeCheck(string subject, string typeName)
     {
         NeedsRuntime = true;
         return typeName switch
         {
             "string" => $"(type({subject}) == \"string\")",
-            "int" or "float" or "double" or "long" or "decimal" or "number" =>
+            "int" or "long" =>
+                $"(type({subject}) == \"number\" and math.floor({subject}) == {subject})",
+            "float" or "double" or "decimal" or "number" =>
                 $"(type({subject}) == \"number\")",
             "bool" or "boolean" => $"(type({subject}) == \"boolean\")",
             _ => $"(__rt.isinstance({subject}, \"{typeName}\"))"

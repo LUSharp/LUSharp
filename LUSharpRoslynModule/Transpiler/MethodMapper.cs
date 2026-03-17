@@ -283,10 +283,10 @@ public static class MethodMapper
         Register("Int64", "TryParse", (r, a, _) => $"__rt.tryParse_int({a[0]})");
 
         // === Convert ===
-        Register("Convert", "ToInt32", (r, a, _) => $"math.floor(tonumber({a[0]}))");
+        Register("Convert", "ToInt32", (r, a, _) => $"math.round(tonumber({a[0]}))");
         Register("Convert", "ToString", (r, a, _) => $"tostring({a[0]})");
         Register("Convert", "ToDouble", (r, a, _) => $"tonumber({a[0]})");
-        Register("Convert", "ToBoolean", (r, a, _) => $"(not not {a[0]})");
+        Register("Convert", "ToBoolean", (r, a, _) => $"({a[0]} ~= 0 and {a[0]} ~= nil and {a[0]} ~= false)");
         Register("Convert", "ToByte", (r, a, _) => $"math.floor(tonumber({a[0]}))");
 
         // === Int32/Double/Single static ===

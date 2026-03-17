@@ -111,6 +111,9 @@ function RT.isinstance(obj: any, className: string): boolean
 		depth += 1
 		-- Check this class (use normal access so deferred proxies resolve via metamethods)
 		if cls.__className == className then return true end
+		-- Also check __interfaces table for interface isinstance checks
+		local ifaces = rawget(cls, "__interfaces")
+		if ifaces and ifaces[className] then return true end
 		-- Find the parent class: getmetatable(cls).__index
 		local clsMt = getmetatable(cls)
 		if clsMt == nil or type(clsMt) ~= "table" or clsMt == cls then break end
@@ -403,27 +406,81 @@ end
 
 function RT.orderBy(arr: { any }, keyFn: (any) -> any): { any }
 	local result = table.clone(arr)
+	-- Stable sort: attach original indices to preserve insertion order for equal keys
+	local indices = {}
+	for i = 1, #result do
+		indices[result[i]] = i
+	end
 	table.sort(result, function(a, b)
-		return keyFn(a) < keyFn(b)
+		local ka, kb = keyFn(a), keyFn(b)
+		if ka == kb then return indices[a] < indices[b] end
+		return ka < kb
 	end)
+	-- Tag the result with sort keys for ThenBy chaining
+	;(result :: any).__orderKeys = { { fn = keyFn, desc = false } }
 	return result
 end
 
 function RT.orderByDescending(arr: { any }, keyFn: (any) -> any): { any }
 	local result = table.clone(arr)
+	local indices = {}
+	for i = 1, #result do
+		indices[result[i]] = i
+	end
 	table.sort(result, function(a, b)
-		return keyFn(a) > keyFn(b)
+		local ka, kb = keyFn(a), keyFn(b)
+		if ka == kb then return indices[a] < indices[b] end
+		return ka > kb
 	end)
+	;(result :: any).__orderKeys = { { fn = keyFn, desc = true } }
 	return result
 end
 
 function RT.thenBy(arr: { any }, keyFn: (any) -> any): { any }
-	-- ThenBy is a secondary sort; for simplicity, treat as stable sort
-	return RT.orderBy(arr, keyFn)
+	local result = table.clone(arr)
+	local prevKeys = (arr :: any).__orderKeys or {}
+	-- Build composite comparator using all previous keys + new key
+	local allKeys = table.clone(prevKeys)
+	table.insert(allKeys, { fn = keyFn, desc = false })
+	local indices = {}
+	for i = 1, #result do
+		indices[result[i]] = i
+	end
+	table.sort(result, function(a, b)
+		for _, keyDef in allKeys do
+			local ka, kb = keyDef.fn(a), keyDef.fn(b)
+			if ka ~= kb then
+				if keyDef.desc then return ka > kb end
+				return ka < kb
+			end
+		end
+		return indices[a] < indices[b]
+	end)
+	;(result :: any).__orderKeys = allKeys
+	return result
 end
 
 function RT.thenByDescending(arr: { any }, keyFn: (any) -> any): { any }
-	return RT.orderByDescending(arr, keyFn)
+	local result = table.clone(arr)
+	local prevKeys = (arr :: any).__orderKeys or {}
+	local allKeys = table.clone(prevKeys)
+	table.insert(allKeys, { fn = keyFn, desc = true })
+	local indices = {}
+	for i = 1, #result do
+		indices[result[i]] = i
+	end
+	table.sort(result, function(a, b)
+		for _, keyDef in allKeys do
+			local ka, kb = keyDef.fn(a), keyDef.fn(b)
+			if ka ~= kb then
+				if keyDef.desc then return ka > kb end
+				return ka < kb
+			end
+		end
+		return indices[a] < indices[b]
+	end)
+	;(result :: any).__orderKeys = allKeys
+	return result
 end
 
 function RT.groupBy(arr: { any }, keyFn: (any) -> any): { { Key: any, Values: { any } } }
@@ -438,7 +495,11 @@ function RT.groupBy(arr: { any }, keyFn: (any) -> any): { { Key: any, Values: { 
 		table.insert(groups[key] :: { any }, v)
 	end
 	local result = {}
-	local groupMt = { __index = { get_Key = function(self) return self.Key end } }
+	local groupMt = {
+		__index = { get_Key = function(self) return self.Key end },
+		__len = function(self) return #self.Values end,
+		__iter = function(self) return next, self.Values end,
+	}
 	for _, key in order do
 		table.insert(result, setmetatable({ Key = key, Values = groups[key] :: { any } }, groupMt))
 	end

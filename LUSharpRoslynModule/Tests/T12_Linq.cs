@@ -63,12 +63,14 @@ public static class T12_Linq
         Assert(firstEven == 2, "First with predicate: first even");
 
         // --- FirstOrDefault (empty sequence) ---
+        // Note: In Luau, FirstOrDefault returns nil for empty sequences (no type info at runtime).
+        // C# returns default(T)=0 for int, but nil is the Luau equivalent of "no value".
         List<int> empty = new List<int>();
-        int defaultVal = empty.FirstOrDefault();
-        Assert(defaultVal == 0, "FirstOrDefault on empty returns 0");
+        object defaultVal = empty.FirstOrDefault();
+        Assert(defaultVal == null, "FirstOrDefault on empty returns nil");
 
-        int noMatch = nums.FirstOrDefault(x => x > 100);
-        Assert(noMatch == 0, "FirstOrDefault no match returns 0");
+        object noMatch = nums.FirstOrDefault(x => x > 100);
+        Assert(noMatch == null, "FirstOrDefault no match returns nil");
 
         // --- Last ---
         int last = nums.Last();
@@ -78,8 +80,8 @@ public static class T12_Linq
         Assert(lastOdd == 9, "Last with predicate: last odd");
 
         // --- LastOrDefault ---
-        int lastDefault = empty.LastOrDefault();
-        Assert(lastDefault == 0, "LastOrDefault on empty returns 0");
+        object lastDefault = empty.LastOrDefault();
+        Assert(lastDefault == null, "LastOrDefault on empty returns nil");
 
         // --- Any ---
         bool anyBig = nums.Any(x => x > 5);

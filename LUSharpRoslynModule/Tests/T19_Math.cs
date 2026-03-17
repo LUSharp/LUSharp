@@ -118,10 +118,10 @@ public static class T19_Math
         Assert(Math.Truncate(-3.9) == -3, "Math.Truncate: negative toward zero");
         Assert(Math.Truncate(0.5) == 0, "Math.Truncate: 0.5 becomes 0");
 
-        // ── Convert.ToInt32 ──
-        Assert(Convert.ToInt32(3.7) == 3, "Convert.ToInt32: truncates double");
+        // ── Convert.ToInt32 (rounds to nearest, not truncate) ──
+        Assert(Convert.ToInt32(3.7) == 4, "Convert.ToInt32: rounds 3.7 to 4");
         Assert(Convert.ToInt32("42") == 42, "Convert.ToInt32: from string");
-        Assert(Convert.ToInt32(-2.9) == -2, "Convert.ToInt32: negative truncates toward zero");
+        Assert(Convert.ToInt32(-2.9) == -3, "Convert.ToInt32: rounds -2.9 to -3");
 
         // ── Convert.ToString ──
         Assert(Convert.ToString(123) == "123", "Convert.ToString: int");
