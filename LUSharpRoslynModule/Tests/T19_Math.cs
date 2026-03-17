@@ -1,3 +1,5 @@
+using System;
+
 namespace LUSharpTests;
 
 public static class T19_Math

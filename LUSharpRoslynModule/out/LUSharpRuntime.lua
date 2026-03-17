@@ -438,8 +438,9 @@ function RT.groupBy(arr: { any }, keyFn: (any) -> any): { { Key: any, Values: { 
 		table.insert(groups[key] :: { any }, v)
 	end
 	local result = {}
+	local groupMt = { __index = { get_Key = function(self) return self.Key end } }
 	for _, key in order do
-		table.insert(result, { Key = key, Values = groups[key] :: { any } })
+		table.insert(result, setmetatable({ Key = key, Values = groups[key] :: { any } }, groupMt))
 	end
 	return result
 end

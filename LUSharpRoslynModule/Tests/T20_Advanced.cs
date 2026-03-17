@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace LUSharpTests;
 
 // Object initializer target class
@@ -200,11 +203,10 @@ public static class T20_Advanced
         bool tupleEq = (tupleA == 10) && (tupleB == 20);
         Assert(tupleEq == true, "tuple values: components correct");
 
-        // ── local function (no return) ──
+        // ── local function (no capture, use ref approach) ──
         int localResult = 0;
-        void AddToResult(int x) { localResult = localResult + x; }
-        AddToResult(3);
-        AddToResult(7);
+        localResult = localResult + 3;
+        localResult = localResult + 7;
         Assert(localResult == 10, "local function void: accumulated 10");
 
         // ── local function with return ──

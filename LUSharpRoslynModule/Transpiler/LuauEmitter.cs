@@ -3868,6 +3868,14 @@ public class LuauEmitter
             if (typeStr == "Type" && memberName == "EmptyTypes")
                 return "{}";
 
+            // Math.PI → math.pi, Math.E → math.exp(1), Math.Tau → 2*math.pi
+            if (typeStr == "Math")
+            {
+                if (memberName == "PI") return "math.pi";
+                if (memberName == "E") return "2.718281828459045";
+                if (memberName == "Tau") return "(2 * math.pi)";
+            }
+
             // Predefined type constants accessed via .NET type names (Int32.MaxValue, Double.NaN, etc.)
             if (typeStr is "Int32" or "UInt32" or "Int64" or "Int16" or "UInt16" or "Byte" or "SByte")
             {

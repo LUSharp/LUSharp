@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace LUSharpTests;
 
 // Generic class: Box<T>
