@@ -758,13 +758,13 @@ public class SimpleParser
     {
         Expect(SyntaxKind.OpenBraceToken);
 
-        var statements = new StatementSyntax[128];
+        var statements = new StatementSyntax[512];
         int count = 0;
 
         while (!IsAtEnd() && Current().Kind != SyntaxKind.CloseBraceToken)
         {
             var stmt = ParseStatement();
-            if (stmt != null && count < 128)
+            if (stmt != null && count < 512)
             {
                 statements[count] = stmt;
                 count++;
@@ -1105,7 +1105,7 @@ public class SimpleParser
             }
 
             // Parse statements until next case/default/closing brace
-            var statements = new StatementSyntax[128];
+            var statements = new StatementSyntax[512];
             int stmtCount = 0;
 
             while (!IsAtEnd()
@@ -1114,7 +1114,7 @@ public class SimpleParser
                 && Current().Kind != SyntaxKind.CloseBraceToken)
             {
                 var stmt = ParseStatement();
-                if (stmt != null && stmtCount < 128)
+                if (stmt != null && stmtCount < 512)
                 {
                     statements[stmtCount] = stmt;
                     stmtCount++;
