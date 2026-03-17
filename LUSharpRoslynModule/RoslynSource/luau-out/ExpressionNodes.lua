@@ -387,7 +387,7 @@ ElementAccessExpressionSyntax.__index = ElementAccessExpressionSyntax
 export type ElementAccessExpressionSyntax = typeof(setmetatable({} :: ElementAccessExpressionSyntax_self, ElementAccessExpressionSyntax))
 
 function ElementAccessExpressionSyntax.new(expression: ExpressionSyntax, index: ExpressionSyntax): ElementAccessExpressionSyntax
-	local self = setmetatable(ExpressionSyntax.new(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ElementAccessExpression) :: any, ElementAccessExpressionSyntax)
+	local self = setmetatable(ExpressionSyntax.new(SyntaxKind.ElementAccessExpression) :: any, ElementAccessExpressionSyntax)
 	self.Expression = nil :: any
 	self.Index = nil :: any
 	self.Expression = expression
@@ -409,14 +409,14 @@ end
 
 type PostfixUnaryExpressionSyntax_self = {
 	Operand: ExpressionSyntax;
-	OperatorKind: Microsoft.CodeAnalysis.CSharp.SyntaxKind;
+	OperatorKind: SyntaxKind;
 }
 
 local PostfixUnaryExpressionSyntax = setmetatable({}, {__index = ExpressionSyntax})
 PostfixUnaryExpressionSyntax.__index = PostfixUnaryExpressionSyntax
 export type PostfixUnaryExpressionSyntax = typeof(setmetatable({} :: PostfixUnaryExpressionSyntax_self, PostfixUnaryExpressionSyntax))
 
-function PostfixUnaryExpressionSyntax.new(kind: number, operand: ExpressionSyntax, operatorKind: Microsoft.CodeAnalysis.CSharp.SyntaxKind): PostfixUnaryExpressionSyntax
+function PostfixUnaryExpressionSyntax.new(kind: number, operand: ExpressionSyntax, operatorKind: SyntaxKind): PostfixUnaryExpressionSyntax
 	local self = setmetatable(ExpressionSyntax.new(kind) :: any, PostfixUnaryExpressionSyntax)
 	self.Operand = nil :: any
 	self.OperatorKind = nil :: any
@@ -426,7 +426,7 @@ function PostfixUnaryExpressionSyntax.new(kind: number, operand: ExpressionSynta
 end
 
 function PostfixUnaryExpressionSyntax.Accept(self: PostfixUnaryExpressionSyntax): string
-	local opText: string = if self.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--"
+	local opText: string = if self.OperatorKind == SyntaxKind.PlusPlusToken then "++" else "--"
 	return self.Operand:Accept() .. opText
 end
 
@@ -435,7 +435,7 @@ function PostfixUnaryExpressionSyntax.AcceptWalker(self: PostfixUnaryExpressionS
 end
 
 function PostfixUnaryExpressionSyntax.ToDisplayString(self: PostfixUnaryExpressionSyntax): string
-	local opText: string = if self.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--"
+	local opText: string = if self.OperatorKind == SyntaxKind.PlusPlusToken then "++" else "--"
 	return "PostfixUnary(" .. self.Operand:ToDisplayString() .. opText .. ")"
 end
 
@@ -450,7 +450,7 @@ ConditionalExpressionSyntax.__index = ConditionalExpressionSyntax
 export type ConditionalExpressionSyntax = typeof(setmetatable({} :: ConditionalExpressionSyntax_self, ConditionalExpressionSyntax))
 
 function ConditionalExpressionSyntax.new(condition: ExpressionSyntax, whenTrue: ExpressionSyntax, whenFalse: ExpressionSyntax): ConditionalExpressionSyntax
-	local self = setmetatable(ExpressionSyntax.new(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ConditionalExpression) :: any, ConditionalExpressionSyntax)
+	local self = setmetatable(ExpressionSyntax.new(SyntaxKind.ConditionalExpression) :: any, ConditionalExpressionSyntax)
 	self.Condition = nil :: any
 	self.WhenTrue = nil :: any
 	self.WhenFalse = nil :: any

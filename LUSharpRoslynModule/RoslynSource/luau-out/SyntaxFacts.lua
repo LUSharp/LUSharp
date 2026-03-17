@@ -31,14 +31,16 @@ function SyntaxFacts.IsDecDigit(c: number): boolean
 end
 
 function SyntaxFacts.HexValue(c: number): number
-	if c < string.byte("0", 1) or c > string.byte("9", 1) then
-		return (c)
-		nil
-		0
-		xDF
-		nil - 65 + 10
+	if c >= string.byte("0", 1) and c <= string.byte("9", 1) then
+		return c - 48
 	end
-	return c - 48
+	if c >= string.byte("a", 1) and c <= string.byte("f", 1) then
+		return c - 97 + 10
+	end
+	if c >= string.byte("A", 1) and c <= string.byte("F", 1) then
+		return c - 65 + 10
+	end
+	return 0
 end
 
 function SyntaxFacts.BinaryValue(c: number): number
@@ -67,14 +69,13 @@ function SyntaxFacts.IsNewLine(ch: number): boolean
 end
 
 function SyntaxFacts.IsNonAsciiQuotationMark(ch: number): boolean
-	local __switch_val = ch
-	if __switch_val == 8216 or __switch_val == 8217 then
+	if ch == 8216 or ch == 8217 then
 		return true
-	elseif __switch_val == 8220 or __switch_val == 8221 then
-		return true
-	else
-		return false
 	end
+	if ch == 8220 or ch == 8221 then
+		return true
+	end
+	return false
 end
 
 function SyntaxFacts.IsKeywordKind(kind: SyntaxKind): boolean
@@ -106,24 +107,17 @@ function SyntaxFacts.IsAccessibilityModifier(kind: SyntaxKind): boolean
 end
 
 function SyntaxFacts.IsPreprocessorKeyword(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.TrueKeyword or __switch_val == SyntaxKind.FalseKeyword or __switch_val == SyntaxKind.IfKeyword or __switch_val == SyntaxKind.ElseKeyword or __switch_val == SyntaxKind.DefaultKeyword or __switch_val == SyntaxKind.ElifKeyword or __switch_val == SyntaxKind.EndIfKeyword or __switch_val == SyntaxKind.RegionKeyword or __switch_val == SyntaxKind.EndRegionKeyword or __switch_val == SyntaxKind.DefineKeyword or __switch_val == SyntaxKind.UndefKeyword or __switch_val == SyntaxKind.WarningKeyword or __switch_val == SyntaxKind.ErrorKeyword or __switch_val == SyntaxKind.LineKeyword or __switch_val == SyntaxKind.PragmaKeyword or __switch_val == SyntaxKind.HiddenKeyword then
-		SyntaxKind.ChecksumKeyword
-		nil
-	elseif __switch_val == SyntaxKind.DisableKeyword or __switch_val == SyntaxKind.RestoreKeyword or __switch_val == SyntaxKind.ReferenceKeyword or __switch_val == SyntaxKind.LoadKeyword or __switch_val == SyntaxKind.NullableKeyword or __switch_val == SyntaxKind.EnableKeyword or __switch_val == SyntaxKind.WarningsKeyword or __switch_val == SyntaxKind.AnnotationsKeyword then
+	if kind == SyntaxKind.TrueKeyword or kind == SyntaxKind.FalseKeyword or kind == SyntaxKind.IfKeyword or kind == SyntaxKind.ElseKeyword or kind == SyntaxKind.DefaultKeyword or kind == SyntaxKind.ElifKeyword or kind == SyntaxKind.EndIfKeyword or kind == SyntaxKind.RegionKeyword or kind == SyntaxKind.EndRegionKeyword or kind == SyntaxKind.DefineKeyword or kind == SyntaxKind.UndefKeyword or kind == SyntaxKind.WarningKeyword or kind == SyntaxKind.ErrorKeyword or kind == SyntaxKind.LineKeyword or kind == SyntaxKind.PragmaKeyword or kind == SyntaxKind.HiddenKeyword or kind == SyntaxKind.ChecksumKeyword or kind == SyntaxKind.DisableKeyword or kind == SyntaxKind.RestoreKeyword or kind == SyntaxKind.ReferenceKeyword or kind == SyntaxKind.LoadKeyword or kind == SyntaxKind.NullableKeyword or kind == SyntaxKind.EnableKeyword or kind == SyntaxKind.WarningsKeyword or kind == SyntaxKind.AnnotationsKeyword then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsPreprocessorContextualKeyword(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.TrueKeyword or __switch_val == SyntaxKind.FalseKeyword or __switch_val == SyntaxKind.DefaultKeyword or __switch_val == SyntaxKind.HiddenKeyword or __switch_val == SyntaxKind.ChecksumKeyword or __switch_val == SyntaxKind.DisableKeyword or __switch_val == SyntaxKind.RestoreKeyword or __switch_val == SyntaxKind.EnableKeyword or __switch_val == SyntaxKind.WarningsKeyword or __switch_val == SyntaxKind.AnnotationsKeyword then
+	if kind == SyntaxKind.TrueKeyword or kind == SyntaxKind.FalseKeyword or kind == SyntaxKind.DefaultKeyword or kind == SyntaxKind.HiddenKeyword or kind == SyntaxKind.ChecksumKeyword or kind == SyntaxKind.DisableKeyword or kind == SyntaxKind.RestoreKeyword or kind == SyntaxKind.EnableKeyword or kind == SyntaxKind.WarningsKeyword or kind == SyntaxKind.AnnotationsKeyword then
 		return false
-	else
-		return SyntaxFacts.IsPreprocessorKeyword(kind)
 	end
+	return SyntaxFacts.IsPreprocessorKeyword(kind)
 end
 
 function SyntaxFacts.IsPunctuation(kind: SyntaxKind): boolean
@@ -166,12 +160,10 @@ function SyntaxFacts.IsAnyToken(kind: SyntaxKind): boolean
 	if kind >= 8193 and kind < 8539 then
 		return true
 	end
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.InterpolatedStringStartToken or __switch_val == SyntaxKind.InterpolatedStringEndToken or __switch_val == SyntaxKind.InterpolatedVerbatimStringStartToken or __switch_val == SyntaxKind.LoadKeyword or __switch_val == SyntaxKind.NullableKeyword or __switch_val == SyntaxKind.EnableKeyword or __switch_val == SyntaxKind.UnderscoreToken or __switch_val == SyntaxKind.InterpolatedStringToken or __switch_val == SyntaxKind.InterpolatedStringTextToken or __switch_val == SyntaxKind.SingleLineRawStringLiteralToken or __switch_val == SyntaxKind.MultiLineRawStringLiteralToken or __switch_val == SyntaxKind.InterpolatedSingleLineRawStringStartToken or __switch_val == SyntaxKind.InterpolatedMultiLineRawStringStartToken or __switch_val == SyntaxKind.InterpolatedRawStringEndToken then
+	if kind == SyntaxKind.InterpolatedStringStartToken or kind == SyntaxKind.InterpolatedStringEndToken or kind == SyntaxKind.InterpolatedVerbatimStringStartToken or kind == SyntaxKind.LoadKeyword or kind == SyntaxKind.NullableKeyword or kind == SyntaxKind.EnableKeyword or kind == SyntaxKind.UnderscoreToken or kind == SyntaxKind.InterpolatedStringToken or kind == SyntaxKind.InterpolatedStringTextToken or kind == SyntaxKind.SingleLineRawStringLiteralToken or kind == SyntaxKind.MultiLineRawStringLiteralToken or kind == SyntaxKind.InterpolatedSingleLineRawStringStartToken or kind == SyntaxKind.InterpolatedMultiLineRawStringStartToken or kind == SyntaxKind.InterpolatedRawStringEndToken then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsTrivia(kind: SyntaxKind): boolean
@@ -182,15 +174,10 @@ function SyntaxFacts.IsTrivia(kind: SyntaxKind): boolean
 end
 
 function SyntaxFacts.IsPreprocessorDirective(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.IfDirectiveTrivia or __switch_val == SyntaxKind.ElifDirectiveTrivia or __switch_val == SyntaxKind.ElseDirectiveTrivia or __switch_val == SyntaxKind.EndIfDirectiveTrivia or __switch_val == SyntaxKind.RegionDirectiveTrivia or __switch_val == SyntaxKind.EndRegionDirectiveTrivia or __switch_val == SyntaxKind.DefineDirectiveTrivia or __switch_val == SyntaxKind.UndefDirectiveTrivia or __switch_val == SyntaxKind.ErrorDirectiveTrivia or __switch_val == SyntaxKind.WarningDirectiveTrivia or __switch_val == SyntaxKind.LineDirectiveTrivia or __switch_val == SyntaxKind.PragmaWarningDirectiveTrivia or __switch_val == SyntaxKind.PragmaChecksumDirectiveTrivia or __switch_val == SyntaxKind.ReferenceDirectiveTrivia or __switch_val == SyntaxKind.BadDirectiveTrivia or __switch_val == SyntaxKind.ShebangDirectiveTrivia then
-		SyntaxKind.LoadDirectiveTrivia
-		nil
-	elseif __switch_val == SyntaxKind.NullableDirectiveTrivia or __switch_val == SyntaxKind.LineSpanDirectiveTrivia or __switch_val == SyntaxKind.IgnoredDirectiveTrivia then
+	if kind == SyntaxKind.IfDirectiveTrivia or kind == SyntaxKind.ElifDirectiveTrivia or kind == SyntaxKind.ElseDirectiveTrivia or kind == SyntaxKind.EndIfDirectiveTrivia or kind == SyntaxKind.RegionDirectiveTrivia or kind == SyntaxKind.EndRegionDirectiveTrivia or kind == SyntaxKind.DefineDirectiveTrivia or kind == SyntaxKind.UndefDirectiveTrivia or kind == SyntaxKind.ErrorDirectiveTrivia or kind == SyntaxKind.WarningDirectiveTrivia or kind == SyntaxKind.LineDirectiveTrivia or kind == SyntaxKind.PragmaWarningDirectiveTrivia or kind == SyntaxKind.PragmaChecksumDirectiveTrivia or kind == SyntaxKind.ReferenceDirectiveTrivia or kind == SyntaxKind.BadDirectiveTrivia or kind == SyntaxKind.ShebangDirectiveTrivia or kind == SyntaxKind.LoadDirectiveTrivia or kind == SyntaxKind.NullableDirectiveTrivia or kind == SyntaxKind.LineSpanDirectiveTrivia or kind == SyntaxKind.IgnoredDirectiveTrivia then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsName(kind: SyntaxKind): boolean
@@ -208,21 +195,17 @@ function SyntaxFacts.IsPredefinedType(kind: SyntaxKind): boolean
 end
 
 function SyntaxFacts.IsTypeSyntax(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.PredefinedType or __switch_val == SyntaxKind.ArrayType or __switch_val == SyntaxKind.PointerType or __switch_val == SyntaxKind.NullableType or __switch_val == SyntaxKind.TupleType or __switch_val == SyntaxKind.FunctionPointerType then
+	if kind == SyntaxKind.PredefinedType or kind == SyntaxKind.ArrayType or kind == SyntaxKind.PointerType or kind == SyntaxKind.NullableType or kind == SyntaxKind.TupleType or kind == SyntaxKind.FunctionPointerType then
 		return true
-	else
-		return SyntaxFacts.IsName(kind)
 	end
+	return SyntaxFacts.IsName(kind)
 end
 
 function SyntaxFacts.IsTypeDeclaration(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.ClassDeclaration or __switch_val == SyntaxKind.StructDeclaration or __switch_val == SyntaxKind.InterfaceDeclaration or __switch_val == SyntaxKind.EnumDeclaration or __switch_val == SyntaxKind.DelegateDeclaration or __switch_val == SyntaxKind.RecordDeclaration or __switch_val == SyntaxKind.RecordStructDeclaration or __switch_val == SyntaxKind.ExtensionBlockDeclaration then
+	if kind == SyntaxKind.ClassDeclaration or kind == SyntaxKind.StructDeclaration or kind == SyntaxKind.InterfaceDeclaration or kind == SyntaxKind.EnumDeclaration or kind == SyntaxKind.DelegateDeclaration or kind == SyntaxKind.RecordDeclaration or kind == SyntaxKind.RecordStructDeclaration or kind == SyntaxKind.ExtensionBlockDeclaration then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsNamespaceMemberDeclaration(kind: SyntaxKind): boolean
@@ -255,7 +238,34 @@ function SyntaxFacts.IsPrefixUnaryExpressionOperatorToken(token: SyntaxKind): bo
 end
 
 function SyntaxFacts.GetPrefixUnaryExpression(token: SyntaxKind): SyntaxKind
-	return if token == SyntaxKind.PlusToken then SyntaxKind.UnaryPlusExpression elseif token == SyntaxKind.MinusToken then SyntaxKind.UnaryMinusExpression elseif token == SyntaxKind.TildeToken then SyntaxKind.BitwiseNotExpression elseif token == SyntaxKind.ExclamationToken then SyntaxKind.LogicalNotExpression elseif token == SyntaxKind.PlusPlusToken then SyntaxKind.PreIncrementExpression elseif token == SyntaxKind.MinusMinusToken then SyntaxKind.PreDecrementExpression elseif token == SyntaxKind.AmpersandToken then SyntaxKind.AddressOfExpression elseif token == SyntaxKind.AsteriskToken then SyntaxKind.PointerIndirectionExpression elseif token == SyntaxKind.CaretToken then SyntaxKind.IndexExpression else SyntaxKind.None
+	if token == SyntaxKind.PlusToken then
+		return SyntaxKind.UnaryPlusExpression
+	end
+	if token == SyntaxKind.MinusToken then
+		return SyntaxKind.UnaryMinusExpression
+	end
+	if token == SyntaxKind.TildeToken then
+		return SyntaxKind.BitwiseNotExpression
+	end
+	if token == SyntaxKind.ExclamationToken then
+		return SyntaxKind.LogicalNotExpression
+	end
+	if token == SyntaxKind.PlusPlusToken then
+		return SyntaxKind.PreIncrementExpression
+	end
+	if token == SyntaxKind.MinusMinusToken then
+		return SyntaxKind.PreDecrementExpression
+	end
+	if token == SyntaxKind.AmpersandToken then
+		return SyntaxKind.AddressOfExpression
+	end
+	if token == SyntaxKind.AsteriskToken then
+		return SyntaxKind.PointerIndirectionExpression
+	end
+	if token == SyntaxKind.CaretToken then
+		return SyntaxKind.IndexExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsPostfixUnaryExpression(token: SyntaxKind): boolean
@@ -267,7 +277,16 @@ function SyntaxFacts.IsPostfixUnaryExpressionToken(token: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetPostfixUnaryExpression(token: SyntaxKind): SyntaxKind
-	return if token == SyntaxKind.PlusPlusToken then SyntaxKind.PostIncrementExpression elseif token == SyntaxKind.MinusMinusToken then SyntaxKind.PostDecrementExpression elseif token == SyntaxKind.ExclamationToken then SyntaxKind.SuppressNullableWarningExpression else SyntaxKind.None
+	if token == SyntaxKind.PlusPlusToken then
+		return SyntaxKind.PostIncrementExpression
+	end
+	if token == SyntaxKind.MinusMinusToken then
+		return SyntaxKind.PostDecrementExpression
+	end
+	if token == SyntaxKind.ExclamationToken then
+		return SyntaxKind.SuppressNullableWarningExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsIncrementOrDecrementOperator(token: SyntaxKind): boolean
@@ -292,32 +311,24 @@ function SyntaxFacts.IsAnyOverloadableOperator(kind: SyntaxKind): boolean
 end
 
 function SyntaxFacts.IsOverloadableBinaryOperator(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.PercentToken or __switch_val == SyntaxKind.CaretToken or __switch_val == SyntaxKind.AmpersandToken or __switch_val == SyntaxKind.AsteriskToken or __switch_val == SyntaxKind.MinusToken or __switch_val == SyntaxKind.PlusToken or __switch_val == SyntaxKind.BarToken or __switch_val == SyntaxKind.LessThanToken or __switch_val == SyntaxKind.GreaterThanToken or __switch_val == SyntaxKind.SlashToken or __switch_val == SyntaxKind.ExclamationEqualsToken or __switch_val == SyntaxKind.EqualsEqualsToken or __switch_val == SyntaxKind.LessThanEqualsToken or __switch_val == SyntaxKind.LessThanLessThanToken or __switch_val == SyntaxKind.GreaterThanEqualsToken or __switch_val == SyntaxKind.GreaterThanGreaterThanToken then
-		SyntaxKind.GreaterThanGreaterThanGreaterThanToken
-		nil
+	if kind == SyntaxKind.PercentToken or kind == SyntaxKind.CaretToken or kind == SyntaxKind.AmpersandToken or kind == SyntaxKind.AsteriskToken or kind == SyntaxKind.MinusToken or kind == SyntaxKind.PlusToken or kind == SyntaxKind.BarToken or kind == SyntaxKind.LessThanToken or kind == SyntaxKind.GreaterThanToken or kind == SyntaxKind.SlashToken or kind == SyntaxKind.ExclamationEqualsToken or kind == SyntaxKind.EqualsEqualsToken or kind == SyntaxKind.LessThanEqualsToken or kind == SyntaxKind.LessThanLessThanToken or kind == SyntaxKind.GreaterThanEqualsToken or kind == SyntaxKind.GreaterThanGreaterThanToken or kind == SyntaxKind.GreaterThanGreaterThanGreaterThanToken then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsOverloadableUnaryOperator(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.TildeToken or __switch_val == SyntaxKind.ExclamationToken or __switch_val == SyntaxKind.MinusToken or __switch_val == SyntaxKind.PlusToken or __switch_val == SyntaxKind.MinusMinusToken or __switch_val == SyntaxKind.PlusPlusToken or __switch_val == SyntaxKind.TrueKeyword or __switch_val == SyntaxKind.FalseKeyword then
+	if kind == SyntaxKind.TildeToken or kind == SyntaxKind.ExclamationToken or kind == SyntaxKind.MinusToken or kind == SyntaxKind.PlusToken or kind == SyntaxKind.MinusMinusToken or kind == SyntaxKind.PlusPlusToken or kind == SyntaxKind.TrueKeyword or kind == SyntaxKind.FalseKeyword then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsOverloadableCompoundAssignmentOperator(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.LessThanLessThanEqualsToken or __switch_val == SyntaxKind.GreaterThanGreaterThanEqualsToken or __switch_val == SyntaxKind.SlashEqualsToken or __switch_val == SyntaxKind.AsteriskEqualsToken or __switch_val == SyntaxKind.BarEqualsToken or __switch_val == SyntaxKind.AmpersandEqualsToken or __switch_val == SyntaxKind.PlusEqualsToken or __switch_val == SyntaxKind.MinusEqualsToken or __switch_val == SyntaxKind.CaretEqualsToken or __switch_val == SyntaxKind.PercentEqualsToken or __switch_val == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then
+	if kind == SyntaxKind.LessThanLessThanEqualsToken or kind == SyntaxKind.GreaterThanGreaterThanEqualsToken or kind == SyntaxKind.SlashEqualsToken or kind == SyntaxKind.AsteriskEqualsToken or kind == SyntaxKind.BarEqualsToken or kind == SyntaxKind.AmpersandEqualsToken or kind == SyntaxKind.PlusEqualsToken or kind == SyntaxKind.MinusEqualsToken or kind == SyntaxKind.CaretEqualsToken or kind == SyntaxKind.PercentEqualsToken or kind == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsPrimaryFunction(keyword: SyntaxKind): boolean
@@ -325,7 +336,31 @@ function SyntaxFacts.IsPrimaryFunction(keyword: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetPrimaryFunction(keyword: SyntaxKind): SyntaxKind
-	return if keyword == SyntaxKind.MakeRefKeyword then SyntaxKind.MakeRefExpression elseif keyword == SyntaxKind.RefTypeKeyword then SyntaxKind.RefTypeExpression elseif keyword == SyntaxKind.RefValueKeyword then SyntaxKind.RefValueExpression elseif keyword == SyntaxKind.CheckedKeyword then SyntaxKind.CheckedExpression elseif keyword == SyntaxKind.UncheckedKeyword then SyntaxKind.UncheckedExpression elseif keyword == SyntaxKind.DefaultKeyword then SyntaxKind.DefaultExpression elseif keyword == SyntaxKind.TypeOfKeyword then SyntaxKind.TypeOfExpression elseif keyword == SyntaxKind.SizeOfKeyword then SyntaxKind.SizeOfExpression else SyntaxKind.None
+	if keyword == SyntaxKind.MakeRefKeyword then
+		return SyntaxKind.MakeRefExpression
+	end
+	if keyword == SyntaxKind.RefTypeKeyword then
+		return SyntaxKind.RefTypeExpression
+	end
+	if keyword == SyntaxKind.RefValueKeyword then
+		return SyntaxKind.RefValueExpression
+	end
+	if keyword == SyntaxKind.CheckedKeyword then
+		return SyntaxKind.CheckedExpression
+	end
+	if keyword == SyntaxKind.UncheckedKeyword then
+		return SyntaxKind.UncheckedExpression
+	end
+	if keyword == SyntaxKind.DefaultKeyword then
+		return SyntaxKind.DefaultExpression
+	end
+	if keyword == SyntaxKind.TypeOfKeyword then
+		return SyntaxKind.TypeOfExpression
+	end
+	if keyword == SyntaxKind.SizeOfKeyword then
+		return SyntaxKind.SizeOfExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsLiteralExpression(token: SyntaxKind): boolean
@@ -333,7 +368,43 @@ function SyntaxFacts.IsLiteralExpression(token: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetLiteralExpression(token: SyntaxKind): SyntaxKind
-	return if token == SyntaxKind.StringLiteralToken then SyntaxKind.StringLiteralExpression elseif token == SyntaxKind.Utf8StringLiteralToken then SyntaxKind.Utf8StringLiteralExpression elseif token == SyntaxKind.SingleLineRawStringLiteralToken then SyntaxKind.StringLiteralExpression elseif token == SyntaxKind.Utf8SingleLineRawStringLiteralToken then SyntaxKind.Utf8StringLiteralExpression elseif token == SyntaxKind.MultiLineRawStringLiteralToken then SyntaxKind.StringLiteralExpression elseif token == SyntaxKind.Utf8MultiLineRawStringLiteralToken then SyntaxKind.Utf8StringLiteralExpression elseif token == SyntaxKind.CharacterLiteralToken then SyntaxKind.CharacterLiteralExpression elseif token == SyntaxKind.NumericLiteralToken then SyntaxKind.NumericLiteralExpression elseif token == SyntaxKind.NullKeyword then SyntaxKind.NullLiteralExpression elseif token == SyntaxKind.TrueKeyword then SyntaxKind.TrueLiteralExpression elseif token == SyntaxKind.FalseKeyword then SyntaxKind.FalseLiteralExpression elseif token == SyntaxKind.ArgListKeyword then SyntaxKind.ArgListExpression else SyntaxKind.None
+	if token == SyntaxKind.StringLiteralToken then
+		return SyntaxKind.StringLiteralExpression
+	end
+	if token == SyntaxKind.Utf8StringLiteralToken then
+		return SyntaxKind.Utf8StringLiteralExpression
+	end
+	if token == SyntaxKind.SingleLineRawStringLiteralToken then
+		return SyntaxKind.StringLiteralExpression
+	end
+	if token == SyntaxKind.Utf8SingleLineRawStringLiteralToken then
+		return SyntaxKind.Utf8StringLiteralExpression
+	end
+	if token == SyntaxKind.MultiLineRawStringLiteralToken then
+		return SyntaxKind.StringLiteralExpression
+	end
+	if token == SyntaxKind.Utf8MultiLineRawStringLiteralToken then
+		return SyntaxKind.Utf8StringLiteralExpression
+	end
+	if token == SyntaxKind.CharacterLiteralToken then
+		return SyntaxKind.CharacterLiteralExpression
+	end
+	if token == SyntaxKind.NumericLiteralToken then
+		return SyntaxKind.NumericLiteralExpression
+	end
+	if token == SyntaxKind.NullKeyword then
+		return SyntaxKind.NullLiteralExpression
+	end
+	if token == SyntaxKind.TrueKeyword then
+		return SyntaxKind.TrueLiteralExpression
+	end
+	if token == SyntaxKind.FalseKeyword then
+		return SyntaxKind.FalseLiteralExpression
+	end
+	if token == SyntaxKind.ArgListKeyword then
+		return SyntaxKind.ArgListExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsInstanceExpression(token: SyntaxKind): boolean
@@ -341,7 +412,13 @@ function SyntaxFacts.IsInstanceExpression(token: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetInstanceExpression(token: SyntaxKind): SyntaxKind
-	return if token == SyntaxKind.ThisKeyword then SyntaxKind.ThisExpression elseif token == SyntaxKind.BaseKeyword then SyntaxKind.BaseExpression else SyntaxKind.None
+	if token == SyntaxKind.ThisKeyword then
+		return SyntaxKind.ThisExpression
+	end
+	if token == SyntaxKind.BaseKeyword then
+		return SyntaxKind.BaseExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsBinaryExpression(token: SyntaxKind): boolean
@@ -353,7 +430,73 @@ function SyntaxFacts.IsBinaryExpressionOperatorToken(token: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetBinaryExpression(token: SyntaxKind): SyntaxKind
-	return if token == SyntaxKind.QuestionQuestionToken then SyntaxKind.CoalesceExpression elseif token == SyntaxKind.IsKeyword then SyntaxKind.IsExpression elseif token == SyntaxKind.AsKeyword then SyntaxKind.AsExpression elseif token == SyntaxKind.BarToken then SyntaxKind.BitwiseOrExpression elseif token == SyntaxKind.CaretToken then SyntaxKind.ExclusiveOrExpression elseif token == SyntaxKind.AmpersandToken then SyntaxKind.BitwiseAndExpression elseif token == SyntaxKind.EqualsEqualsToken then SyntaxKind.EqualsExpression elseif token == SyntaxKind.ExclamationEqualsToken then SyntaxKind.NotEqualsExpression elseif token == SyntaxKind.LessThanToken then SyntaxKind.LessThanExpression elseif token == SyntaxKind.LessThanEqualsToken then SyntaxKind.LessThanOrEqualExpression elseif token == SyntaxKind.GreaterThanToken then SyntaxKind.GreaterThanExpression elseif token == SyntaxKind.GreaterThanEqualsToken then SyntaxKind.GreaterThanOrEqualExpression elseif token == SyntaxKind.LessThanLessThanToken then SyntaxKind.LeftShiftExpression elseif token == SyntaxKind.GreaterThanGreaterThanToken then SyntaxKind.RightShiftExpression elseif token == SyntaxKind.GreaterThanGreaterThanGreaterThanToken then SyntaxKind.UnsignedRightShiftExpression elseif token == SyntaxKind.PlusToken then SyntaxKind.AddExpression elseif token == SyntaxKind.MinusToken then SyntaxKind.SubtractExpression elseif token == SyntaxKind.AsteriskToken then SyntaxKind.MultiplyExpression elseif token == SyntaxKind.SlashToken then SyntaxKind.DivideExpression elseif token == SyntaxKind.PercentToken then SyntaxKind.ModuloExpression elseif token == SyntaxKind.AmpersandAmpersandToken then SyntaxKind.LogicalAndExpression elseif token == SyntaxKind.BarBarToken then SyntaxKind.LogicalOrExpression else SyntaxKind.None
+	if token == SyntaxKind.QuestionQuestionToken then
+		return SyntaxKind.CoalesceExpression
+	end
+	if token == SyntaxKind.IsKeyword then
+		return SyntaxKind.IsExpression
+	end
+	if token == SyntaxKind.AsKeyword then
+		return SyntaxKind.AsExpression
+	end
+	if token == SyntaxKind.BarToken then
+		return SyntaxKind.BitwiseOrExpression
+	end
+	if token == SyntaxKind.CaretToken then
+		return SyntaxKind.ExclusiveOrExpression
+	end
+	if token == SyntaxKind.AmpersandToken then
+		return SyntaxKind.BitwiseAndExpression
+	end
+	if token == SyntaxKind.EqualsEqualsToken then
+		return SyntaxKind.EqualsExpression
+	end
+	if token == SyntaxKind.ExclamationEqualsToken then
+		return SyntaxKind.NotEqualsExpression
+	end
+	if token == SyntaxKind.LessThanToken then
+		return SyntaxKind.LessThanExpression
+	end
+	if token == SyntaxKind.LessThanEqualsToken then
+		return SyntaxKind.LessThanOrEqualExpression
+	end
+	if token == SyntaxKind.GreaterThanToken then
+		return SyntaxKind.GreaterThanExpression
+	end
+	if token == SyntaxKind.GreaterThanEqualsToken then
+		return SyntaxKind.GreaterThanOrEqualExpression
+	end
+	if token == SyntaxKind.LessThanLessThanToken then
+		return SyntaxKind.LeftShiftExpression
+	end
+	if token == SyntaxKind.GreaterThanGreaterThanToken then
+		return SyntaxKind.RightShiftExpression
+	end
+	if token == SyntaxKind.GreaterThanGreaterThanGreaterThanToken then
+		return SyntaxKind.UnsignedRightShiftExpression
+	end
+	if token == SyntaxKind.PlusToken then
+		return SyntaxKind.AddExpression
+	end
+	if token == SyntaxKind.MinusToken then
+		return SyntaxKind.SubtractExpression
+	end
+	if token == SyntaxKind.AsteriskToken then
+		return SyntaxKind.MultiplyExpression
+	end
+	if token == SyntaxKind.SlashToken then
+		return SyntaxKind.DivideExpression
+	end
+	if token == SyntaxKind.PercentToken then
+		return SyntaxKind.ModuloExpression
+	end
+	if token == SyntaxKind.AmpersandAmpersandToken then
+		return SyntaxKind.LogicalAndExpression
+	end
+	if token == SyntaxKind.BarBarToken then
+		return SyntaxKind.LogicalOrExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsAssignmentExpression(kind: SyntaxKind): boolean
@@ -364,24 +507,82 @@ function SyntaxFacts.IsAssignmentExpression(kind: SyntaxKind): boolean
 end
 
 function SyntaxFacts.IsAssignmentExpressionOperatorToken(token: SyntaxKind): boolean
-	local __switch_val = token
-	if __switch_val == SyntaxKind.EqualsToken or __switch_val == SyntaxKind.LessThanLessThanEqualsToken or __switch_val == SyntaxKind.GreaterThanGreaterThanEqualsToken or __switch_val == SyntaxKind.SlashEqualsToken or __switch_val == SyntaxKind.AsteriskEqualsToken or __switch_val == SyntaxKind.BarEqualsToken or __switch_val == SyntaxKind.AmpersandEqualsToken or __switch_val == SyntaxKind.PlusEqualsToken or __switch_val == SyntaxKind.MinusEqualsToken or __switch_val == SyntaxKind.CaretEqualsToken or __switch_val == SyntaxKind.PercentEqualsToken or __switch_val == SyntaxKind.QuestionQuestionEqualsToken or __switch_val == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then
+	if token == SyntaxKind.EqualsToken or token == SyntaxKind.LessThanLessThanEqualsToken or token == SyntaxKind.GreaterThanGreaterThanEqualsToken or token == SyntaxKind.SlashEqualsToken or token == SyntaxKind.AsteriskEqualsToken or token == SyntaxKind.BarEqualsToken or token == SyntaxKind.AmpersandEqualsToken or token == SyntaxKind.PlusEqualsToken or token == SyntaxKind.MinusEqualsToken or token == SyntaxKind.CaretEqualsToken or token == SyntaxKind.PercentEqualsToken or token == SyntaxKind.QuestionQuestionEqualsToken or token == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.GetAssignmentExpression(token: SyntaxKind): SyntaxKind
-	return if token == SyntaxKind.BarEqualsToken then SyntaxKind.OrAssignmentExpression elseif token == SyntaxKind.AmpersandEqualsToken then SyntaxKind.AndAssignmentExpression elseif token == SyntaxKind.CaretEqualsToken then SyntaxKind.ExclusiveOrAssignmentExpression elseif token == SyntaxKind.LessThanLessThanEqualsToken then SyntaxKind.LeftShiftAssignmentExpression elseif token == SyntaxKind.GreaterThanGreaterThanEqualsToken then SyntaxKind.RightShiftAssignmentExpression elseif token == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then SyntaxKind.UnsignedRightShiftAssignmentExpression elseif token == SyntaxKind.PlusEqualsToken then SyntaxKind.AddAssignmentExpression elseif token == SyntaxKind.MinusEqualsToken then SyntaxKind.SubtractAssignmentExpression elseif token == SyntaxKind.AsteriskEqualsToken then SyntaxKind.MultiplyAssignmentExpression elseif token == SyntaxKind.SlashEqualsToken then SyntaxKind.DivideAssignmentExpression elseif token == SyntaxKind.PercentEqualsToken then SyntaxKind.ModuloAssignmentExpression elseif token == SyntaxKind.EqualsToken then SyntaxKind.SimpleAssignmentExpression elseif token == SyntaxKind.QuestionQuestionEqualsToken then SyntaxKind.CoalesceAssignmentExpression else SyntaxKind.None
+	if token == SyntaxKind.BarEqualsToken then
+		return SyntaxKind.OrAssignmentExpression
+	end
+	if token == SyntaxKind.AmpersandEqualsToken then
+		return SyntaxKind.AndAssignmentExpression
+	end
+	if token == SyntaxKind.CaretEqualsToken then
+		return SyntaxKind.ExclusiveOrAssignmentExpression
+	end
+	if token == SyntaxKind.LessThanLessThanEqualsToken then
+		return SyntaxKind.LeftShiftAssignmentExpression
+	end
+	if token == SyntaxKind.GreaterThanGreaterThanEqualsToken then
+		return SyntaxKind.RightShiftAssignmentExpression
+	end
+	if token == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then
+		return SyntaxKind.UnsignedRightShiftAssignmentExpression
+	end
+	if token == SyntaxKind.PlusEqualsToken then
+		return SyntaxKind.AddAssignmentExpression
+	end
+	if token == SyntaxKind.MinusEqualsToken then
+		return SyntaxKind.SubtractAssignmentExpression
+	end
+	if token == SyntaxKind.AsteriskEqualsToken then
+		return SyntaxKind.MultiplyAssignmentExpression
+	end
+	if token == SyntaxKind.SlashEqualsToken then
+		return SyntaxKind.DivideAssignmentExpression
+	end
+	if token == SyntaxKind.PercentEqualsToken then
+		return SyntaxKind.ModuloAssignmentExpression
+	end
+	if token == SyntaxKind.EqualsToken then
+		return SyntaxKind.SimpleAssignmentExpression
+	end
+	if token == SyntaxKind.QuestionQuestionEqualsToken then
+		return SyntaxKind.CoalesceAssignmentExpression
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.GetCheckStatement(keyword: SyntaxKind): SyntaxKind
-	return if keyword == SyntaxKind.CheckedKeyword then SyntaxKind.CheckedStatement elseif keyword == SyntaxKind.UncheckedKeyword then SyntaxKind.UncheckedStatement else SyntaxKind.None
+	if keyword == SyntaxKind.CheckedKeyword then
+		return SyntaxKind.CheckedStatement
+	end
+	if keyword == SyntaxKind.UncheckedKeyword then
+		return SyntaxKind.UncheckedStatement
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.GetAccessorDeclarationKind(keyword: SyntaxKind): SyntaxKind
-	return if keyword == SyntaxKind.GetKeyword then SyntaxKind.GetAccessorDeclaration elseif keyword == SyntaxKind.SetKeyword then SyntaxKind.SetAccessorDeclaration elseif keyword == SyntaxKind.InitKeyword then SyntaxKind.InitAccessorDeclaration elseif keyword == SyntaxKind.AddKeyword then SyntaxKind.AddAccessorDeclaration elseif keyword == SyntaxKind.RemoveKeyword then SyntaxKind.RemoveAccessorDeclaration else SyntaxKind.None
+	if keyword == SyntaxKind.GetKeyword then
+		return SyntaxKind.GetAccessorDeclaration
+	end
+	if keyword == SyntaxKind.SetKeyword then
+		return SyntaxKind.SetAccessorDeclaration
+	end
+	if keyword == SyntaxKind.InitKeyword then
+		return SyntaxKind.InitAccessorDeclaration
+	end
+	if keyword == SyntaxKind.AddKeyword then
+		return SyntaxKind.AddAccessorDeclaration
+	end
+	if keyword == SyntaxKind.RemoveKeyword then
+		return SyntaxKind.RemoveAccessorDeclaration
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsAccessorDeclaration(kind: SyntaxKind): boolean
@@ -399,7 +600,13 @@ function SyntaxFacts.IsAccessorDeclarationKeyword(keyword: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetSwitchLabelKind(keyword: SyntaxKind): SyntaxKind
-	return if keyword == SyntaxKind.CaseKeyword then SyntaxKind.CaseSwitchLabel elseif keyword == SyntaxKind.DefaultKeyword then SyntaxKind.DefaultSwitchLabel else SyntaxKind.None
+	if keyword == SyntaxKind.CaseKeyword then
+		return SyntaxKind.CaseSwitchLabel
+	end
+	if keyword == SyntaxKind.DefaultKeyword then
+		return SyntaxKind.DefaultSwitchLabel
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.GetBaseTypeDeclarationKind(kind: SyntaxKind): SyntaxKind
@@ -410,30 +617,352 @@ function SyntaxFacts.GetBaseTypeDeclarationKind(kind: SyntaxKind): SyntaxKind
 end
 
 function SyntaxFacts.GetTypeDeclarationKind(kind: SyntaxKind): SyntaxKind
-	return if kind == SyntaxKind.ClassKeyword then SyntaxKind.ClassDeclaration elseif kind == SyntaxKind.StructKeyword then SyntaxKind.StructDeclaration elseif kind == SyntaxKind.InterfaceKeyword then SyntaxKind.InterfaceDeclaration elseif kind == SyntaxKind.RecordKeyword then SyntaxKind.RecordDeclaration else SyntaxKind.None
+	if kind == SyntaxKind.ClassKeyword then
+		return SyntaxKind.ClassDeclaration
+	end
+	if kind == SyntaxKind.StructKeyword then
+		return SyntaxKind.StructDeclaration
+	end
+	if kind == SyntaxKind.InterfaceKeyword then
+		return SyntaxKind.InterfaceDeclaration
+	end
+	if kind == SyntaxKind.RecordKeyword then
+		return SyntaxKind.RecordDeclaration
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.GetKeywordKind(text: string): SyntaxKind
-	return if text == "bool" then SyntaxKind.BoolKeyword elseif text == "byte" then SyntaxKind.ByteKeyword elseif text == "sbyte" then SyntaxKind.SByteKeyword elseif text == "short" then SyntaxKind.ShortKeyword elseif text == "ushort" then SyntaxKind.UShortKeyword elseif text == "int" then SyntaxKind.IntKeyword elseif text == "uint" then SyntaxKind.UIntKeyword elseif text == "long" then SyntaxKind.LongKeyword elseif text == "ulong" then SyntaxKind.ULongKeyword elseif text == "double" then SyntaxKind.DoubleKeyword elseif text == "float" then SyntaxKind.FloatKeyword elseif text == "decimal" then SyntaxKind.DecimalKeyword elseif text == "string" then SyntaxKind.StringKeyword elseif text == "char" then SyntaxKind.CharKeyword elseif text == "void" then SyntaxKind.VoidKeyword elseif text == "object" then SyntaxKind.ObjectKeyword elseif text == "typeof" then SyntaxKind.TypeOfKeyword elseif text == "sizeof" then SyntaxKind.SizeOfKeyword elseif text == "null" then SyntaxKind.NullKeyword elseif text == "true" then SyntaxKind.TrueKeyword elseif text == "false" then SyntaxKind.FalseKeyword elseif text == "if" then SyntaxKind.IfKeyword elseif text == "else" then SyntaxKind.ElseKeyword elseif text == "while" then SyntaxKind.WhileKeyword elseif text == "for" then SyntaxKind.ForKeyword elseif text == "foreach" then SyntaxKind.ForEachKeyword elseif text == "do" then SyntaxKind.DoKeyword elseif text == "switch" then SyntaxKind.SwitchKeyword elseif text == "case" then SyntaxKind.CaseKeyword elseif text == "default" then SyntaxKind.DefaultKeyword elseif text == "lock" then SyntaxKind.LockKeyword elseif text == "try" then SyntaxKind.TryKeyword elseif text == "throw" then SyntaxKind.ThrowKeyword elseif text == "catch" then SyntaxKind.CatchKeyword elseif text == "finally" then SyntaxKind.FinallyKeyword elseif text == "goto" then SyntaxKind.GotoKeyword elseif text == "break" then SyntaxKind.BreakKeyword elseif text == "continue" then SyntaxKind.ContinueKeyword elseif text == "return" then SyntaxKind.ReturnKeyword elseif text == "public" then SyntaxKind.PublicKeyword elseif text == "private" then SyntaxKind.PrivateKeyword elseif text == "internal" then SyntaxKind.InternalKeyword elseif text == "protected" then SyntaxKind.ProtectedKeyword elseif text == "static" then SyntaxKind.StaticKeyword elseif text == "readonly" then SyntaxKind.ReadOnlyKeyword elseif text == "sealed" then SyntaxKind.SealedKeyword elseif text == "const" then SyntaxKind.ConstKeyword elseif text == "fixed" then SyntaxKind.FixedKeyword elseif text == "stackalloc" then SyntaxKind.StackAllocKeyword elseif text == "volatile" then SyntaxKind.VolatileKeyword elseif text == "new" then SyntaxKind.NewKeyword elseif text == "override" then SyntaxKind.OverrideKeyword elseif text == "abstract" then SyntaxKind.AbstractKeyword elseif text == "virtual" then SyntaxKind.VirtualKeyword elseif text == "event" then SyntaxKind.EventKeyword elseif text == "extern" then SyntaxKind.ExternKeyword elseif text == "ref" then SyntaxKind.RefKeyword elseif text == "out" then SyntaxKind.OutKeyword elseif text == "in" then SyntaxKind.InKeyword elseif text == "is" then SyntaxKind.IsKeyword elseif text == "as" then SyntaxKind.AsKeyword elseif text == "params" then SyntaxKind.ParamsKeyword elseif text == "__arglist" then SyntaxKind.ArgListKeyword elseif text == "__makeref" then SyntaxKind.MakeRefKeyword
+	if text == "bool" then
+		return SyntaxKind.BoolKeyword
+	end
+	if text == "byte" then
+		return SyntaxKind.ByteKeyword
+	end
+	if text == "sbyte" then
+		return SyntaxKind.SByteKeyword
+	end
+	if text == "short" then
+		return SyntaxKind.ShortKeyword
+	end
+	if text == "ushort" then
+		return SyntaxKind.UShortKeyword
+	end
+	if text == "int" then
+		return SyntaxKind.IntKeyword
+	end
+	if text == "uint" then
+		return SyntaxKind.UIntKeyword
+	end
+	if text == "long" then
+		return SyntaxKind.LongKeyword
+	end
+	if text == "ulong" then
+		return SyntaxKind.ULongKeyword
+	end
+	if text == "double" then
+		return SyntaxKind.DoubleKeyword
+	end
+	if text == "float" then
+		return SyntaxKind.FloatKeyword
+	end
+	if text == "decimal" then
+		return SyntaxKind.DecimalKeyword
+	end
+	if text == "string" then
+		return SyntaxKind.StringKeyword
+	end
+	if text == "char" then
+		return SyntaxKind.CharKeyword
+	end
+	if text == "void" then
+		return SyntaxKind.VoidKeyword
+	end
+	if text == "object" then
+		return SyntaxKind.ObjectKeyword
+	end
+	if text == "typeof" then
+		return SyntaxKind.TypeOfKeyword
+	end
+	if text == "sizeof" then
+		return SyntaxKind.SizeOfKeyword
+	end
+	if text == "null" then
+		return SyntaxKind.NullKeyword
+	end
+	if text == "true" then
+		return SyntaxKind.TrueKeyword
+	end
+	if text == "false" then
+		return SyntaxKind.FalseKeyword
+	end
+	if text == "if" then
+		return SyntaxKind.IfKeyword
+	end
+	if text == "else" then
+		return SyntaxKind.ElseKeyword
+	end
+	if text == "while" then
+		return SyntaxKind.WhileKeyword
+	end
+	if text == "for" then
+		return SyntaxKind.ForKeyword
+	end
+	if text == "foreach" then
+		return SyntaxKind.ForEachKeyword
+	end
+	if text == "do" then
+		return SyntaxKind.DoKeyword
+	end
+	if text == "switch" then
+		return SyntaxKind.SwitchKeyword
+	end
+	if text == "case" then
+		return SyntaxKind.CaseKeyword
+	end
+	if text == "default" then
+		return SyntaxKind.DefaultKeyword
+	end
+	if text == "lock" then
+		return SyntaxKind.LockKeyword
+	end
+	if text == "try" then
+		return SyntaxKind.TryKeyword
+	end
+	if text == "throw" then
+		return SyntaxKind.ThrowKeyword
+	end
+	if text == "catch" then
+		return SyntaxKind.CatchKeyword
+	end
+	if text == "finally" then
+		return SyntaxKind.FinallyKeyword
+	end
+	if text == "goto" then
+		return SyntaxKind.GotoKeyword
+	end
+	if text == "break" then
+		return SyntaxKind.BreakKeyword
+	end
+	if text == "continue" then
+		return SyntaxKind.ContinueKeyword
+	end
+	if text == "return" then
+		return SyntaxKind.ReturnKeyword
+	end
+	if text == "public" then
+		return SyntaxKind.PublicKeyword
+	end
+	if text == "private" then
+		return SyntaxKind.PrivateKeyword
+	end
+	if text == "internal" then
+		return SyntaxKind.InternalKeyword
+	end
+	if text == "protected" then
+		return SyntaxKind.ProtectedKeyword
+	end
+	if text == "static" then
+		return SyntaxKind.StaticKeyword
+	end
+	if text == "readonly" then
+		return SyntaxKind.ReadOnlyKeyword
+	end
+	if text == "sealed" then
+		return SyntaxKind.SealedKeyword
+	end
+	if text == "const" then
+		return SyntaxKind.ConstKeyword
+	end
+	if text == "fixed" then
+		return SyntaxKind.FixedKeyword
+	end
+	if text == "stackalloc" then
+		return SyntaxKind.StackAllocKeyword
+	end
+	if text == "volatile" then
+		return SyntaxKind.VolatileKeyword
+	end
+	if text == "new" then
+		return SyntaxKind.NewKeyword
+	end
+	if text == "override" then
+		return SyntaxKind.OverrideKeyword
+	end
+	if text == "abstract" then
+		return SyntaxKind.AbstractKeyword
+	end
+	if text == "virtual" then
+		return SyntaxKind.VirtualKeyword
+	end
+	if text == "event" then
+		return SyntaxKind.EventKeyword
+	end
+	if text == "extern" then
+		return SyntaxKind.ExternKeyword
+	end
+	if text == "ref" then
+		return SyntaxKind.RefKeyword
+	end
+	if text == "out" then
+		return SyntaxKind.OutKeyword
+	end
+	if text == "in" then
+		return SyntaxKind.InKeyword
+	end
+	if text == "is" then
+		return SyntaxKind.IsKeyword
+	end
+	if text == "as" then
+		return SyntaxKind.AsKeyword
+	end
+	if text == "params" then
+		return SyntaxKind.ParamsKeyword
+	end
+	if text == "__arglist" then
+		return SyntaxKind.ArgListKeyword
+	end
+	if text == "__makeref" then
+		return SyntaxKind.MakeRefKeyword
+	end
+	if text == "__reftype" then
+		return SyntaxKind.RefTypeKeyword
+	end
+	if text == "__refvalue" then
+		return SyntaxKind.RefValueKeyword
+	end
+	if text == "this" then
+		return SyntaxKind.ThisKeyword
+	end
+	if text == "base" then
+		return SyntaxKind.BaseKeyword
+	end
+	if text == "namespace" then
+		return SyntaxKind.NamespaceKeyword
+	end
+	if text == "using" then
+		return SyntaxKind.UsingKeyword
+	end
+	if text == "class" then
+		return SyntaxKind.ClassKeyword
+	end
+	if text == "struct" then
+		return SyntaxKind.StructKeyword
+	end
+	if text == "interface" then
+		return SyntaxKind.InterfaceKeyword
+	end
+	if text == "enum" then
+		return SyntaxKind.EnumKeyword
+	end
+	if text == "delegate" then
+		return SyntaxKind.DelegateKeyword
+	end
+	if text == "checked" then
+		return SyntaxKind.CheckedKeyword
+	end
+	if text == "unchecked" then
+		return SyntaxKind.UncheckedKeyword
+	end
+	if text == "unsafe" then
+		return SyntaxKind.UnsafeKeyword
+	end
+	if text == "operator" then
+		return SyntaxKind.OperatorKeyword
+	end
+	if text == "implicit" then
+		return SyntaxKind.ImplicitKeyword
+	end
+	if text == "explicit" then
+		return SyntaxKind.ExplicitKeyword
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.GetPreprocessorKeywordKind(text: string): SyntaxKind
-	return if text == "true" then SyntaxKind.TrueKeyword elseif text == "false" then SyntaxKind.FalseKeyword elseif text == "default" then SyntaxKind.DefaultKeyword elseif text == "if" then SyntaxKind.IfKeyword elseif text == "else" then SyntaxKind.ElseKeyword elseif text == "elif" then SyntaxKind.ElifKeyword elseif text == "endif" then SyntaxKind.EndIfKeyword elseif text == "region" then SyntaxKind.RegionKeyword elseif text == "endregion" then SyntaxKind.EndRegionKeyword elseif text == "define" then SyntaxKind.DefineKeyword elseif text == "undef" then SyntaxKind.UndefKeyword elseif text == "warning" then SyntaxKind.WarningKeyword elseif text == "error" then SyntaxKind.ErrorKeyword elseif text == "line" then SyntaxKind.LineKeyword elseif text == "pragma" then SyntaxKind.PragmaKeyword elseif text == "hidden" then SyntaxKind.HiddenKeyword elseif text == "checksum" then SyntaxKind.ChecksumKeyword elseif text == "disable" then SyntaxKind.DisableKeyword elseif text == "restore" then SyntaxKind.RestoreKeyword elseif text == "r" then SyntaxKind.ReferenceKeyword elseif text == "load" then SyntaxKind.LoadKeyword elseif text == "nullable" then SyntaxKind.NullableKeyword elseif text == "enable" then SyntaxKind.EnableKeyword elseif text == "warnings" then SyntaxKind.WarningsKeyword elseif text == "annotations" then SyntaxKind.AnnotationsKeyword else SyntaxKind.None
+	if text == "true" then
+		return SyntaxKind.TrueKeyword
+	end
+	if text == "false" then
+		return SyntaxKind.FalseKeyword
+	end
+	if text == "default" then
+		return SyntaxKind.DefaultKeyword
+	end
+	if text == "if" then
+		return SyntaxKind.IfKeyword
+	end
+	if text == "else" then
+		return SyntaxKind.ElseKeyword
+	end
+	if text == "elif" then
+		return SyntaxKind.ElifKeyword
+	end
+	if text == "endif" then
+		return SyntaxKind.EndIfKeyword
+	end
+	if text == "region" then
+		return SyntaxKind.RegionKeyword
+	end
+	if text == "endregion" then
+		return SyntaxKind.EndRegionKeyword
+	end
+	if text == "define" then
+		return SyntaxKind.DefineKeyword
+	end
+	if text == "undef" then
+		return SyntaxKind.UndefKeyword
+	end
+	if text == "warning" then
+		return SyntaxKind.WarningKeyword
+	end
+	if text == "error" then
+		return SyntaxKind.ErrorKeyword
+	end
+	if text == "line" then
+		return SyntaxKind.LineKeyword
+	end
+	if text == "pragma" then
+		return SyntaxKind.PragmaKeyword
+	end
+	if text == "hidden" then
+		return SyntaxKind.HiddenKeyword
+	end
+	if text == "checksum" then
+		return SyntaxKind.ChecksumKeyword
+	end
+	if text == "disable" then
+		return SyntaxKind.DisableKeyword
+	end
+	if text == "restore" then
+		return SyntaxKind.RestoreKeyword
+	end
+	if text == "r" then
+		return SyntaxKind.ReferenceKeyword
+	end
+	if text == "load" then
+		return SyntaxKind.LoadKeyword
+	end
+	if text == "nullable" then
+		return SyntaxKind.NullableKeyword
+	end
+	if text == "enable" then
+		return SyntaxKind.EnableKeyword
+	end
+	if text == "warnings" then
+		return SyntaxKind.WarningsKeyword
+	end
+	if text == "annotations" then
+		return SyntaxKind.AnnotationsKeyword
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsContextualKeyword(kind: SyntaxKind): boolean
-	local __switch_val = kind
-	if __switch_val == SyntaxKind.YieldKeyword or __switch_val == SyntaxKind.PartialKeyword or __switch_val == SyntaxKind.AliasKeyword or __switch_val == SyntaxKind.GlobalKeyword or __switch_val == SyntaxKind.AssemblyKeyword or __switch_val == SyntaxKind.ModuleKeyword or __switch_val == SyntaxKind.TypeKeyword or __switch_val == SyntaxKind.FieldKeyword or __switch_val == SyntaxKind.MethodKeyword or __switch_val == SyntaxKind.ParamKeyword or __switch_val == SyntaxKind.PropertyKeyword or __switch_val == SyntaxKind.TypeVarKeyword or __switch_val == SyntaxKind.GetKeyword or __switch_val == SyntaxKind.SetKeyword or __switch_val == SyntaxKind.AddKeyword or __switch_val == SyntaxKind.RemoveKeyword then
-		SyntaxKind.WhereKeyword
-		nil
-	elseif __switch_val == SyntaxKind.FromKeyword or __switch_val == SyntaxKind.GroupKeyword or __switch_val == SyntaxKind.JoinKeyword or __switch_val == SyntaxKind.IntoKeyword or __switch_val == SyntaxKind.LetKeyword or __switch_val == SyntaxKind.ByKeyword or __switch_val == SyntaxKind.SelectKeyword or __switch_val == SyntaxKind.OrderByKeyword or __switch_val == SyntaxKind.OnKeyword or __switch_val == SyntaxKind.EqualsKeyword or __switch_val == SyntaxKind.AscendingKeyword or __switch_val == SyntaxKind.DescendingKeyword or __switch_val == SyntaxKind.NameOfKeyword or __switch_val == SyntaxKind.AsyncKeyword or __switch_val == SyntaxKind.AwaitKeyword or __switch_val == SyntaxKind.WhenKeyword then
-		SyntaxKind.OrKeyword
-		nil
-	elseif __switch_val == SyntaxKind.AndKeyword or __switch_val == SyntaxKind.NotKeyword or __switch_val == SyntaxKind.WithKeyword or __switch_val == SyntaxKind.InitKeyword or __switch_val == SyntaxKind.RecordKeyword or __switch_val == SyntaxKind.ManagedKeyword or __switch_val == SyntaxKind.UnmanagedKeyword or __switch_val == SyntaxKind.RequiredKeyword or __switch_val == SyntaxKind.ScopedKeyword or __switch_val == SyntaxKind.FileKeyword or __switch_val == SyntaxKind.AllowsKeyword or __switch_val == SyntaxKind.ExtensionKeyword or __switch_val == SyntaxKind.VarKeyword or __switch_val == SyntaxKind.UnderscoreToken then
+	if kind == SyntaxKind.YieldKeyword or kind == SyntaxKind.PartialKeyword or kind == SyntaxKind.AliasKeyword or kind == SyntaxKind.GlobalKeyword or kind == SyntaxKind.AssemblyKeyword or kind == SyntaxKind.ModuleKeyword or kind == SyntaxKind.TypeKeyword or kind == SyntaxKind.FieldKeyword or kind == SyntaxKind.MethodKeyword or kind == SyntaxKind.ParamKeyword or kind == SyntaxKind.PropertyKeyword or kind == SyntaxKind.TypeVarKeyword or kind == SyntaxKind.GetKeyword or kind == SyntaxKind.SetKeyword or kind == SyntaxKind.AddKeyword or kind == SyntaxKind.RemoveKeyword or kind == SyntaxKind.WhereKeyword or kind == SyntaxKind.FromKeyword or kind == SyntaxKind.GroupKeyword or kind == SyntaxKind.JoinKeyword or kind == SyntaxKind.IntoKeyword or kind == SyntaxKind.LetKeyword or kind == SyntaxKind.ByKeyword or kind == SyntaxKind.SelectKeyword or kind == SyntaxKind.OrderByKeyword or kind == SyntaxKind.OnKeyword or kind == SyntaxKind.EqualsKeyword or kind == SyntaxKind.AscendingKeyword or kind == SyntaxKind.DescendingKeyword or kind == SyntaxKind.NameOfKeyword or kind == SyntaxKind.AsyncKeyword or kind == SyntaxKind.AwaitKeyword or kind == SyntaxKind.WhenKeyword or kind == SyntaxKind.OrKeyword or kind == SyntaxKind.AndKeyword or kind == SyntaxKind.NotKeyword or kind == SyntaxKind.WithKeyword or kind == SyntaxKind.InitKeyword or kind == SyntaxKind.RecordKeyword or kind == SyntaxKind.ManagedKeyword or kind == SyntaxKind.UnmanagedKeyword or kind == SyntaxKind.RequiredKeyword or kind == SyntaxKind.ScopedKeyword or kind == SyntaxKind.FileKeyword or kind == SyntaxKind.AllowsKeyword or kind == SyntaxKind.ExtensionKeyword or kind == SyntaxKind.VarKeyword or kind == SyntaxKind.UnderscoreToken then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsQueryContextualKeyword(kind: SyntaxKind): boolean
@@ -444,107 +973,957 @@ function SyntaxFacts.IsQueryContextualKeyword(kind: SyntaxKind): boolean
 end
 
 function SyntaxFacts.GetContextualKeywordKind(text: string): SyntaxKind
-	return if text == "yield" then SyntaxKind.YieldKeyword elseif text == "partial" then SyntaxKind.PartialKeyword elseif text == "from" then SyntaxKind.FromKeyword elseif text == "group" then SyntaxKind.GroupKeyword elseif text == "join" then SyntaxKind.JoinKeyword elseif text == "into" then SyntaxKind.IntoKeyword elseif text == "let" then SyntaxKind.LetKeyword elseif text == "by" then SyntaxKind.ByKeyword elseif text == "where" then SyntaxKind.WhereKeyword elseif text == "select" then SyntaxKind.SelectKeyword elseif text == "get" then SyntaxKind.GetKeyword elseif text == "set" then SyntaxKind.SetKeyword elseif text == "add" then SyntaxKind.AddKeyword elseif text == "remove" then SyntaxKind.RemoveKeyword elseif text == "orderby" then SyntaxKind.OrderByKeyword elseif text == "alias" then SyntaxKind.AliasKeyword elseif text == "on" then SyntaxKind.OnKeyword elseif text == "equals" then SyntaxKind.EqualsKeyword elseif text == "ascending" then SyntaxKind.AscendingKeyword elseif text == "descending" then SyntaxKind.DescendingKeyword elseif text == "assembly" then SyntaxKind.AssemblyKeyword elseif text == "module" then SyntaxKind.ModuleKeyword elseif text == "type" then SyntaxKind.TypeKeyword elseif text == "field" then SyntaxKind.FieldKeyword elseif text == "method" then SyntaxKind.MethodKeyword elseif text == "param" then SyntaxKind.ParamKeyword elseif text == "property" then SyntaxKind.PropertyKeyword elseif text == "typevar" then SyntaxKind.TypeVarKeyword elseif text == "global" then SyntaxKind.GlobalKeyword elseif text == "async" then SyntaxKind.AsyncKeyword elseif text == "await" then SyntaxKind.AwaitKeyword elseif text == "when" then SyntaxKind.WhenKeyword elseif text == "nameof" then SyntaxKind.NameOfKeyword elseif text == "_" then SyntaxKind.UnderscoreToken elseif text == "var" then SyntaxKind.VarKeyword elseif text == "and" then SyntaxKind.AndKeyword elseif text == "or" then SyntaxKind.OrKeyword elseif text == "not" then SyntaxKind.NotKeyword elseif text == "with" then SyntaxKind.WithKeyword elseif text == "init" then SyntaxKind.InitKeyword elseif text == "record" then SyntaxKind.RecordKeyword elseif text == "managed" then SyntaxKind.ManagedKeyword elseif text == "unmanaged" then SyntaxKind.UnmanagedKeyword elseif text == "required" then SyntaxKind.RequiredKeyword elseif text == "scoped" then SyntaxKind.ScopedKeyword elseif text == "file" then SyntaxKind.FileKeyword elseif text == "allows" then SyntaxKind.AllowsKeyword elseif text == "extension" then SyntaxKind.ExtensionKeyword else SyntaxKind.None
+	if text == "yield" then
+		return SyntaxKind.YieldKeyword
+	end
+	if text == "partial" then
+		return SyntaxKind.PartialKeyword
+	end
+	if text == "from" then
+		return SyntaxKind.FromKeyword
+	end
+	if text == "group" then
+		return SyntaxKind.GroupKeyword
+	end
+	if text == "join" then
+		return SyntaxKind.JoinKeyword
+	end
+	if text == "into" then
+		return SyntaxKind.IntoKeyword
+	end
+	if text == "let" then
+		return SyntaxKind.LetKeyword
+	end
+	if text == "by" then
+		return SyntaxKind.ByKeyword
+	end
+	if text == "where" then
+		return SyntaxKind.WhereKeyword
+	end
+	if text == "select" then
+		return SyntaxKind.SelectKeyword
+	end
+	if text == "get" then
+		return SyntaxKind.GetKeyword
+	end
+	if text == "set" then
+		return SyntaxKind.SetKeyword
+	end
+	if text == "add" then
+		return SyntaxKind.AddKeyword
+	end
+	if text == "remove" then
+		return SyntaxKind.RemoveKeyword
+	end
+	if text == "orderby" then
+		return SyntaxKind.OrderByKeyword
+	end
+	if text == "alias" then
+		return SyntaxKind.AliasKeyword
+	end
+	if text == "on" then
+		return SyntaxKind.OnKeyword
+	end
+	if text == "equals" then
+		return SyntaxKind.EqualsKeyword
+	end
+	if text == "ascending" then
+		return SyntaxKind.AscendingKeyword
+	end
+	if text == "descending" then
+		return SyntaxKind.DescendingKeyword
+	end
+	if text == "assembly" then
+		return SyntaxKind.AssemblyKeyword
+	end
+	if text == "module" then
+		return SyntaxKind.ModuleKeyword
+	end
+	if text == "type" then
+		return SyntaxKind.TypeKeyword
+	end
+	if text == "field" then
+		return SyntaxKind.FieldKeyword
+	end
+	if text == "method" then
+		return SyntaxKind.MethodKeyword
+	end
+	if text == "param" then
+		return SyntaxKind.ParamKeyword
+	end
+	if text == "property" then
+		return SyntaxKind.PropertyKeyword
+	end
+	if text == "typevar" then
+		return SyntaxKind.TypeVarKeyword
+	end
+	if text == "global" then
+		return SyntaxKind.GlobalKeyword
+	end
+	if text == "async" then
+		return SyntaxKind.AsyncKeyword
+	end
+	if text == "await" then
+		return SyntaxKind.AwaitKeyword
+	end
+	if text == "when" then
+		return SyntaxKind.WhenKeyword
+	end
+	if text == "nameof" then
+		return SyntaxKind.NameOfKeyword
+	end
+	if text == "_" then
+		return SyntaxKind.UnderscoreToken
+	end
+	if text == "var" then
+		return SyntaxKind.VarKeyword
+	end
+	if text == "and" then
+		return SyntaxKind.AndKeyword
+	end
+	if text == "or" then
+		return SyntaxKind.OrKeyword
+	end
+	if text == "not" then
+		return SyntaxKind.NotKeyword
+	end
+	if text == "with" then
+		return SyntaxKind.WithKeyword
+	end
+	if text == "init" then
+		return SyntaxKind.InitKeyword
+	end
+	if text == "record" then
+		return SyntaxKind.RecordKeyword
+	end
+	if text == "managed" then
+		return SyntaxKind.ManagedKeyword
+	end
+	if text == "unmanaged" then
+		return SyntaxKind.UnmanagedKeyword
+	end
+	if text == "required" then
+		return SyntaxKind.RequiredKeyword
+	end
+	if text == "scoped" then
+		return SyntaxKind.ScopedKeyword
+	end
+	if text == "file" then
+		return SyntaxKind.FileKeyword
+	end
+	if text == "allows" then
+		return SyntaxKind.AllowsKeyword
+	end
+	if text == "extension" then
+		return SyntaxKind.ExtensionKeyword
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.GetText(kind: SyntaxKind): string
-	return if kind == SyntaxKind.TildeToken then "~" elseif kind == SyntaxKind.ExclamationToken then "!" elseif kind == SyntaxKind.DollarToken then "$" elseif kind == SyntaxKind.PercentToken then "%" elseif kind == SyntaxKind.CaretToken then "^" elseif kind == SyntaxKind.AmpersandToken then "&" elseif kind == SyntaxKind.AsteriskToken then "*" elseif kind == SyntaxKind.OpenParenToken then "(" elseif kind == SyntaxKind.CloseParenToken then ")" elseif kind == SyntaxKind.MinusToken then "-" elseif kind == SyntaxKind.PlusToken then "+" elseif kind == SyntaxKind.EqualsToken then "=" elseif kind == SyntaxKind.OpenBraceToken then "{" elseif kind == SyntaxKind.CloseBraceToken then "}" elseif kind == SyntaxKind.OpenBracketToken then "[" elseif kind == SyntaxKind.CloseBracketToken then "]" elseif kind == SyntaxKind.BarToken then "|" elseif kind == SyntaxKind.BackslashToken then "\\" elseif kind == SyntaxKind.ColonToken then ":" elseif kind == SyntaxKind.SemicolonToken then ";" elseif kind == SyntaxKind.DoubleQuoteToken then "\"" elseif kind == SyntaxKind.SingleQuoteToken then "'" elseif kind == SyntaxKind.LessThanToken then "<" elseif kind == SyntaxKind.CommaToken then "," elseif kind == SyntaxKind.GreaterThanToken then ">" elseif kind == SyntaxKind.DotToken then "." elseif kind == SyntaxKind.QuestionToken then "?" elseif kind == SyntaxKind.HashToken then "#" elseif kind == SyntaxKind.SlashToken then "/" elseif kind == SyntaxKind.SlashGreaterThanToken then "/>" elseif kind == SyntaxKind.LessThanSlashToken then "</" elseif kind == SyntaxKind.XmlCommentStartToken then "<!--" elseif kind == SyntaxKind.XmlCommentEndToken then "-->" elseif kind == SyntaxKind.XmlCDataStartToken then "<![CDATA[" elseif kind == SyntaxKind.XmlCDataEndToken then "]]>" elseif kind == SyntaxKind.XmlProcessingInstructionStartToken then "<?" elseif kind == SyntaxKind.XmlProcessingInstructionEndToken then "?>" elseif kind == SyntaxKind.BarBarToken then "||" elseif kind == SyntaxKind.AmpersandAmpersandToken then "&&" elseif kind == SyntaxKind.MinusMinusToken then "--" elseif kind == SyntaxKind.PlusPlusToken then "++" elseif kind == SyntaxKind.ColonColonToken then "::" elseif kind == SyntaxKind.QuestionQuestionToken then "??" elseif kind == SyntaxKind.MinusGreaterThanToken then "->" elseif kind == SyntaxKind.ExclamationEqualsToken then "!=" elseif kind == SyntaxKind.EqualsEqualsToken then "==" elseif kind == SyntaxKind.EqualsGreaterThanToken then "=>" elseif kind == SyntaxKind.LessThanEqualsToken then "<=" elseif kind == SyntaxKind.LessThanLessThanToken then "<<" elseif kind == SyntaxKind.LessThanLessThanEqualsToken then "<<=" elseif kind == SyntaxKind.GreaterThanEqualsToken then ">=" elseif kind == SyntaxKind.GreaterThanGreaterThanToken then ">>" elseif kind == SyntaxKind.GreaterThanGreaterThanEqualsToken then ">>=" elseif kind == SyntaxKind.GreaterThanGreaterThanGreaterThanToken then ">>>" elseif kind == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then ">>>=" elseif kind == SyntaxKind.SlashEqualsToken then "/=" elseif kind == SyntaxKind.AsteriskEqualsToken then "*=" elseif kind == SyntaxKind.BarEqualsToken then "|=" elseif kind == SyntaxKind.AmpersandEqualsToken then "&=" elseif kind == SyntaxKind.PlusEqualsToken then "+=" elseif kind == SyntaxKind.MinusEqualsToken then "-=" elseif kind == SyntaxKind.CaretEqualsToken then "^=" elseif kind == SyntaxKind.PercentEqualsToken then "%=" elseif kind == SyntaxKind.QuestionQuestionEqualsToken then "??="
+	if kind == SyntaxKind.TildeToken then
+		return "~"
+	end
+	if kind == SyntaxKind.ExclamationToken then
+		return "!"
+	end
+	if kind == SyntaxKind.DollarToken then
+		return "$"
+	end
+	if kind == SyntaxKind.PercentToken then
+		return "%"
+	end
+	if kind == SyntaxKind.CaretToken then
+		return "^"
+	end
+	if kind == SyntaxKind.AmpersandToken then
+		return "&"
+	end
+	if kind == SyntaxKind.AsteriskToken then
+		return "*"
+	end
+	if kind == SyntaxKind.OpenParenToken then
+		return "("
+	end
+	if kind == SyntaxKind.CloseParenToken then
+		return ")"
+	end
+	if kind == SyntaxKind.MinusToken then
+		return "-"
+	end
+	if kind == SyntaxKind.PlusToken then
+		return "+"
+	end
+	if kind == SyntaxKind.EqualsToken then
+		return "="
+	end
+	if kind == SyntaxKind.OpenBraceToken then
+		return "{"
+	end
+	if kind == SyntaxKind.CloseBraceToken then
+		return "}"
+	end
+	if kind == SyntaxKind.OpenBracketToken then
+		return "["
+	end
+	if kind == SyntaxKind.CloseBracketToken then
+		return "]"
+	end
+	if kind == SyntaxKind.BarToken then
+		return "|"
+	end
+	if kind == SyntaxKind.BackslashToken then
+		return "\\"
+	end
+	if kind == SyntaxKind.ColonToken then
+		return ":"
+	end
+	if kind == SyntaxKind.SemicolonToken then
+		return ";"
+	end
+	if kind == SyntaxKind.DoubleQuoteToken then
+		return "\""
+	end
+	if kind == SyntaxKind.SingleQuoteToken then
+		return "'"
+	end
+	if kind == SyntaxKind.LessThanToken then
+		return "<"
+	end
+	if kind == SyntaxKind.CommaToken then
+		return ","
+	end
+	if kind == SyntaxKind.GreaterThanToken then
+		return ">"
+	end
+	if kind == SyntaxKind.DotToken then
+		return "."
+	end
+	if kind == SyntaxKind.QuestionToken then
+		return "?"
+	end
+	if kind == SyntaxKind.HashToken then
+		return "#"
+	end
+	if kind == SyntaxKind.SlashToken then
+		return "/"
+	end
+	if kind == SyntaxKind.SlashGreaterThanToken then
+		return "/>"
+	end
+	if kind == SyntaxKind.LessThanSlashToken then
+		return "</"
+	end
+	if kind == SyntaxKind.XmlCommentStartToken then
+		return "<!--"
+	end
+	if kind == SyntaxKind.XmlCommentEndToken then
+		return "-->"
+	end
+	if kind == SyntaxKind.XmlCDataStartToken then
+		return "<![CDATA["
+	end
+	if kind == SyntaxKind.XmlCDataEndToken then
+		return "]]>"
+	end
+	if kind == SyntaxKind.XmlProcessingInstructionStartToken then
+		return "<?"
+	end
+	if kind == SyntaxKind.XmlProcessingInstructionEndToken then
+		return "?>"
+	end
+	if kind == SyntaxKind.BarBarToken then
+		return "||"
+	end
+	if kind == SyntaxKind.AmpersandAmpersandToken then
+		return "&&"
+	end
+	if kind == SyntaxKind.MinusMinusToken then
+		return "--"
+	end
+	if kind == SyntaxKind.PlusPlusToken then
+		return "++"
+	end
+	if kind == SyntaxKind.ColonColonToken then
+		return "::"
+	end
+	if kind == SyntaxKind.QuestionQuestionToken then
+		return "??"
+	end
+	if kind == SyntaxKind.MinusGreaterThanToken then
+		return "->"
+	end
+	if kind == SyntaxKind.ExclamationEqualsToken then
+		return "!="
+	end
+	if kind == SyntaxKind.EqualsEqualsToken then
+		return "=="
+	end
+	if kind == SyntaxKind.EqualsGreaterThanToken then
+		return "=>"
+	end
+	if kind == SyntaxKind.LessThanEqualsToken then
+		return "<="
+	end
+	if kind == SyntaxKind.LessThanLessThanToken then
+		return "<<"
+	end
+	if kind == SyntaxKind.LessThanLessThanEqualsToken then
+		return "<<="
+	end
+	if kind == SyntaxKind.GreaterThanEqualsToken then
+		return ">="
+	end
+	if kind == SyntaxKind.GreaterThanGreaterThanToken then
+		return ">>"
+	end
+	if kind == SyntaxKind.GreaterThanGreaterThanEqualsToken then
+		return ">>="
+	end
+	if kind == SyntaxKind.GreaterThanGreaterThanGreaterThanToken then
+		return ">>>"
+	end
+	if kind == SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken then
+		return ">>>="
+	end
+	if kind == SyntaxKind.SlashEqualsToken then
+		return "/="
+	end
+	if kind == SyntaxKind.AsteriskEqualsToken then
+		return "*="
+	end
+	if kind == SyntaxKind.BarEqualsToken then
+		return "|="
+	end
+	if kind == SyntaxKind.AmpersandEqualsToken then
+		return "&="
+	end
+	if kind == SyntaxKind.PlusEqualsToken then
+		return "+="
+	end
+	if kind == SyntaxKind.MinusEqualsToken then
+		return "-="
+	end
+	if kind == SyntaxKind.CaretEqualsToken then
+		return "^="
+	end
+	if kind == SyntaxKind.PercentEqualsToken then
+		return "%="
+	end
+	if kind == SyntaxKind.QuestionQuestionEqualsToken then
+		return "??="
+	end
+	if kind == SyntaxKind.DotDotToken then
+		return ".."
+	end
+	if kind == SyntaxKind.BoolKeyword then
+		return "bool"
+	end
+	if kind == SyntaxKind.ByteKeyword then
+		return "byte"
+	end
+	if kind == SyntaxKind.SByteKeyword then
+		return "sbyte"
+	end
+	if kind == SyntaxKind.ShortKeyword then
+		return "short"
+	end
+	if kind == SyntaxKind.UShortKeyword then
+		return "ushort"
+	end
+	if kind == SyntaxKind.IntKeyword then
+		return "int"
+	end
+	if kind == SyntaxKind.UIntKeyword then
+		return "uint"
+	end
+	if kind == SyntaxKind.LongKeyword then
+		return "long"
+	end
+	if kind == SyntaxKind.ULongKeyword then
+		return "ulong"
+	end
+	if kind == SyntaxKind.DoubleKeyword then
+		return "double"
+	end
+	if kind == SyntaxKind.FloatKeyword then
+		return "float"
+	end
+	if kind == SyntaxKind.DecimalKeyword then
+		return "decimal"
+	end
+	if kind == SyntaxKind.StringKeyword then
+		return "string"
+	end
+	if kind == SyntaxKind.CharKeyword then
+		return "char"
+	end
+	if kind == SyntaxKind.VoidKeyword then
+		return "void"
+	end
+	if kind == SyntaxKind.ObjectKeyword then
+		return "object"
+	end
+	if kind == SyntaxKind.TypeOfKeyword then
+		return "typeof"
+	end
+	if kind == SyntaxKind.SizeOfKeyword then
+		return "sizeof"
+	end
+	if kind == SyntaxKind.NullKeyword then
+		return "null"
+	end
+	if kind == SyntaxKind.TrueKeyword then
+		return "true"
+	end
+	if kind == SyntaxKind.FalseKeyword then
+		return "false"
+	end
+	if kind == SyntaxKind.IfKeyword then
+		return "if"
+	end
+	if kind == SyntaxKind.ElseKeyword then
+		return "else"
+	end
+	if kind == SyntaxKind.WhileKeyword then
+		return "while"
+	end
+	if kind == SyntaxKind.ForKeyword then
+		return "for"
+	end
+	if kind == SyntaxKind.ForEachKeyword then
+		return "foreach"
+	end
+	if kind == SyntaxKind.DoKeyword then
+		return "do"
+	end
+	if kind == SyntaxKind.SwitchKeyword then
+		return "switch"
+	end
+	if kind == SyntaxKind.CaseKeyword then
+		return "case"
+	end
+	if kind == SyntaxKind.DefaultKeyword then
+		return "default"
+	end
+	if kind == SyntaxKind.TryKeyword then
+		return "try"
+	end
+	if kind == SyntaxKind.CatchKeyword then
+		return "catch"
+	end
+	if kind == SyntaxKind.FinallyKeyword then
+		return "finally"
+	end
+	if kind == SyntaxKind.LockKeyword then
+		return "lock"
+	end
+	if kind == SyntaxKind.GotoKeyword then
+		return "goto"
+	end
+	if kind == SyntaxKind.BreakKeyword then
+		return "break"
+	end
+	if kind == SyntaxKind.ContinueKeyword then
+		return "continue"
+	end
+	if kind == SyntaxKind.ReturnKeyword then
+		return "return"
+	end
+	if kind == SyntaxKind.ThrowKeyword then
+		return "throw"
+	end
+	if kind == SyntaxKind.PublicKeyword then
+		return "public"
+	end
+	if kind == SyntaxKind.PrivateKeyword then
+		return "private"
+	end
+	if kind == SyntaxKind.InternalKeyword then
+		return "internal"
+	end
+	if kind == SyntaxKind.ProtectedKeyword then
+		return "protected"
+	end
+	if kind == SyntaxKind.StaticKeyword then
+		return "static"
+	end
+	if kind == SyntaxKind.ReadOnlyKeyword then
+		return "readonly"
+	end
+	if kind == SyntaxKind.SealedKeyword then
+		return "sealed"
+	end
+	if kind == SyntaxKind.ConstKeyword then
+		return "const"
+	end
+	if kind == SyntaxKind.FixedKeyword then
+		return "fixed"
+	end
+	if kind == SyntaxKind.StackAllocKeyword then
+		return "stackalloc"
+	end
+	if kind == SyntaxKind.VolatileKeyword then
+		return "volatile"
+	end
+	if kind == SyntaxKind.NewKeyword then
+		return "new"
+	end
+	if kind == SyntaxKind.OverrideKeyword then
+		return "override"
+	end
+	if kind == SyntaxKind.AbstractKeyword then
+		return "abstract"
+	end
+	if kind == SyntaxKind.VirtualKeyword then
+		return "virtual"
+	end
+	if kind == SyntaxKind.EventKeyword then
+		return "event"
+	end
+	if kind == SyntaxKind.ExternKeyword then
+		return "extern"
+	end
+	if kind == SyntaxKind.RefKeyword then
+		return "ref"
+	end
+	if kind == SyntaxKind.OutKeyword then
+		return "out"
+	end
+	if kind == SyntaxKind.InKeyword then
+		return "in"
+	end
+	if kind == SyntaxKind.IsKeyword then
+		return "is"
+	end
+	if kind == SyntaxKind.AsKeyword then
+		return "as"
+	end
+	if kind == SyntaxKind.ParamsKeyword then
+		return "params"
+	end
+	if kind == SyntaxKind.ArgListKeyword then
+		return "__arglist"
+	end
+	if kind == SyntaxKind.MakeRefKeyword then
+		return "__makeref"
+	end
+	if kind == SyntaxKind.RefTypeKeyword then
+		return "__reftype"
+	end
+	if kind == SyntaxKind.RefValueKeyword then
+		return "__refvalue"
+	end
+	if kind == SyntaxKind.ThisKeyword then
+		return "this"
+	end
+	if kind == SyntaxKind.BaseKeyword then
+		return "base"
+	end
+	if kind == SyntaxKind.NamespaceKeyword then
+		return "namespace"
+	end
+	if kind == SyntaxKind.UsingKeyword then
+		return "using"
+	end
+	if kind == SyntaxKind.ClassKeyword then
+		return "class"
+	end
+	if kind == SyntaxKind.StructKeyword then
+		return "struct"
+	end
+	if kind == SyntaxKind.InterfaceKeyword then
+		return "interface"
+	end
+	if kind == SyntaxKind.EnumKeyword then
+		return "enum"
+	end
+	if kind == SyntaxKind.DelegateKeyword then
+		return "delegate"
+	end
+	if kind == SyntaxKind.CheckedKeyword then
+		return "checked"
+	end
+	if kind == SyntaxKind.UncheckedKeyword then
+		return "unchecked"
+	end
+	if kind == SyntaxKind.UnsafeKeyword then
+		return "unsafe"
+	end
+	if kind == SyntaxKind.OperatorKeyword then
+		return "operator"
+	end
+	if kind == SyntaxKind.ImplicitKeyword then
+		return "implicit"
+	end
+	if kind == SyntaxKind.ExplicitKeyword then
+		return "explicit"
+	end
+	if kind == SyntaxKind.ElifKeyword then
+		return "elif"
+	end
+	if kind == SyntaxKind.EndIfKeyword then
+		return "endif"
+	end
+	if kind == SyntaxKind.RegionKeyword then
+		return "region"
+	end
+	if kind == SyntaxKind.EndRegionKeyword then
+		return "endregion"
+	end
+	if kind == SyntaxKind.DefineKeyword then
+		return "define"
+	end
+	if kind == SyntaxKind.UndefKeyword then
+		return "undef"
+	end
+	if kind == SyntaxKind.WarningKeyword then
+		return "warning"
+	end
+	if kind == SyntaxKind.ErrorKeyword then
+		return "error"
+	end
+	if kind == SyntaxKind.LineKeyword then
+		return "line"
+	end
+	if kind == SyntaxKind.PragmaKeyword then
+		return "pragma"
+	end
+	if kind == SyntaxKind.HiddenKeyword then
+		return "hidden"
+	end
+	if kind == SyntaxKind.ChecksumKeyword then
+		return "checksum"
+	end
+	if kind == SyntaxKind.DisableKeyword then
+		return "disable"
+	end
+	if kind == SyntaxKind.RestoreKeyword then
+		return "restore"
+	end
+	if kind == SyntaxKind.ReferenceKeyword then
+		return "r"
+	end
+	if kind == SyntaxKind.LoadKeyword then
+		return "load"
+	end
+	if kind == SyntaxKind.NullableKeyword then
+		return "nullable"
+	end
+	if kind == SyntaxKind.EnableKeyword then
+		return "enable"
+	end
+	if kind == SyntaxKind.WarningsKeyword then
+		return "warnings"
+	end
+	if kind == SyntaxKind.AnnotationsKeyword then
+		return "annotations"
+	end
+	if kind == SyntaxKind.YieldKeyword then
+		return "yield"
+	end
+	if kind == SyntaxKind.PartialKeyword then
+		return "partial"
+	end
+	if kind == SyntaxKind.FromKeyword then
+		return "from"
+	end
+	if kind == SyntaxKind.GroupKeyword then
+		return "group"
+	end
+	if kind == SyntaxKind.JoinKeyword then
+		return "join"
+	end
+	if kind == SyntaxKind.IntoKeyword then
+		return "into"
+	end
+	if kind == SyntaxKind.LetKeyword then
+		return "let"
+	end
+	if kind == SyntaxKind.ByKeyword then
+		return "by"
+	end
+	if kind == SyntaxKind.WhereKeyword then
+		return "where"
+	end
+	if kind == SyntaxKind.SelectKeyword then
+		return "select"
+	end
+	if kind == SyntaxKind.GetKeyword then
+		return "get"
+	end
+	if kind == SyntaxKind.SetKeyword then
+		return "set"
+	end
+	if kind == SyntaxKind.AddKeyword then
+		return "add"
+	end
+	if kind == SyntaxKind.RemoveKeyword then
+		return "remove"
+	end
+	if kind == SyntaxKind.OrderByKeyword then
+		return "orderby"
+	end
+	if kind == SyntaxKind.AliasKeyword then
+		return "alias"
+	end
+	if kind == SyntaxKind.OnKeyword then
+		return "on"
+	end
+	if kind == SyntaxKind.EqualsKeyword then
+		return "equals"
+	end
+	if kind == SyntaxKind.AscendingKeyword then
+		return "ascending"
+	end
+	if kind == SyntaxKind.DescendingKeyword then
+		return "descending"
+	end
+	if kind == SyntaxKind.AssemblyKeyword then
+		return "assembly"
+	end
+	if kind == SyntaxKind.ModuleKeyword then
+		return "module"
+	end
+	if kind == SyntaxKind.TypeKeyword then
+		return "type"
+	end
+	if kind == SyntaxKind.FieldKeyword then
+		return "field"
+	end
+	if kind == SyntaxKind.MethodKeyword then
+		return "method"
+	end
+	if kind == SyntaxKind.ParamKeyword then
+		return "param"
+	end
+	if kind == SyntaxKind.PropertyKeyword then
+		return "property"
+	end
+	if kind == SyntaxKind.TypeVarKeyword then
+		return "typevar"
+	end
+	if kind == SyntaxKind.GlobalKeyword then
+		return "global"
+	end
+	if kind == SyntaxKind.NameOfKeyword then
+		return "nameof"
+	end
+	if kind == SyntaxKind.AsyncKeyword then
+		return "async"
+	end
+	if kind == SyntaxKind.AwaitKeyword then
+		return "await"
+	end
+	if kind == SyntaxKind.WhenKeyword then
+		return "when"
+	end
+	if kind == SyntaxKind.InterpolatedStringStartToken then
+		return "$\""
+	end
+	if kind == SyntaxKind.InterpolatedStringEndToken then
+		return "\""
+	end
+	if kind == SyntaxKind.InterpolatedVerbatimStringStartToken then
+		return "$@\""
+	end
+	if kind == SyntaxKind.UnderscoreToken then
+		return "_"
+	end
+	if kind == SyntaxKind.VarKeyword then
+		return "var"
+	end
+	if kind == SyntaxKind.AndKeyword then
+		return "and"
+	end
+	if kind == SyntaxKind.OrKeyword then
+		return "or"
+	end
+	if kind == SyntaxKind.NotKeyword then
+		return "not"
+	end
+	if kind == SyntaxKind.WithKeyword then
+		return "with"
+	end
+	if kind == SyntaxKind.InitKeyword then
+		return "init"
+	end
+	if kind == SyntaxKind.RecordKeyword then
+		return "record"
+	end
+	if kind == SyntaxKind.ManagedKeyword then
+		return "managed"
+	end
+	if kind == SyntaxKind.UnmanagedKeyword then
+		return "unmanaged"
+	end
+	if kind == SyntaxKind.RequiredKeyword then
+		return "required"
+	end
+	if kind == SyntaxKind.ScopedKeyword then
+		return "scoped"
+	end
+	if kind == SyntaxKind.FileKeyword then
+		return "file"
+	end
+	if kind == SyntaxKind.AllowsKeyword then
+		return "allows"
+	end
+	if kind == SyntaxKind.ExtensionKeyword then
+		return "extension"
+	end
+	return ""
 end
 
 function SyntaxFacts.GetText(accessibility: Accessibility): string
-	return if accessibility == 0 then "" elseif accessibility == 1 then SyntaxFacts.GetText(SyntaxKind.PrivateKeyword) elseif accessibility == 2 then SyntaxFacts.GetText(SyntaxKind.PrivateKeyword) .. " " .. SyntaxFacts.GetText(SyntaxKind.ProtectedKeyword) elseif accessibility == 4 then SyntaxFacts.GetText(SyntaxKind.InternalKeyword) elseif accessibility == 3 then SyntaxFacts.GetText(SyntaxKind.ProtectedKeyword) elseif accessibility == 5 then SyntaxFacts.GetText(SyntaxKind.ProtectedKeyword) .. " " .. SyntaxFacts.GetText(SyntaxKind.InternalKeyword) elseif accessibility == 6 then SyntaxFacts.GetText(SyntaxKind.PublicKeyword) else nil elseif accessibility == ArgumentOutOfRangeException.new("accessibility") then nil
+	local val: number = accessibility
+	if val == 0 then
+		return ""
+	end
+	if val == 1 then
+		return SyntaxFacts.GetText(SyntaxKind.PrivateKeyword)
+	end
+	if val == 2 then
+		return SyntaxFacts.GetText(SyntaxKind.PrivateKeyword) .. " " .. SyntaxFacts.GetText(SyntaxKind.ProtectedKeyword)
+	end
+	if val == 4 then
+		return SyntaxFacts.GetText(SyntaxKind.InternalKeyword)
+	end
+	if val == 3 then
+		return SyntaxFacts.GetText(SyntaxKind.ProtectedKeyword)
+	end
+	if val == 5 then
+		return SyntaxFacts.GetText(SyntaxKind.ProtectedKeyword) .. " " .. SyntaxFacts.GetText(SyntaxKind.InternalKeyword)
+	end
+	if val == 6 then
+		return SyntaxFacts.GetText(SyntaxKind.PublicKeyword)
+	end
+	error("accessibility")
 end
 
 function SyntaxFacts.GetOperatorKind(operatorMetadataName: string): SyntaxKind
-	local __switch_val = operatorMetadataName
-	if __switch_val == "op_CheckedAddition" or __switch_val == "op_Addition" then
+	if operatorMetadataName == "op_CheckedAddition" or operatorMetadataName == "op_Addition" then
 		return SyntaxKind.PlusToken
-	elseif __switch_val == "op_BitwiseAnd" then
-		return SyntaxKind.AmpersandToken
-	elseif __switch_val == "op_BitwiseOr" then
-		return SyntaxKind.BarToken
-	elseif __switch_val == "op_Decrement" or __switch_val == "op_CheckedDecrement" or __switch_val == "op_CheckedDecrementAssignment" or __switch_val == "op_DecrementAssignment" then
-		return SyntaxKind.MinusMinusToken
-	elseif __switch_val == "op_CheckedDivision" or __switch_val == "op_Division" then
-		return SyntaxKind.SlashToken
-	elseif __switch_val == "op_Equality" then
-		return SyntaxKind.EqualsEqualsToken
-	elseif __switch_val == "op_ExclusiveOr" then
-		return SyntaxKind.CaretToken
-	elseif __switch_val == "op_CheckedExplicit" or __switch_val == "op_Explicit" then
-		return SyntaxKind.ExplicitKeyword
-	elseif __switch_val == "op_False" then
-		return SyntaxKind.FalseKeyword
-	elseif __switch_val == "op_GreaterThan" then
-		return SyntaxKind.GreaterThanToken
-	elseif __switch_val == "op_GreaterThanOrEqual" then
-		return SyntaxKind.GreaterThanEqualsToken
-	elseif __switch_val == "op_Implicit" then
-		return SyntaxKind.ImplicitKeyword
-	elseif __switch_val == "op_Increment" or __switch_val == "op_CheckedIncrement" or __switch_val == "op_CheckedIncrementAssignment" or __switch_val == "op_IncrementAssignment" then
-		return SyntaxKind.PlusPlusToken
-	elseif __switch_val == "op_Inequality" then
-		return SyntaxKind.ExclamationEqualsToken
-	elseif __switch_val == "op_LeftShift" then
-		return SyntaxKind.LessThanLessThanToken
-	elseif __switch_val == "op_LessThan" then
-		return SyntaxKind.LessThanToken
-	elseif __switch_val == "op_LessThanOrEqual" then
-		return SyntaxKind.LessThanEqualsToken
-	elseif __switch_val == "op_LogicalNot" then
-		return SyntaxKind.ExclamationToken
-	elseif __switch_val == "op_Modulus" then
-		return SyntaxKind.PercentToken
-	elseif __switch_val == "op_CheckedMultiply" or __switch_val == "op_Multiply" then
-		return SyntaxKind.AsteriskToken
-	elseif __switch_val == "op_OnesComplement" then
-		return SyntaxKind.TildeToken
-	elseif __switch_val == "op_RightShift" then
-		return SyntaxKind.GreaterThanGreaterThanToken
-	elseif __switch_val == "op_UnsignedRightShift" then
-		return SyntaxKind.GreaterThanGreaterThanGreaterThanToken
-	elseif __switch_val == "op_Subtraction" or __switch_val == "op_CheckedSubtraction" then
-		return SyntaxKind.MinusToken
-	elseif __switch_val == "op_True" then
-		return SyntaxKind.TrueKeyword
-	elseif __switch_val == "op_CheckedUnaryNegation" or __switch_val == "op_UnaryNegation" then
-		return SyntaxKind.MinusToken
-	elseif __switch_val == "op_UnaryPlus" then
-		return SyntaxKind.PlusToken
-	elseif __switch_val == "op_AdditionAssignment" or __switch_val == "op_CheckedAdditionAssignment" then
-		return SyntaxKind.PlusEqualsToken
-	elseif __switch_val == "op_DivisionAssignment" or __switch_val == "op_CheckedDivisionAssignment" then
-		return SyntaxKind.SlashEqualsToken
-	elseif __switch_val == "op_CheckedMultiplicationAssignment" or __switch_val == "op_MultiplicationAssignment" then
-		return SyntaxKind.AsteriskEqualsToken
-	elseif __switch_val == "op_CheckedSubtractionAssignment" or __switch_val == "op_SubtractionAssignment" then
-		return SyntaxKind.MinusEqualsToken
-	elseif __switch_val == "op_ModulusAssignment" then
-		return SyntaxKind.PercentEqualsToken
-	elseif __switch_val == "op_BitwiseAndAssignment" then
-		return SyntaxKind.AmpersandEqualsToken
-	elseif __switch_val == "op_BitwiseOrAssignment" then
-		return SyntaxKind.BarEqualsToken
-	elseif __switch_val == "op_ExclusiveOrAssignment" then
-		return SyntaxKind.CaretEqualsToken
-	elseif __switch_val == "op_LeftShiftAssignment" then
-		return SyntaxKind.LessThanLessThanEqualsToken
-	elseif __switch_val == "op_RightShiftAssignment" then
-		return SyntaxKind.GreaterThanGreaterThanEqualsToken
-	elseif __switch_val == "op_UnsignedRightShiftAssignment" then
-		return SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken
-	else
-		return SyntaxKind.None
 	end
+	if operatorMetadataName == "op_BitwiseAnd" then
+		return SyntaxKind.AmpersandToken
+	end
+	if operatorMetadataName == "op_BitwiseOr" then
+		return SyntaxKind.BarToken
+	end
+	if operatorMetadataName == "op_Decrement" or operatorMetadataName == "op_CheckedDecrement" or operatorMetadataName == "op_CheckedDecrementAssignment" or operatorMetadataName == "op_DecrementAssignment" then
+		return SyntaxKind.MinusMinusToken
+	end
+	if operatorMetadataName == "op_CheckedDivision" or operatorMetadataName == "op_Division" then
+		return SyntaxKind.SlashToken
+	end
+	if operatorMetadataName == "op_Equality" then
+		return SyntaxKind.EqualsEqualsToken
+	end
+	if operatorMetadataName == "op_ExclusiveOr" then
+		return SyntaxKind.CaretToken
+	end
+	if operatorMetadataName == "op_CheckedExplicit" or operatorMetadataName == "op_Explicit" then
+		return SyntaxKind.ExplicitKeyword
+	end
+	if operatorMetadataName == "op_False" then
+		return SyntaxKind.FalseKeyword
+	end
+	if operatorMetadataName == "op_GreaterThan" then
+		return SyntaxKind.GreaterThanToken
+	end
+	if operatorMetadataName == "op_GreaterThanOrEqual" then
+		return SyntaxKind.GreaterThanEqualsToken
+	end
+	if operatorMetadataName == "op_Implicit" then
+		return SyntaxKind.ImplicitKeyword
+	end
+	if operatorMetadataName == "op_Increment" or operatorMetadataName == "op_CheckedIncrement" or operatorMetadataName == "op_CheckedIncrementAssignment" or operatorMetadataName == "op_IncrementAssignment" then
+		return SyntaxKind.PlusPlusToken
+	end
+	if operatorMetadataName == "op_Inequality" then
+		return SyntaxKind.ExclamationEqualsToken
+	end
+	if operatorMetadataName == "op_LeftShift" then
+		return SyntaxKind.LessThanLessThanToken
+	end
+	if operatorMetadataName == "op_LessThan" then
+		return SyntaxKind.LessThanToken
+	end
+	if operatorMetadataName == "op_LessThanOrEqual" then
+		return SyntaxKind.LessThanEqualsToken
+	end
+	if operatorMetadataName == "op_LogicalNot" then
+		return SyntaxKind.ExclamationToken
+	end
+	if operatorMetadataName == "op_Modulus" then
+		return SyntaxKind.PercentToken
+	end
+	if operatorMetadataName == "op_CheckedMultiply" or operatorMetadataName == "op_Multiply" then
+		return SyntaxKind.AsteriskToken
+	end
+	if operatorMetadataName == "op_OnesComplement" then
+		return SyntaxKind.TildeToken
+	end
+	if operatorMetadataName == "op_RightShift" then
+		return SyntaxKind.GreaterThanGreaterThanToken
+	end
+	if operatorMetadataName == "op_UnsignedRightShift" then
+		return SyntaxKind.GreaterThanGreaterThanGreaterThanToken
+	end
+	if operatorMetadataName == "op_Subtraction" or operatorMetadataName == "op_CheckedSubtraction" then
+		return SyntaxKind.MinusToken
+	end
+	if operatorMetadataName == "op_True" then
+		return SyntaxKind.TrueKeyword
+	end
+	if operatorMetadataName == "op_CheckedUnaryNegation" or operatorMetadataName == "op_UnaryNegation" then
+		return SyntaxKind.MinusToken
+	end
+	if operatorMetadataName == "op_UnaryPlus" then
+		return SyntaxKind.PlusToken
+	end
+	if operatorMetadataName == "op_AdditionAssignment" or operatorMetadataName == "op_CheckedAdditionAssignment" then
+		return SyntaxKind.PlusEqualsToken
+	end
+	if operatorMetadataName == "op_DivisionAssignment" or operatorMetadataName == "op_CheckedDivisionAssignment" then
+		return SyntaxKind.SlashEqualsToken
+	end
+	if operatorMetadataName == "op_CheckedMultiplicationAssignment" or operatorMetadataName == "op_MultiplicationAssignment" then
+		return SyntaxKind.AsteriskEqualsToken
+	end
+	if operatorMetadataName == "op_CheckedSubtractionAssignment" or operatorMetadataName == "op_SubtractionAssignment" then
+		return SyntaxKind.MinusEqualsToken
+	end
+	if operatorMetadataName == "op_ModulusAssignment" then
+		return SyntaxKind.PercentEqualsToken
+	end
+	if operatorMetadataName == "op_BitwiseAndAssignment" then
+		return SyntaxKind.AmpersandEqualsToken
+	end
+	if operatorMetadataName == "op_BitwiseOrAssignment" then
+		return SyntaxKind.BarEqualsToken
+	end
+	if operatorMetadataName == "op_ExclusiveOrAssignment" then
+		return SyntaxKind.CaretEqualsToken
+	end
+	if operatorMetadataName == "op_LeftShiftAssignment" then
+		return SyntaxKind.LessThanLessThanEqualsToken
+	end
+	if operatorMetadataName == "op_RightShiftAssignment" then
+		return SyntaxKind.GreaterThanGreaterThanEqualsToken
+	end
+	if operatorMetadataName == "op_UnsignedRightShiftAssignment" then
+		return SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken
+	end
+	return SyntaxKind.None
 end
 
 function SyntaxFacts.IsCheckedOperator(operatorMetadataName: string): boolean
-	local __switch_val = operatorMetadataName
-	if __switch_val == "op_CheckedDecrement" or __switch_val == "op_CheckedIncrement" or __switch_val == "op_CheckedAddition" or __switch_val == "op_CheckedDivision" or __switch_val == "op_CheckedMultiply" or __switch_val == "op_CheckedExplicit" or __switch_val == "op_CheckedAdditionAssignment" or __switch_val == "op_CheckedDivisionAssignment" or __switch_val == "op_CheckedDecrementAssignment" or __switch_val == "op_CheckedIncrementAssignment" or __switch_val == "op_CheckedUnaryNegation" or __switch_val == "op_CheckedSubtraction" or __switch_val == "op_CheckedMultiplicationAssignment" or __switch_val == "op_CheckedSubtractionAssignment" then
+	if operatorMetadataName == "op_CheckedDecrement" or operatorMetadataName == "op_CheckedIncrement" or operatorMetadataName == "op_CheckedAddition" or operatorMetadataName == "op_CheckedDivision" or operatorMetadataName == "op_CheckedMultiply" or operatorMetadataName == "op_CheckedExplicit" or operatorMetadataName == "op_CheckedAdditionAssignment" or operatorMetadataName == "op_CheckedDivisionAssignment" or operatorMetadataName == "op_CheckedDecrementAssignment" or operatorMetadataName == "op_CheckedIncrementAssignment" or operatorMetadataName == "op_CheckedUnaryNegation" or operatorMetadataName == "op_CheckedSubtraction" or operatorMetadataName == "op_CheckedMultiplicationAssignment" or operatorMetadataName == "op_CheckedSubtractionAssignment" then
 		return true
-	else
-		return false
 	end
+	return false
 end
 
 function SyntaxFacts.IsTypeParameterVarianceKeyword(kind: SyntaxKind): boolean

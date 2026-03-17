@@ -918,7 +918,7 @@ function TreePrinter.VisitElementAccess(self: TreePrinter, node: ElementAccessEx
 end
 
 function TreePrinter.VisitPostfixUnary(self: TreePrinter, node: PostfixUnaryExpressionSyntax): ()
-	local opText: string = if node.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken then "++" else "--"
+	local opText: string = if node.OperatorKind == SyntaxKind.PlusPlusToken then "++" else "--"
 	TreePrinter.PrintNode(self, "PostfixUnary: " .. opText)
 	SyntaxWalker.VisitPostfixUnary(self, node)
 end

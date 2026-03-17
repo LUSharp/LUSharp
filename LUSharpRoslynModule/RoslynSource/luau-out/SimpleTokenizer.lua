@@ -16,6 +16,11 @@ local SyntaxKind = setmetatable({}, {__index = function(_, k)
 	if not _SyntaxKind then _SyntaxKind = require(script.Parent.SyntaxKind) end
 	return _SyntaxKind.SyntaxKind[k]
 end})
+local _SyntaxToken
+local TokenInfo = setmetatable({}, {__index = function(_, k)
+	if not _SyntaxToken then _SyntaxToken = require(script.Parent.SyntaxToken) end
+	return _SyntaxToken.TokenInfo[k]
+end})
 
 type SimpleTokenizer_self = {
 	_window: SlidingTextWindow;
@@ -81,7 +86,7 @@ end
 function SimpleTokenizer.ScanWhitespace(self: SimpleTokenizer): TokenInfo
 	local start: number = self._window.Position
 	while not self._window:IsReallyAtEnd() and SyntaxFacts.IsWhitespace(self._window:PeekChar(0)) do
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 	end
 	return TokenInfo.new(SyntaxKind.WhitespaceTrivia, self._window:GetText(false), start, self._window.Position - start)
 end
@@ -97,7 +102,7 @@ function SimpleTokenizer.ScanIdentifierOrKeyword(self: SimpleTokenizer): TokenIn
 	while not self._window:IsReallyAtEnd() do
 		local ch: number = self._window:PeekChar(0)
 		if ch == string.byte("_", 1) or (ch >= string.byte("a", 1) and ch <= string.byte("z", 1)) or (ch >= string.byte("A", 1) and ch <= string.byte("Z", 1)) or (ch >= string.byte("0", 1) and ch <= string.byte("9", 1)) then
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 		else
 			break
 		end
@@ -113,12 +118,12 @@ end
 function SimpleTokenizer.ScanNumericLiteral(self: SimpleTokenizer): TokenInfo
 	local start: number = self._window.Position
 	while not self._window:IsReallyAtEnd() and SyntaxFacts.IsDecDigit(self._window:PeekChar(0)) do
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 	end
 	if self._window:PeekChar(0) == string.byte(".", 1) and SyntaxFacts.IsDecDigit(self._window:PeekChar(1)) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		while not self._window:IsReallyAtEnd() and SyntaxFacts.IsDecDigit(self._window:PeekChar(0)) do
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 		end
 	end
 	local text: string = self._window:GetText(false)
@@ -127,38 +132,38 @@ end
 
 function SimpleTokenizer.ScanInterpolatedStringLiteral(self: SimpleTokenizer): TokenInfo
 	local start: number = self._window.Position
-	self._window:AdvanceChar()
-	self._window:AdvanceChar()
+	self._window:AdvanceChar(1)
+	self._window:AdvanceChar(1)
 	local braceDepth: number = 0
 	while not self._window:IsReallyAtEnd() do
 		local ch: number = self._window:PeekChar(0)
 		if ch == string.byte("{", 1) and braceDepth == 0 then
 			local nextPos: number = self._window.Position + 1
 			if nextPos < self._window.TextLength and self._window:CharAt(nextPos) == string.byte("{", 1) then
-				self._window:AdvanceChar()
-				self._window:AdvanceChar()
+				self._window:AdvanceChar(1)
+				self._window:AdvanceChar(1)
 				continue
 			end
 			braceDepth += 1
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			continue
 		end
 		if ch == string.byte("}", 1) and braceDepth > 0 then
 			braceDepth -= 1
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			continue
 		end
 		if ch == 34 and braceDepth == 0 then
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			break
 		end
 		if ch == 92 then
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			if not self._window:IsReallyAtEnd() then
-				self._window:AdvanceChar()
+				self._window:AdvanceChar(1)
 			end
 		else
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 		end
 	end
 	local text: string = self._window:GetText(false)
@@ -167,20 +172,20 @@ end
 
 function SimpleTokenizer.ScanStringLiteral(self: SimpleTokenizer): TokenInfo
 	local start: number = self._window.Position
-	self._window:AdvanceChar()
+	self._window:AdvanceChar(1)
 	while not self._window:IsReallyAtEnd() do
 		local ch: number = self._window:PeekChar(0)
 		if ch == 34 then
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			break
 		end
 		if ch == 92 then
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			if not self._window:IsReallyAtEnd() then
-				self._window:AdvanceChar()
+				self._window:AdvanceChar(1)
 			end
 		else
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 		end
 	end
 	local text: string = self._window:GetText(false)
@@ -189,34 +194,34 @@ end
 
 function SimpleTokenizer.ScanCharacterLiteral(self: SimpleTokenizer): TokenInfo
 	local start: number = self._window.Position
-	self._window:AdvanceChar()
+	self._window:AdvanceChar(1)
 	if self._window:PeekChar(0) == 92 then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		if not self._window:IsReallyAtEnd() then
 			local esc: number = self._window:PeekChar(0)
 			if esc == string.byte("u", 1) then
-				self._window:AdvanceChar()
+				self._window:AdvanceChar(1)
 				local i: number = 0
 				while i < 4 and not self._window:IsReallyAtEnd() and SyntaxFacts.IsHexDigit(self._window:PeekChar(0)) do
-					self._window:AdvanceChar()
+					self._window:AdvanceChar(1)
 					i += 1
 				end
 			elseif esc == string.byte("U", 1) then
-				self._window:AdvanceChar()
+				self._window:AdvanceChar(1)
 				local i: number = 0
 				while i < 8 and not self._window:IsReallyAtEnd() and SyntaxFacts.IsHexDigit(self._window:PeekChar(0)) do
-					self._window:AdvanceChar()
+					self._window:AdvanceChar(1)
 					i += 1
 				end
 			else
-				self._window:AdvanceChar()
+				self._window:AdvanceChar(1)
 			end
 		end
 	elseif not self._window:IsReallyAtEnd() then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 	end
 	if self._window:PeekChar(0) == 39 then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 	end
 	local text: string = self._window:GetText(false)
 	return TokenInfo.new(SyntaxKind.CharacterLiteralToken, text, start, #text)
@@ -232,11 +237,11 @@ end
 
 function SimpleTokenizer.ScanPlusToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("+", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.PlusPlusToken
 	end
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.PlusEqualsToken
 	end
 	return SyntaxKind.PlusToken
@@ -244,15 +249,15 @@ end
 
 function SimpleTokenizer.ScanMinusToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("-", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.MinusMinusToken
 	end
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.MinusEqualsToken
 	end
 	if self._window:PeekChar(0) == string.byte(">", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.MinusGreaterThanToken
 	end
 	return SyntaxKind.MinusToken
@@ -261,12 +266,12 @@ end
 function SimpleTokenizer.ScanSlashToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("/", 1) then
 		while not self._window:IsReallyAtEnd() and not SyntaxFacts.IsNewLine(self._window:PeekChar(0)) do
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 		end
 		return SyntaxKind.SingleLineCommentTrivia
 	end
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.SlashEqualsToken
 	end
 	return SyntaxKind.SlashToken
@@ -274,11 +279,11 @@ end
 
 function SimpleTokenizer.ScanAmpersandToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("&", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.AmpersandAmpersandToken
 	end
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.AmpersandEqualsToken
 	end
 	return SyntaxKind.AmpersandToken
@@ -286,11 +291,11 @@ end
 
 function SimpleTokenizer.ScanBarToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("|", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.BarBarToken
 	end
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.BarEqualsToken
 	end
 	return SyntaxKind.BarToken
@@ -298,15 +303,15 @@ end
 
 function SimpleTokenizer.ScanQuestionToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("?", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		if self._window:PeekChar(0) == string.byte("=", 1) then
-			self._window:AdvanceChar()
+			self._window:AdvanceChar(1)
 			return SyntaxKind.QuestionQuestionEqualsToken
 		end
 		return SyntaxKind.QuestionQuestionToken
 	end
 	if self._window:PeekChar(0) == string.byte(".", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.QuestionDotToken
 	end
 	return SyntaxKind.QuestionToken
@@ -314,7 +319,7 @@ end
 
 function SimpleTokenizer.ScanExclamationToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.ExclamationEqualsToken
 	end
 	return SyntaxKind.ExclamationToken
@@ -322,11 +327,11 @@ end
 
 function SimpleTokenizer.ScanEqualsToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.EqualsEqualsToken
 	end
 	if self._window:PeekChar(0) == string.byte(">", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.EqualsGreaterThanToken
 	end
 	return SyntaxKind.EqualsToken
@@ -334,11 +339,11 @@ end
 
 function SimpleTokenizer.ScanLessThanToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.LessThanEqualsToken
 	end
 	if self._window:PeekChar(0) == string.byte("<", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.LessThanLessThanToken
 	end
 	return SyntaxKind.LessThanToken
@@ -346,7 +351,7 @@ end
 
 function SimpleTokenizer.ScanGreaterThanToken(self: SimpleTokenizer): SyntaxKind
 	if self._window:PeekChar(0) == string.byte("=", 1) then
-		self._window:AdvanceChar()
+		self._window:AdvanceChar(1)
 		return SyntaxKind.GreaterThanEqualsToken
 	end
 	return SyntaxKind.GreaterThanToken

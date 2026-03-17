@@ -60,17 +60,13 @@ function SlidingTextWindow.NextChar(self: SlidingTextWindow): number
 	return c
 end
 
-function SlidingTextWindow.AdvanceChar(self: SlidingTextWindow): ()
-	self.Position += 1
-end
-
 function SlidingTextWindow.AdvanceChar(self: SlidingTextWindow, n: number): ()
 	self.Position += n
 end
 
 function SlidingTextWindow.TryAdvance(self: SlidingTextWindow, c: number): boolean
 	if SlidingTextWindow.PeekChar(self, 0) == c then
-		SlidingTextWindow.AdvanceChar(self)
+		SlidingTextWindow.AdvanceChar(self, 1)
 		return true
 	end
 	return false

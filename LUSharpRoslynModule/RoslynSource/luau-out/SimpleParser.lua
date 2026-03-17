@@ -224,10 +224,14 @@ local SyntaxToken = setmetatable({}, {__index = function(_, k)
 	if not _SyntaxToken then _SyntaxToken = require(script.Parent.SyntaxToken) end
 	return _SyntaxToken.SyntaxToken[k]
 end})
+local TokenInfo = setmetatable({}, {__index = function(_, k)
+	if not _SyntaxToken then _SyntaxToken = require(script.Parent.SyntaxToken) end
+	return _SyntaxToken.TokenInfo[k]
+end})
 
 type SimpleParser_self = {
 	_tokenizer: SimpleTokenizer;
-	_tokens: { SimpleTokenizer.TokenInfo };
+	_tokens: { TokenInfo };
 	_position: number;
 	_currentClassName: string;
 }
@@ -262,23 +266,23 @@ function SimpleParser.new(text: string): SimpleParser
 	return self
 end
 
-function SimpleParser.Current(self: SimpleParser): SimpleTokenizer.TokenInfo
+function SimpleParser.Current(self: SimpleParser): TokenInfo
 	if self._position >= #self._tokens then
-		return SimpleTokenizer.TokenInfo.new(SyntaxKind.EndOfFileToken, "", 0, 0)
+		return TokenInfo.new(SyntaxKind.EndOfFileToken, "", 0, 0)
 	end
 	return self._tokens[self._position + 1]
 end
 
-function SimpleParser.Advance(self: SimpleParser): SimpleTokenizer.TokenInfo
+function SimpleParser.Advance(self: SimpleParser): TokenInfo
 	local token: any = SimpleParser.Current(self)
 	self._position += 1
 	return token
 end
 
-function SimpleParser.Expect(self: SimpleParser, kind: SyntaxKind): SimpleTokenizer.TokenInfo
+function SimpleParser.Expect(self: SimpleParser, kind: SyntaxKind): TokenInfo
 	local token: any = SimpleParser.Current(self)
 	if token.Kind ~= kind then
-		return SimpleTokenizer.TokenInfo.new(kind, "", token.Start, 0)
+		return TokenInfo.new(kind, "", token.Start, 0)
 	end
 	return SimpleParser.Advance(self)
 end
@@ -287,7 +291,7 @@ function SimpleParser.IsAtEnd(self: SimpleParser): boolean
 	return self._position >= #self._tokens or SimpleParser.Current(self).Kind == SyntaxKind.EndOfFileToken
 end
 
-function SimpleParser.MakeSyntaxToken(self: SimpleParser, info: SimpleTokenizer.TokenInfo): SyntaxToken
+function SimpleParser.MakeSyntaxToken(self: SimpleParser, info: TokenInfo): SyntaxToken
 	return SyntaxToken.new(info.Kind, info.Text, info.Start, #info)
 end
 
@@ -509,7 +513,7 @@ function SimpleParser.ParseEnumDeclaration(self: SimpleParser): EnumDeclarationS
 		SimpleParser.ParseTypeName(self)
 	end
 	SimpleParser.Expect(self, SyntaxKind.OpenBraceToken)
-	local members: any = table.create(256)
+	local members: any = table.create(1024)
 	local count: number = 0
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
 		local memberName: string = SimpleParser.Current(self).Text
@@ -519,7 +523,7 @@ function SimpleParser.ParseEnumDeclaration(self: SimpleParser): EnumDeclarationS
 			SimpleParser.Advance(self)
 			value = SimpleParser.ParseExpression(self)
 		end
-		if count < 256 then
+		if count < 1024 then
 			members[count + 1] = EnumMemberSyntax.new(memberName, value)
 			count += 1
 		end
@@ -820,11 +824,11 @@ end
 
 function SimpleParser.ParseBlock(self: SimpleParser): BlockSyntax
 	SimpleParser.Expect(self, SyntaxKind.OpenBraceToken)
-	local statements: any = table.create(128)
+	local statements: any = table.create(512)
 	local count: number = 0
 	while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
 		local stmt: any = SimpleParser.ParseStatement(self)
-		if stmt ~= nil and count < 128 then
+		if stmt ~= nil and count < 512 then
 			statements[count + 1] = stmt
 			count += 1
 		end
@@ -1065,11 +1069,11 @@ function SimpleParser.ParseSwitchStatement(self: SimpleParser): SwitchStatementS
 				SimpleParser.Expect(self, SyntaxKind.ColonToken)
 			end
 		end
-		local statements: any = table.create(128)
+		local statements: any = table.create(512)
 		local stmtCount: number = 0
 		while not SimpleParser.IsAtEnd(self) and SimpleParser.Current(self).Kind ~= SyntaxKind.CaseKeyword and SimpleParser.Current(self).Kind ~= SyntaxKind.DefaultKeyword and SimpleParser.Current(self).Kind ~= SyntaxKind.CloseBraceToken do
 			local stmt: any = SimpleParser.ParseStatement(self)
-			if stmt ~= nil and stmtCount < 128 then
+			if stmt ~= nil and stmtCount < 512 then
 				statements[stmtCount + 1] = stmt
 				stmtCount += 1
 			end

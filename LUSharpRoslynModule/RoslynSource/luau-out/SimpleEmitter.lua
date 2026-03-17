@@ -18,6 +18,10 @@ local EnumDeclarationSyntax = setmetatable({}, {__index = function(_, k)
 	if not _DeclarationNodes then _DeclarationNodes = require(script.Parent.DeclarationNodes) end
 	return _DeclarationNodes.EnumDeclarationSyntax[k]
 end})
+local EnumMemberSyntax = setmetatable({}, {__index = function(_, k)
+	if not _DeclarationNodes then _DeclarationNodes = require(script.Parent.DeclarationNodes) end
+	return _DeclarationNodes.EnumMemberSyntax[k]
+end})
 local FieldDeclarationSyntax = setmetatable({}, {__index = function(_, k)
 	if not _DeclarationNodes then _DeclarationNodes = require(script.Parent.DeclarationNodes) end
 	return _DeclarationNodes.FieldDeclarationSyntax[k]
@@ -184,10 +188,10 @@ local WhileStatementSyntax = setmetatable({}, {__index = function(_, k)
 	if not _StatementNodes then _StatementNodes = require(script.Parent.StatementNodes) end
 	return _StatementNodes.WhileStatementSyntax[k]
 end})
-local _SyntaxKind
-local SyntaxKind = setmetatable({}, {__index = function(_, k)
-	if not _SyntaxKind then _SyntaxKind = require(script.Parent.SyntaxKind) end
-	return _SyntaxKind.SyntaxKind[k]
+local _SyntaxFacts
+local SyntaxFacts = setmetatable({}, {__index = function(_, k)
+	if not _SyntaxFacts then _SyntaxFacts = require(script.Parent.SyntaxFacts) end
+	return _SyntaxFacts.SyntaxFacts[k]
 end})
 local _SyntaxNode
 local ExpressionSyntax = setmetatable({}, {__index = function(_, k)
@@ -207,6 +211,8 @@ local SyntaxWalker = setmetatable({}, {__index = function(_, k)
 	if not _SyntaxWalker then _SyntaxWalker = require(script.Parent.SyntaxWalker) end
 	return _SyntaxWalker.SyntaxWalker[k]
 end})
+
+local __rt = require(script.Parent.LUSharpRuntime)
 
 type SimpleEmitter_self = {
 	_output: string;
@@ -411,7 +417,15 @@ function SimpleEmitter.Emit(self: SimpleEmitter, unit: CompilationUnitSyntax): s
 		end
 	end
 	for i = 0, #unit.Members - 1 do
-		unit.Members[i + 1].AcceptWalker(self)
+		local member: MemberDeclarationSyntax = unit.Members[i + 1]
+		local memberKind: number = member.Kind
+		if memberKind == 8855 then
+			SimpleEmitter.VisitClassDeclaration(self, member)
+		elseif memberKind == 8856 then
+			SimpleEmitter.VisitEnumDeclaration(self, member)
+		elseif memberKind == 8857 then
+			SimpleEmitter.VisitStructDeclaration(self, member)
+		end
 	end
 	if self._needsRuntime then
 		local insertPos: number = 0
@@ -461,6 +475,10 @@ end
 function SimpleEmitter.MapType(self: SimpleEmitter, csharpType: string): string
 	if csharpType == nil then
 		return "any"
+	end
+	local lastDot: number = __rt.lastIndexOf(csharpType, string.byte(".", 1))
+	if lastDot >= 0 and not table.find(csharpType, "[]") ~= nil and not table.find(csharpType, "<") ~= nil then
+		csharpType = string.sub(csharpType, lastDot + 1 + 1)
 	end
 	if csharpType == "void" then
 		return "()"
@@ -1052,7 +1070,8 @@ function SimpleEmitter.VisitEnumDeclaration(self: SimpleEmitter, node: EnumDecla
 	local name: string = node.Name
 	local isNumeric: boolean = false
 	for i = 0, #node.Members - 1 do
-		if node.Members[i + 1] ~= nil then
+		local em: EnumMemberSyntax = node.Members[i + 1]
+		if em.Value ~= nil then
 			isNumeric = true
 		end
 	end
@@ -1060,9 +1079,10 @@ function SimpleEmitter.VisitEnumDeclaration(self: SimpleEmitter, node: EnumDecla
 	SimpleEmitter.Indent(self)
 	local autoValue: number = 0
 	for i = 0, #node.Members - 1 do
-		local memberName: string = node.Members[i + 1].Name
-		if node.Members[i + 1] ~= nil then
-			local val: string = SimpleEmitter.EmitExpression(self, node.Members[i + 1])
+		local em: EnumMemberSyntax = node.Members[i + 1]
+		local memberName: string = em.Name
+		if em.Value ~= nil then
+			local val: string = SimpleEmitter.EmitExpression(self, em.Value)
 			SimpleEmitter.AppendLine(self, memberName .. " = " .. val .. ",")
 		elseif isNumeric then
 			SimpleEmitter.AppendLine(self, memberName .. " = " .. SimpleEmitter.IntToString(self, autoValue) .. ",")
@@ -1314,11 +1334,9 @@ function SimpleEmitter.EmitForStatement(self: SimpleEmitter, fs: ForStatementSyn
 			local incIsPlus: boolean = false
 			if inc.Kind == 8738 or inc.Kind == 8739 then
 				local post: PostfixUnaryExpressionSyntax = inc
-				if post.OperatorKind == (Microsoft.CodeAnalysis.CSharp.SyntaxKind) then
-					8263
+				if post.OperatorKind == 8263 then
+					incIsPlus = true
 				end
-				nil
-				incIsPlus = true
 			elseif inc.Kind == 8734 then
 				incIsPlus = true
 			end
@@ -1391,10 +1409,12 @@ function SimpleEmitter.EmitSwitchStatement(self: SimpleEmitter, ss: SwitchStatem
 		end
 		SimpleEmitter.Indent(self)
 		for j = 0, #section.Statements - 1 do
-			if section.Statements[j + 1].Accept() == "break;" then
+			local sj: StatementSyntax = section.Statements[j + 1]
+			local sjText: string = sj:Accept()
+			if sjText == "break;" then
 				continue
 			end
-			SimpleEmitter.EmitStatement(self, section.Statements[j + 1])
+			SimpleEmitter.EmitStatement(self, sj)
 		end
 		SimpleEmitter.Dedent(self)
 		isFirst = false
@@ -1626,7 +1646,10 @@ function SimpleEmitter.EmitExpression(self: SimpleEmitter, expr: ExpressionSynta
 			end
 			if #inner == 6 and string.byte(inner, 1) == 92 and string.byte(inner, 2) == string.byte("u", 1) then
 				local hex: string = string.sub(inner, 2 + 1, 2 + 4)
-				local val: number = tonumber(hex, System.Globalization.NumberStyles.HexNumber)
+				local val: number = 0
+				for ci = 0, 4 - 1 do
+					val = val * 16 + SyntaxFacts.HexValue(string.byte(hex, ci + 1))
+				end
 				return tostring(val)
 			end
 			if #inner == 1 then
@@ -2190,9 +2213,6 @@ function SimpleEmitter.EmitMemberAccess(self: SimpleEmitter, expr: ExpressionSyn
 	end
 	if memberName == "HasValue" then
 		return "(" .. obj .. " ~= nil)"
-	end
-	if memberName == "Value" then
-		return obj
 	end
 	if obj == "this" or obj == "self" then
 		return "self." .. memberName
@@ -3284,6 +3304,114 @@ function SimpleEmitter.EmitInvocation(self: SimpleEmitter, expr: ExpressionSynta
 		if methodName == "TrimEnd" then
 			return "string.match(" .. obj .. ", \"(.-)%s*$\")"
 		end
+		if methodName == "Contains" and #inv.Arguments == 1 then
+			local containsExprType: string = SimpleEmitter.GetVariableType(self, SimpleEmitter.GetIdentifierName(self, ma.Expression))
+			if containsExprType ~= nil and SimpleEmitter.IsStringType(self, containsExprType) then
+				return "string.find(" .. obj .. ", " .. args .. ", 1, true) ~= nil"
+			end
+		end
+		if methodName == "Parse" then
+			if obj == "int" or obj == "Int32" or obj == "double" or obj == "Double" or obj == "float" or obj == "Single" or obj == "long" or obj == "Int64" then
+				return "tonumber(" .. args .. ")"
+			end
+		end
+		if methodName == "TryParse" then
+			if obj == "int" or obj == "Int32" or obj == "double" or obj == "Double" or obj == "float" or obj == "Single" then
+				self._needsRuntime = true
+				return "__rt.tryParse(" .. args .. ")"
+			end
+		end
+		if obj == "Convert" then
+			if methodName == "ToInt32" then
+				return "math.floor(tonumber(" .. args .. "))"
+			end
+			if methodName == "ToString" then
+				return "tostring(" .. args .. ")"
+			end
+			if methodName == "ToDouble" then
+				return "tonumber(" .. args .. ")"
+			end
+			if methodName == "ToSingle" then
+				return "tonumber(" .. args .. ")"
+			end
+			if methodName == "ToBoolean" then
+				return "((" .. args .. ") and true or false)"
+			end
+		end
+		if obj == "Task" then
+			if methodName == "Run" then
+				return "task.spawn(" .. args .. ")"
+			end
+			if methodName == "Delay" then
+				return "task.wait(" .. args .. " / 1000)"
+			end
+			if methodName == "WhenAll" then
+				self._needsRuntime = true
+				return "__rt.whenAll(" .. args .. ")"
+			end
+			if methodName == "WhenAny" then
+				self._needsRuntime = true
+				return "__rt.whenAny(" .. args .. ")"
+			end
+		end
+		if obj == "Task.Factory" and methodName == "StartNew" then
+			return "task.spawn(" .. args .. ")"
+		end
+		if obj == "Parallel" and methodName == "ForEach" then
+			if #inv.Arguments == 2 then
+				local collection: string = SimpleEmitter.EmitExpression(self, inv.Arguments[1])
+				local action: string = SimpleEmitter.EmitExpression(self, inv.Arguments[2])
+				return "(function() for _, __v in " .. collection .. " do task.spawn(function() (" .. action .. ")(__v) end) end end)()"
+			end
+		end
+		if obj == "string" or obj == "String" then
+			if methodName == "IsNullOrWhiteSpace" then
+				return "(" .. args .. " == nil or string.match(" .. args .. ", \"^%s*$\") ~= nil)"
+			end
+			if methodName == "Join" then
+				if #inv.Arguments == 2 then
+					local sep: string = SimpleEmitter.EmitExpression(self, inv.Arguments[1])
+					local arr: string = SimpleEmitter.EmitExpression(self, inv.Arguments[2])
+					return "table.concat(" .. arr .. ", " .. sep .. ")"
+				end
+			end
+			if methodName == "Concat" then
+				local concatResult: string = ""
+				for i = 0, #inv.Arguments - 1 do
+					if i > 0 then
+						concatResult = concatResult .. " .. "
+					end
+					concatResult = concatResult .. "tostring(" .. SimpleEmitter.EmitExpression(self, inv.Arguments[i + 1]) .. ")"
+				end
+				return concatResult
+			end
+			if methodName == "Format" then
+				self._needsRuntime = true
+				return "__rt.stringFormat(" .. args .. ")"
+			end
+		end
+		if obj == "Enumerable" then
+			self._needsRuntime = true
+			if methodName == "Range" then
+				return "__rt.range(" .. args .. ")"
+			end
+			if methodName == "Repeat" then
+				return "__rt.repeat_(" .. args .. ")"
+			end
+			if methodName == "Empty" then
+				return "{}"
+			end
+		end
+		if obj == "base" and self._baseClassName ~= nil then
+			if #args > 0 then
+				return self._baseClassName .. "." .. methodName .. "(self, " .. args .. ")"
+			end
+			return self._baseClassName .. "." .. methodName .. "(self)"
+		end
+		if SimpleEmitter.IsInstanceCallTarget(self, ma.Expression, obj) then
+			return obj .. ":" .. methodName .. "(" .. args .. ")"
+		end
+		return obj .. "." .. methodName .. "(" .. args .. ")"
 	end
 	if inv.Expression.Kind == 8616 then
 		local preCheckId: IdentifierNameSyntax = inv.Expression
