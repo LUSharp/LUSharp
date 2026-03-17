@@ -57,11 +57,6 @@ public struct SlidingTextWindow
         return c;
     }
 
-    public void AdvanceChar()
-    {
-        Position++;
-    }
-
     public void AdvanceChar(int n)
     {
         Position += n;
@@ -71,7 +66,7 @@ public struct SlidingTextWindow
     {
         if (PeekChar(0) == c)
         {
-            AdvanceChar();
+            AdvanceChar(1);
             return true;
         }
         return false;

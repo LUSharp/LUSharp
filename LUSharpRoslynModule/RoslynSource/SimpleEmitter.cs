@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis.CSharp;
 namespace RoslynLuau;
 
 /// <summary>
@@ -162,10 +163,15 @@ public class SimpleEmitter : SyntaxWalker
             }
         }
 
-        // Second pass: emit each top-level member
+        // Second pass: emit each top-level member (explicit dispatch instead of AcceptWalker
+        // because the self-hosted emitter doesn't emit colon-calls for non-self receivers)
         for (int i = 0; i < unit.Members.Length; i++)
         {
-            unit.Members[i].AcceptWalker(this);
+            MemberDeclarationSyntax member = unit.Members[i];
+            int memberKind = member.Kind;
+            if (memberKind == 8855) VisitClassDeclaration((ClassDeclarationSyntax)member);
+            else if (memberKind == 8856) VisitEnumDeclaration((EnumDeclarationSyntax)member);
+            else if (memberKind == 8857) VisitStructDeclaration((StructDeclarationSyntax)member);
         }
 
         // Insert runtime require if needed (after header, before declarations)
@@ -236,6 +242,12 @@ public class SimpleEmitter : SyntaxWalker
     private string MapType(string csharpType)
     {
         if (csharpType == null) return "any";
+        // Strip namespace qualifiers: SyntaxKind → SyntaxKind
+        int lastDot = csharpType.LastIndexOf('.');
+        if (lastDot >= 0 && !csharpType.Contains("[]") && !csharpType.Contains("<"))
+        {
+            csharpType = csharpType.Substring(lastDot + 1);
+        }
         if (csharpType == "void") return "()";
         if (csharpType == "string") return "string";
         if (csharpType == "bool") return "boolean";
@@ -1340,7 +1352,7 @@ public class SimpleEmitter : SyntaxWalker
                 if (inc.Kind == 8738 || inc.Kind == 8739) // PostfixUnary
                 {
                     PostfixUnaryExpressionSyntax post = (PostfixUnaryExpressionSyntax)inc;
-                    if (post.OperatorKind == (Microsoft.CodeAnalysis.CSharp.SyntaxKind)8263)
+                    if (post.OperatorKind == (SyntaxKind)8263)
                     {
                         incIsPlus = true;
                     }
@@ -1725,7 +1737,11 @@ public class SimpleEmitter : SyntaxWalker
                 if (inner.Length == 6 && inner[0] == '\\' && inner[1] == 'u')
                 {
                     string hex = inner.Substring(2, 4);
-                    int val = int.Parse(hex, System.Globalization.NumberStyles.HexNumber);
+                    int val = 0;
+                    for (int ci = 0; ci < 4; ci++)
+                    {
+                        val = val * 16 + SyntaxFacts.HexValue(hex[ci]);
+                    }
                     return val.ToString();
                 }
                 if (inner.Length == 1)

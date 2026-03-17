@@ -10,7 +10,7 @@ namespace RoslynLuau;
 public class SimpleParser
 {
     private SimpleTokenizer _tokenizer;
-    private SimpleTokenizer.TokenInfo[] _tokens;
+    private TokenInfo[] _tokens;
     private int _position;
     private string _currentClassName;
 
@@ -19,7 +19,7 @@ public class SimpleParser
         _tokenizer = new SimpleTokenizer(text);
         var tokenList = _tokenizer.Tokenize();
         // Filter out trivia (whitespace, newlines, comments)
-        var filtered = new SimpleTokenizer.TokenInfo[tokenList.Count];
+        var filtered = new TokenInfo[tokenList.Count];
         int count = 0;
         for (int i = 0; i < tokenList.Count; i++)
         {
@@ -32,7 +32,7 @@ public class SimpleParser
                 count++;
             }
         }
-        _tokens = new SimpleTokenizer.TokenInfo[count];
+        _tokens = new TokenInfo[count];
         for (int i = 0; i < count; i++)
         {
             _tokens[i] = filtered[i];
@@ -40,27 +40,27 @@ public class SimpleParser
         _position = 0;
     }
 
-    private SimpleTokenizer.TokenInfo Current()
+    private TokenInfo Current()
     {
         if (_position >= _tokens.Length)
-            return new SimpleTokenizer.TokenInfo(SyntaxKind.EndOfFileToken, "", 0, 0);
+            return new TokenInfo(SyntaxKind.EndOfFileToken, "", 0, 0);
         return _tokens[_position];
     }
 
-    private SimpleTokenizer.TokenInfo Advance()
+    private TokenInfo Advance()
     {
         var token = Current();
         _position++;
         return token;
     }
 
-    private SimpleTokenizer.TokenInfo Expect(SyntaxKind kind)
+    private TokenInfo Expect(SyntaxKind kind)
     {
         var token = Current();
         if (token.Kind != kind)
         {
             // Error recovery: return a missing token
-            return new SimpleTokenizer.TokenInfo(kind, "", token.Start, 0);
+            return new TokenInfo(kind, "", token.Start, 0);
         }
         return Advance();
     }
@@ -70,7 +70,7 @@ public class SimpleParser
         return _position >= _tokens.Length || Current().Kind == SyntaxKind.EndOfFileToken;
     }
 
-    private SyntaxToken MakeSyntaxToken(SimpleTokenizer.TokenInfo info)
+    private SyntaxToken MakeSyntaxToken(TokenInfo info)
     {
         return new SyntaxToken((int)info.Kind, info.Text, info.Start, info.Length);
     }
@@ -698,7 +698,7 @@ public class SimpleParser
         string name = Current().Text;
         Advance();
 
-        // Handle dotted qualifiers: SimpleTokenizer.TokenInfo, System.Collections.Generic
+        // Handle dotted qualifiers: TokenInfo, System.Collections.Generic
         while (!IsAtEnd() && Current().Kind == SyntaxKind.DotToken
             && _position + 1 < _tokens.Length && _tokens[_position + 1].Kind == SyntaxKind.IdentifierToken)
         {

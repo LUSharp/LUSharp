@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using RoslynLuau;
 
 namespace Microsoft.CodeAnalysis.CSharp.Syntax.InternalSyntax;
 
@@ -10,22 +11,6 @@ public class SimpleTokenizer
 {
     private SlidingTextWindow _window;
     private readonly List<TokenInfo> _tokens;
-
-    public struct TokenInfo
-    {
-        public SyntaxKind Kind;
-        public string Text;
-        public int Start;
-        public int Length;
-
-        public TokenInfo(SyntaxKind kind, string text, int start, int length)
-        {
-            Kind = kind;
-            Text = text;
-            Start = start;
-            Length = length;
-        }
-    }
 
     public SimpleTokenizer(string text)
     {
@@ -112,7 +97,7 @@ public class SimpleTokenizer
         int start = _window.Position;
         while (!_window.IsReallyAtEnd() && SyntaxFacts.IsWhitespace(_window.PeekChar(0)))
         {
-            _window.AdvanceChar();
+            _window.AdvanceChar(1);
         }
         return new TokenInfo(SyntaxKind.WhitespaceTrivia, _window.GetText(false), start, _window.Position - start);
     }
@@ -132,7 +117,7 @@ public class SimpleTokenizer
             char ch = _window.PeekChar(0);
             if (ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
             }
             else
             {
@@ -156,16 +141,16 @@ public class SimpleTokenizer
         int start = _window.Position;
         while (!_window.IsReallyAtEnd() && SyntaxFacts.IsDecDigit(_window.PeekChar(0)))
         {
-            _window.AdvanceChar();
+            _window.AdvanceChar(1);
         }
 
         // Handle decimal point
         if (_window.PeekChar(0) == '.' && SyntaxFacts.IsDecDigit(_window.PeekChar(1)))
         {
-            _window.AdvanceChar(); // skip '.'
+            _window.AdvanceChar(1); // skip '.'
             while (!_window.IsReallyAtEnd() && SyntaxFacts.IsDecDigit(_window.PeekChar(0)))
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
             }
         }
 
@@ -176,8 +161,8 @@ public class SimpleTokenizer
     private TokenInfo ScanInterpolatedStringLiteral()
     {
         int start = _window.Position;
-        _window.AdvanceChar(); // skip $
-        _window.AdvanceChar(); // skip "
+        _window.AdvanceChar(1); // skip $
+        _window.AdvanceChar(1); // skip "
 
         int braceDepth = 0;
         while (!_window.IsReallyAtEnd())
@@ -189,34 +174,34 @@ public class SimpleTokenizer
                 int nextPos = _window.Position + 1;
                 if (nextPos < _window.TextLength && _window.CharAt(nextPos) == '{')
                 {
-                    _window.AdvanceChar();
-                    _window.AdvanceChar();
+                    _window.AdvanceChar(1);
+                    _window.AdvanceChar(1);
                     continue;
                 }
                 braceDepth++;
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
                 continue;
             }
             if (ch == '}' && braceDepth > 0)
             {
                 braceDepth--;
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
                 continue;
             }
             if (ch == '"' && braceDepth == 0)
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
                 break;
             }
             if (ch == '\\')
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
                 if (!_window.IsReallyAtEnd())
-                    _window.AdvanceChar();
+                    _window.AdvanceChar(1);
             }
             else
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
             }
         }
 
@@ -227,25 +212,25 @@ public class SimpleTokenizer
     private TokenInfo ScanStringLiteral()
     {
         int start = _window.Position;
-        _window.AdvanceChar(); // skip opening "
+        _window.AdvanceChar(1); // skip opening "
 
         while (!_window.IsReallyAtEnd())
         {
             char ch = _window.PeekChar(0);
             if (ch == '"')
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
                 break;
             }
             if (ch == '\\')
             {
-                _window.AdvanceChar(); // skip backslash
+                _window.AdvanceChar(1); // skip backslash
                 if (!_window.IsReallyAtEnd())
-                    _window.AdvanceChar(); // skip escaped char
+                    _window.AdvanceChar(1); // skip escaped char
             }
             else
             {
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
             }
         }
 
@@ -256,39 +241,39 @@ public class SimpleTokenizer
     private TokenInfo ScanCharacterLiteral()
     {
         int start = _window.Position;
-        _window.AdvanceChar(); // skip opening '
+        _window.AdvanceChar(1); // skip opening '
 
         if (_window.PeekChar(0) == '\\')
         {
-            _window.AdvanceChar(); // skip backslash
+            _window.AdvanceChar(1); // skip backslash
             if (!_window.IsReallyAtEnd())
             {
                 char esc = _window.PeekChar(0);
                 if (esc == 'u')
                 {
-                    _window.AdvanceChar(); // skip u
+                    _window.AdvanceChar(1); // skip u
                     for (int i = 0; i < 4 && !_window.IsReallyAtEnd() && SyntaxFacts.IsHexDigit(_window.PeekChar(0)); i++)
-                        _window.AdvanceChar();
+                        _window.AdvanceChar(1);
                 }
                 else if (esc == 'U')
                 {
-                    _window.AdvanceChar(); // skip U
+                    _window.AdvanceChar(1); // skip U
                     for (int i = 0; i < 8 && !_window.IsReallyAtEnd() && SyntaxFacts.IsHexDigit(_window.PeekChar(0)); i++)
-                        _window.AdvanceChar();
+                        _window.AdvanceChar(1);
                 }
                 else
                 {
-                    _window.AdvanceChar(); // skip single escaped char
+                    _window.AdvanceChar(1); // skip single escaped char
                 }
             }
         }
         else if (!_window.IsReallyAtEnd())
         {
-            _window.AdvanceChar(); // skip the char
+            _window.AdvanceChar(1); // skip the char
         }
 
         if (_window.PeekChar(0) == '\'')
-            _window.AdvanceChar(); // skip closing '
+            _window.AdvanceChar(1); // skip closing '
 
         string text = _window.GetText(false);
         return new TokenInfo(SyntaxKind.CharacterLiteralToken, text, start, text.Length);
@@ -335,16 +320,16 @@ public class SimpleTokenizer
     // Multi-character operator helpers
     private SyntaxKind ScanPlusToken()
     {
-        if (_window.PeekChar(0) == '+') { _window.AdvanceChar(); return SyntaxKind.PlusPlusToken; }
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.PlusEqualsToken; }
+        if (_window.PeekChar(0) == '+') { _window.AdvanceChar(1); return SyntaxKind.PlusPlusToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.PlusEqualsToken; }
         return SyntaxKind.PlusToken;
     }
 
     private SyntaxKind ScanMinusToken()
     {
-        if (_window.PeekChar(0) == '-') { _window.AdvanceChar(); return SyntaxKind.MinusMinusToken; }
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.MinusEqualsToken; }
-        if (_window.PeekChar(0) == '>') { _window.AdvanceChar(); return SyntaxKind.MinusGreaterThanToken; }
+        if (_window.PeekChar(0) == '-') { _window.AdvanceChar(1); return SyntaxKind.MinusMinusToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.MinusEqualsToken; }
+        if (_window.PeekChar(0) == '>') { _window.AdvanceChar(1); return SyntaxKind.MinusGreaterThanToken; }
         return SyntaxKind.MinusToken;
     }
 
@@ -354,24 +339,24 @@ public class SimpleTokenizer
         {
             // Single-line comment — skip to end of line
             while (!_window.IsReallyAtEnd() && !SyntaxFacts.IsNewLine(_window.PeekChar(0)))
-                _window.AdvanceChar();
+                _window.AdvanceChar(1);
             return SyntaxKind.SingleLineCommentTrivia;
         }
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.SlashEqualsToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.SlashEqualsToken; }
         return SyntaxKind.SlashToken;
     }
 
     private SyntaxKind ScanAmpersandToken()
     {
-        if (_window.PeekChar(0) == '&') { _window.AdvanceChar(); return SyntaxKind.AmpersandAmpersandToken; }
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.AmpersandEqualsToken; }
+        if (_window.PeekChar(0) == '&') { _window.AdvanceChar(1); return SyntaxKind.AmpersandAmpersandToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.AmpersandEqualsToken; }
         return SyntaxKind.AmpersandToken;
     }
 
     private SyntaxKind ScanBarToken()
     {
-        if (_window.PeekChar(0) == '|') { _window.AdvanceChar(); return SyntaxKind.BarBarToken; }
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.BarEqualsToken; }
+        if (_window.PeekChar(0) == '|') { _window.AdvanceChar(1); return SyntaxKind.BarBarToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.BarEqualsToken; }
         return SyntaxKind.BarToken;
     }
 
@@ -379,37 +364,37 @@ public class SimpleTokenizer
     {
         if (_window.PeekChar(0) == '?')
         {
-            _window.AdvanceChar();
-            if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.QuestionQuestionEqualsToken; }
+            _window.AdvanceChar(1);
+            if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.QuestionQuestionEqualsToken; }
             return SyntaxKind.QuestionQuestionToken;
         }
-        if (_window.PeekChar(0) == '.') { _window.AdvanceChar(); return SyntaxKind.QuestionDotToken; }
+        if (_window.PeekChar(0) == '.') { _window.AdvanceChar(1); return SyntaxKind.QuestionDotToken; }
         return SyntaxKind.QuestionToken;
     }
 
     private SyntaxKind ScanExclamationToken()
     {
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.ExclamationEqualsToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.ExclamationEqualsToken; }
         return SyntaxKind.ExclamationToken;
     }
 
     private SyntaxKind ScanEqualsToken()
     {
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.EqualsEqualsToken; }
-        if (_window.PeekChar(0) == '>') { _window.AdvanceChar(); return SyntaxKind.EqualsGreaterThanToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.EqualsEqualsToken; }
+        if (_window.PeekChar(0) == '>') { _window.AdvanceChar(1); return SyntaxKind.EqualsGreaterThanToken; }
         return SyntaxKind.EqualsToken;
     }
 
     private SyntaxKind ScanLessThanToken()
     {
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.LessThanEqualsToken; }
-        if (_window.PeekChar(0) == '<') { _window.AdvanceChar(); return SyntaxKind.LessThanLessThanToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.LessThanEqualsToken; }
+        if (_window.PeekChar(0) == '<') { _window.AdvanceChar(1); return SyntaxKind.LessThanLessThanToken; }
         return SyntaxKind.LessThanToken;
     }
 
     private SyntaxKind ScanGreaterThanToken()
     {
-        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(); return SyntaxKind.GreaterThanEqualsToken; }
+        if (_window.PeekChar(0) == '=') { _window.AdvanceChar(1); return SyntaxKind.GreaterThanEqualsToken; }
         // Note: >> is handled contextually in the parser, not the lexer
         return SyntaxKind.GreaterThanToken;
     }

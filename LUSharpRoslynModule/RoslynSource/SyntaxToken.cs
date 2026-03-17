@@ -1,4 +1,22 @@
+using Microsoft.CodeAnalysis.CSharp;
+
 namespace RoslynLuau;
+
+public struct TokenInfo
+{
+    public SyntaxKind Kind;
+    public string Text;
+    public int Start;
+    public int Length;
+
+    public TokenInfo(SyntaxKind kind, string text, int start, int length)
+    {
+        Kind = kind;
+        Text = text;
+        Start = start;
+        Length = length;
+    }
+}
 
 public struct SyntaxToken
 {

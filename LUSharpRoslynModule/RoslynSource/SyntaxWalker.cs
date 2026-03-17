@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis.CSharp;
 namespace RoslynLuau;
 
 /// <summary>
@@ -817,7 +818,7 @@ public class TreePrinter : SyntaxWalker
 
     public override void VisitPostfixUnary(PostfixUnaryExpressionSyntax node)
     {
-        string opText = node.OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken ? "++" : "--";
+        string opText = node.OperatorKind == SyntaxKind.PlusPlusToken ? "++" : "--";
         PrintNode("PostfixUnary: " + opText);
         base.VisitPostfixUnary(node);
     }

@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis.CSharp;
 namespace RoslynLuau;
 
 public class LiteralExpressionSyntax : ExpressionSyntax
@@ -320,7 +321,7 @@ public class ElementAccessExpressionSyntax : ExpressionSyntax
     public ExpressionSyntax Expression { get; }
     public ExpressionSyntax Index { get; }
 
-    public ElementAccessExpressionSyntax(ExpressionSyntax expression, ExpressionSyntax index) : base((int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.ElementAccessExpression)
+    public ElementAccessExpressionSyntax(ExpressionSyntax expression, ExpressionSyntax index) : base((int)SyntaxKind.ElementAccessExpression)
     {
         Expression = expression;
         Index = index;
@@ -345,9 +346,9 @@ public class ElementAccessExpressionSyntax : ExpressionSyntax
 public class PostfixUnaryExpressionSyntax : ExpressionSyntax
 {
     public ExpressionSyntax Operand { get; }
-    public Microsoft.CodeAnalysis.CSharp.SyntaxKind OperatorKind { get; }
+    public SyntaxKind OperatorKind { get; }
 
-    public PostfixUnaryExpressionSyntax(int kind, ExpressionSyntax operand, Microsoft.CodeAnalysis.CSharp.SyntaxKind operatorKind) : base(kind)
+    public PostfixUnaryExpressionSyntax(int kind, ExpressionSyntax operand, SyntaxKind operatorKind) : base(kind)
     {
         Operand = operand;
         OperatorKind = operatorKind;
@@ -355,7 +356,7 @@ public class PostfixUnaryExpressionSyntax : ExpressionSyntax
 
     public override string Accept()
     {
-        string opText = OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken ? "++" : "--";
+        string opText = OperatorKind == SyntaxKind.PlusPlusToken ? "++" : "--";
         return Operand.Accept() + opText;
     }
 
@@ -366,7 +367,7 @@ public class PostfixUnaryExpressionSyntax : ExpressionSyntax
 
     public override string ToDisplayString()
     {
-        string opText = OperatorKind == Microsoft.CodeAnalysis.CSharp.SyntaxKind.PlusPlusToken ? "++" : "--";
+        string opText = OperatorKind == SyntaxKind.PlusPlusToken ? "++" : "--";
         return "PostfixUnary(" + Operand.ToDisplayString() + opText + ")";
     }
 }
@@ -377,7 +378,7 @@ public class ConditionalExpressionSyntax : ExpressionSyntax
     public ExpressionSyntax WhenTrue { get; }
     public ExpressionSyntax WhenFalse { get; }
 
-    public ConditionalExpressionSyntax(ExpressionSyntax condition, ExpressionSyntax whenTrue, ExpressionSyntax whenFalse) : base((int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.ConditionalExpression)
+    public ConditionalExpressionSyntax(ExpressionSyntax condition, ExpressionSyntax whenTrue, ExpressionSyntax whenFalse) : base((int)SyntaxKind.ConditionalExpression)
     {
         Condition = condition;
         WhenTrue = whenTrue;
