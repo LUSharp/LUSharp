@@ -11,9 +11,10 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
   </ItemGroup>
 
-  <!-- RoslynSource/ files are transpiler input, not part of this project's compilation -->
+  <!-- RoslynSource/ and Tests/ files are transpiler input, not part of this project's compilation -->
   <ItemGroup>
     <Compile Remove="RoslynSource\**" />
+    <Compile Remove="Tests\**" />
   </ItemGroup>
 
 </Project>
